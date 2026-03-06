@@ -1,5 +1,5 @@
 project('fsv', 'c',
-  version : '4.0.00'
+  version : '4.0.00',
   default_options : ['warning_level=2', 'buildtype=debugoptimized'],
   meson_version : '>= 0.55',
 )
@@ -9,6 +9,7 @@ cc = meson.get_compiler('c')
 # Dependencies
 gtk_dep = dependency('gtk+-3.0', version : '>= 3.16')
 epoxy_dep = dependency('epoxy')
+cglm_dep = dependency('cglm')
 m_dep = cc.find_library('m', required : true)
 
 # Debug build option
@@ -70,6 +71,9 @@ src_sources = files(
   'src/filelist.c',
   'src/fsv.c',
   'src/geometry.c',
+  'src/glmath.c',
+  'src/shader.c',
+  'src/vbobatch.c',
   'src/gui.c',
   'src/ogl.c',
   'src/scanfs.c',
@@ -79,7 +83,7 @@ src_sources = files(
   'src/window.c',
 )
 
-fsv_deps = [gtk_dep, epoxy_dep, m_dep]
+fsv_deps = [gtk_dep, epoxy_dep, cglm_dep, m_dep]
 fsv_link = [libmisc]
 fsv_inc = [config_inc, include_directories('lib')]
 
