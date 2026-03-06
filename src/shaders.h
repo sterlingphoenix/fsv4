@@ -88,11 +88,12 @@ static const char pick_vert_src[] =
 "\n"
 "void main() {\n"
 "    gl_Position = u_mvp * vec4(a_position, 1.0);\n"
-"    /* Decode node_id into RGBA pick colour */\n"
+"    /* Decode node_id: bits 23-0 = ID, bits 31-24 = face */\n"
 "    float r = float((a_node_id >> 16u) & 0xFFu) / 255.0;\n"
 "    float g = float((a_node_id >>  8u) & 0xFFu) / 255.0;\n"
 "    float b = float( a_node_id         & 0xFFu) / 255.0;\n"
-"    v_pick_color = vec4(r, g, b, 0.0);\n"
+"    float a = float((a_node_id >> 24u) & 0xFFu) / 255.0;\n"
+"    v_pick_color = vec4(r, g, b, a);\n"
 "}\n";
 
 static const char pick_frag_src[] =

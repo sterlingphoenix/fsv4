@@ -32,8 +32,11 @@
 #include "camera.h"
 #include "color.h"
 #include "dirtree.h" /* dirtree_entry_expanded( ) */
+#include "glmath.h"
+#include "shader.h"
 #include "ogl.h"
 #include "tmaptext.h"
+#include "vbobatch.h"
 
 /* 3D geometry for splash screen */
 #include "fsv3d.h"
@@ -785,6 +788,10 @@ static double mapv_leaf_height = 128.0;
 static XYZvec mapv_cursor_prev_c0;
 static XYZvec mapv_cursor_prev_c1;
 
+/* VBO batch for MapV solid geometry */
+static VBOBatch mapv_solid_batch;
+static boolean mapv_batch_initialized = FALSE;
+
 
 /* Returns the z-position of the bottom of a node */
 double
@@ -1471,14 +1478,263 @@ mapv_draw_cursor( double pos )
 }
 
 
+/* Emits triangles for a single MapV node into the VBO batch.
+ * z_offset: world-space Z of this node's base.
+ * z_scale: cumulative deployment scale (1.0 when fully expanded). */
+static void
+mapv_batch_node( VBOBatch *batch, GNode *node,
+                 double z_offset, double z_scale )
+{
+	MapVGeomParams *gp = MAPV_GEOM_PARAMS(node);
+	double dims_x, dims_y, h_local, h_world;
+	double ox, oy, k;
+	float nx, ny, nz_nx, nz_ny;
+	float r, g, b;
+	unsigned int side_id, top_id;
+	double a, bb;
+
+	/* Base corners (world XY, these don't need transform) */
+	float x0 = (float)gp->c0.x, y0 = (float)gp->c0.y;
+	float x1 = (float)gp->c1.x, y1 = (float)gp->c1.y;
+	float zb = (float)z_offset;  /* base Z in world */
+
+	dims_x = gp->c1.x - gp->c0.x;
+	dims_y = gp->c1.y - gp->c0.y;
+	h_local = gp->height;
+	h_world = h_local * z_scale;
+	float zt = (float)(z_offset + h_world);  /* top Z in world */
+
+	/* Slant offsets */
+	k = mapv_side_slant_ratios[NODE_DESC(node)->type];
+	ox = MIN(h_local, k * dims_x);
+	oy = MIN(h_local, k * dims_y);
+	float fox = (float)(ox * z_scale);
+	float foy = (float)(oy * z_scale);
+
+	/* Normals for slanted sides (adjusted for z_scale) */
+	a = sqrt( ox * ox + h_local * h_local );
+	bb = sqrt( oy * oy + h_local * h_local );
+	/* Raw normals: (h/a, 0, ox/a) etc. With z_scale, Z component
+	 * is divided by z_scale, then re-normalized. Equivalent to
+	 * computing from the scaled geometry directly. */
+	{
+		double snx = h_local / a;
+		double snz_nx = ox / a;
+		double sny = h_local / bb;
+		double snz_ny = oy / bb;
+		if (z_scale != 1.0 && z_scale > 0.0) {
+			double adj_nz_nx = snz_nx / z_scale;
+			double len = sqrt( snx * snx + adj_nz_nx * adj_nz_nx );
+			snx /= len;  snz_nx = adj_nz_nx / len;
+			double adj_nz_ny = snz_ny / z_scale;
+			len = sqrt( sny * sny + adj_nz_ny * adj_nz_ny );
+			sny /= len;  snz_ny = adj_nz_ny / len;
+		}
+		nx = (float)snx;
+		ny = (float)sny;
+		nz_nx = (float)snz_nx;
+		nz_ny = (float)snz_ny;
+	}
+
+	/* Node color */
+	r = NODE_DESC(node)->color->r;
+	g = NODE_DESC(node)->color->g;
+	b = NODE_DESC(node)->color->b;
+
+	/* Packed node_id: lower 24 bits = id, upper 8 bits = face */
+	side_id = NODE_DESC(node)->id;        /* face 0 */
+	top_id  = (1u << 24) | NODE_DESC(node)->id; /* face 1 */
+
+	/* --- Side faces (4 quads = 8 triangles) --- */
+
+	/* Rear face: normal (0, +ny, +nz_ny) */
+	vbo_batch_add_vertex(batch, x0, y1, zb,       0, ny, nz_ny,  r,g,b, side_id);
+	vbo_batch_add_vertex(batch, x0+fox, y1-foy, zt, 0, ny, nz_ny,  r,g,b, side_id);
+	vbo_batch_add_vertex(batch, x1-fox, y1-foy, zt, 0, ny, nz_ny,  r,g,b, side_id);
+	vbo_batch_add_vertex(batch, x0, y1, zb,       0, ny, nz_ny,  r,g,b, side_id);
+	vbo_batch_add_vertex(batch, x1-fox, y1-foy, zt, 0, ny, nz_ny,  r,g,b, side_id);
+	vbo_batch_add_vertex(batch, x1, y1, zb,       0, ny, nz_ny,  r,g,b, side_id);
+
+	/* Right face: normal (+nx, 0, +nz_nx) */
+	vbo_batch_add_vertex(batch, x1, y1, zb,       nx, 0, nz_nx,  r,g,b, side_id);
+	vbo_batch_add_vertex(batch, x1-fox, y1-foy, zt, nx, 0, nz_nx,  r,g,b, side_id);
+	vbo_batch_add_vertex(batch, x1-fox, y0+foy, zt, nx, 0, nz_nx,  r,g,b, side_id);
+	vbo_batch_add_vertex(batch, x1, y1, zb,       nx, 0, nz_nx,  r,g,b, side_id);
+	vbo_batch_add_vertex(batch, x1-fox, y0+foy, zt, nx, 0, nz_nx,  r,g,b, side_id);
+	vbo_batch_add_vertex(batch, x1, y0, zb,       nx, 0, nz_nx,  r,g,b, side_id);
+
+	/* Front face: normal (0, -ny, +nz_ny) */
+	vbo_batch_add_vertex(batch, x1, y0, zb,       0, -ny, nz_ny,  r,g,b, side_id);
+	vbo_batch_add_vertex(batch, x1-fox, y0+foy, zt, 0, -ny, nz_ny,  r,g,b, side_id);
+	vbo_batch_add_vertex(batch, x0+fox, y0+foy, zt, 0, -ny, nz_ny,  r,g,b, side_id);
+	vbo_batch_add_vertex(batch, x1, y0, zb,       0, -ny, nz_ny,  r,g,b, side_id);
+	vbo_batch_add_vertex(batch, x0+fox, y0+foy, zt, 0, -ny, nz_ny,  r,g,b, side_id);
+	vbo_batch_add_vertex(batch, x0, y0, zb,       0, -ny, nz_ny,  r,g,b, side_id);
+
+	/* Left face: normal (-nx, 0, +nz_nx) */
+	vbo_batch_add_vertex(batch, x0, y0, zb,       -nx, 0, nz_nx,  r,g,b, side_id);
+	vbo_batch_add_vertex(batch, x0+fox, y0+foy, zt, -nx, 0, nz_nx,  r,g,b, side_id);
+	vbo_batch_add_vertex(batch, x0+fox, y1-foy, zt, -nx, 0, nz_nx,  r,g,b, side_id);
+	vbo_batch_add_vertex(batch, x0, y0, zb,       -nx, 0, nz_nx,  r,g,b, side_id);
+	vbo_batch_add_vertex(batch, x0+fox, y1-foy, zt, -nx, 0, nz_nx,  r,g,b, side_id);
+	vbo_batch_add_vertex(batch, x0, y1, zb,       -nx, 0, nz_nx,  r,g,b, side_id);
+
+	/* --- Top face: normal (0, 0, 1) --- */
+	float tnz = 1.0f;
+	if (z_scale != 1.0 && z_scale > 0.0) {
+		/* When Z is scaled, top normal tilts — but it's still (0,0,1)
+		 * for the flat top, just needs normalizing after inverse-
+		 * transpose. For a flat horizontal surface, the normal stays
+		 * (0,0,1) regardless of Z scale. */
+		tnz = 1.0f;
+	}
+	vbo_batch_add_vertex(batch, x0+fox, y0+foy, zt, 0, 0, tnz,  r,g,b, top_id);
+	vbo_batch_add_vertex(batch, x1-fox, y0+foy, zt, 0, 0, tnz,  r,g,b, top_id);
+	vbo_batch_add_vertex(batch, x1-fox, y1-foy, zt, 0, 0, tnz,  r,g,b, top_id);
+	vbo_batch_add_vertex(batch, x0+fox, y0+foy, zt, 0, 0, tnz,  r,g,b, top_id);
+	vbo_batch_add_vertex(batch, x1-fox, y1-foy, zt, 0, 0, tnz,  r,g,b, top_id);
+	vbo_batch_add_vertex(batch, x0+fox, y1-foy, zt, 0, 0, tnz,  r,g,b, top_id);
+}
+
+
+/* Recursively walks the MapV tree and batches all visible solid geometry.
+ * z_offset: world-space Z of this level's base.
+ * z_scale: cumulative Z scale from ancestor deployments. */
+static void
+mapv_batch_recursive( VBOBatch *batch, GNode *dnode,
+                      double z_offset, double z_scale )
+{
+	DirNodeDesc *dir_ndesc;
+	MapVGeomParams *gparams;
+	GNode *node;
+	boolean dir_collapsed;
+	double node_z, child_z_scale;
+
+	g_assert( NODE_IS_DIR(dnode) || NODE_IS_METANODE(dnode) );
+
+	gparams = MAPV_GEOM_PARAMS(dnode);
+	node_z = z_offset + gparams->height * z_scale;
+
+	/* Frustum + size culling */
+	if (NODE_IS_DIR(dnode)) {
+		double half_w = 0.5 * (gparams->c1.x - gparams->c0.x);
+		double half_d = 0.5 * (gparams->c1.y - gparams->c0.y);
+		double half_size = MAX(half_w, half_d);
+		double cx = gparams->c0.x + half_w;
+		double cy = gparams->c0.y + half_d;
+
+		if (half_size > 0.0 &&
+		    screen_size_pixels( cx, cy, node_z, half_size ) < CULL_SIZE_THRESHOLD)
+			return;
+
+		if (!frustum_test_aabb( gparams->c0.x, gparams->c0.y, z_offset - 1.0,
+		                        gparams->c1.x, gparams->c1.y, z_offset + 1e9 ))
+			return;
+	}
+
+	dir_ndesc = DIR_NODE_DESC(dnode);
+	dir_collapsed = DIR_COLLAPSED(dnode);
+
+	/* Compute Z scale including this directory's deployment */
+	child_z_scale = z_scale;
+	if (!dir_collapsed && !DIR_EXPANDED(dnode))
+		child_z_scale *= dir_ndesc->deployment;
+
+	if (dir_collapsed) {
+		/* Collapsed: no children to batch */
+	}
+	else {
+		/* Batch children */
+		node = dnode->children;
+		while (node != NULL) {
+			mapv_batch_node( batch, node, node_z, child_z_scale );
+			node = node->next;
+		}
+
+		/* Recurse into subdirectories */
+		node = dnode->children;
+		while (node != NULL) {
+			if (!NODE_IS_DIR(node))
+				break;
+			mapv_batch_recursive( batch, node, node_z, child_z_scale );
+			node = node->next;
+		}
+	}
+}
+
+
+/* Rebuilds the MapV solid geometry VBO batch if needed */
+static void
+mapv_rebuild_batch( void )
+{
+	if (!mapv_batch_initialized) {
+		vbo_batch_init( &mapv_solid_batch );
+		mapv_batch_initialized = TRUE;
+	}
+
+	if (!mapv_solid_batch.dirty)
+		return;
+
+	vbo_batch_begin( &mapv_solid_batch );
+	mapv_batch_recursive( &mapv_solid_batch, globals.fstree, 0.0, 1.0 );
+	vbo_batch_upload( &mapv_solid_batch );
+}
+
+
 /* Draws MapV geometry */
 static void
 mapv_draw( boolean high_detail )
 {
 	frustum_extract( );
 
-	/* Draw low-detail geometry (culled tree walk) */
-	mapv_draw_recursive( globals.fstree, MAPV_DRAW_GEOMETRY, 0.0 );
+	/* Rebuild VBO batch if geometry changed */
+	mapv_rebuild_batch( );
+
+	/* Draw solid geometry from VBO batch using lit shader */
+	if (!picking_mode && mapv_solid_batch.vertex_count > 0) {
+		float mv[16], proj[16];
+		mat4 mvp;
+		mat3 norm;
+
+		/* Read current GL matrices (set up by ogl.c) */
+		glGetFloatv( GL_MODELVIEW_MATRIX, mv );
+		glGetFloatv( GL_PROJECTION_MATRIX, proj );
+
+		/* Compute MVP and normal matrix */
+		glm_mat4_mul( (vec4 *)proj, (vec4 *)mv, mvp );
+		{
+			mat4 inv;
+			glm_mat4_inv( (vec4 *)mv, inv );
+			for (int i = 0; i < 3; i++)
+				for (int j = 0; j < 3; j++)
+					norm[i][j] = inv[j][i];
+		}
+
+		/* Disable legacy fixed-function state that conflicts */
+		glDisable( GL_LIGHTING );
+
+		shader_program_use( &lit_shader );
+		glUniformMatrix4fv(
+			shader_program_get_uniform( &lit_shader, "u_mvp" ),
+			1, GL_FALSE, (const float *)mvp );
+		glUniformMatrix4fv(
+			shader_program_get_uniform( &lit_shader, "u_modelview" ),
+			1, GL_FALSE, mv );
+		glUniformMatrix3fv(
+			shader_program_get_uniform( &lit_shader, "u_normal_matrix" ),
+			1, GL_FALSE, (const float *)norm );
+
+		vbo_batch_draw( &mapv_solid_batch );
+
+		shader_program_unuse( );
+
+		/* Re-enable legacy state for subsequent passes */
+		glEnable( GL_LIGHTING );
+	}
+	else if (picking_mode) {
+		/* Pick mode: still use legacy drawing */
+		mapv_draw_recursive( globals.fstree, MAPV_DRAW_GEOMETRY, 0.0 );
+	}
 
 	if (high_detail) {
 		/* "Cel lines" — skip outlines on small/distant subtrees */
@@ -3063,6 +3319,10 @@ geometry_queue_rebuild( GNode *dnode )
 	DIR_NODE_DESC(dnode)->a_dlist_stale = TRUE;
 	DIR_NODE_DESC(dnode)->b_dlist_stale = TRUE;
 	DIR_NODE_DESC(dnode)->c_dlist_stale = TRUE;
+
+	/* Invalidate MapV VBO batch */
+	if (globals.fsv_mode == FSV_MAPV && mapv_batch_initialized)
+		vbo_batch_invalidate( &mapv_solid_batch );
 
 	queue_uncached_draw( );
 }
