@@ -1,0 +1,5 @@
+# Meson build directory
+builddir/
+
+# Claude
+.claude
