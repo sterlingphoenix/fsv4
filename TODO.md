@@ -27,30 +27,30 @@ identically. Legacy GL still draws everything.
 New dependency: libcglm-dev (C OpenGL mathematics library).
 
 Step 1.1 - Add cglm dependency
-  [ ] meson.build: add dependency('cglm') (pkg-config name: cglm)
-  [ ] README.md: add libcglm-dev to the dependency list
-  [ ] Verify: meson setup / ninja builds cleanly
+  [x] meson.build: add dependency('cglm') (pkg-config name: cglm)
+  [x] README.md: add libcglm-dev to the dependency list
+  [x] Verify: meson setup / ninja builds cleanly
 
 Step 1.2 - Matrix utilities
-  [ ] Create src/glmath.c and src/glmath.h: wrapper functions around
+  [x] Create src/glmath.c and src/glmath.h: wrapper functions around
       cglm for the operations the codebase needs:
       - Projection matrix (perspective/frustum)
       - Modelview matrix (translate, rotate, scale, push/pop stack)
       - MVP computation
       - Normal matrix extraction
-  [ ] The matrix stack should mirror the legacy glPushMatrix/glPopMatrix
+  [x] The matrix stack should mirror the legacy glPushMatrix/glPopMatrix
       behavior so the conversion can be done incrementally
-  [ ] Verify: builds cleanly, no functional changes
+  [x] Verify: builds cleanly, no functional changes
 
 Step 1.3 - Shader compilation utilities
-  [ ] Create src/shader.c and src/shader.h:
+  [x] Create src/shader.c and src/shader.h:
       - Load, compile, and link vertex + fragment shader programs
       - Error reporting (compile/link errors printed to stderr)
       - Uniform location caching
-  [ ] Verify: builds cleanly, no functional changes
+  [x] Verify: builds cleanly, no functional changes
 
 Step 1.4 - Write shaders
-  [ ] Create shaders (embedded as string constants or as separate files
+  [x] Create shaders (embedded as string constants or as separate files
       loaded at startup):
       - Vertex shader: MVP transform, basic directional lighting using
         per-vertex normals, pass-through of per-vertex colour
@@ -58,23 +58,23 @@ Step 1.4 - Write shaders
       - Pick vertex shader: MVP transform only, pass-through of
         per-vertex node ID colour
       - Pick fragment shader: output node ID colour (no lighting)
-  [ ] Verify: builds cleanly, no functional changes
+  [x] Verify: builds cleanly, no functional changes
 
 Step 1.5 - VBO/VAO management
-  [ ] Create src/vbobatch.c and src/vbobatch.h:
+  [x] Create src/vbobatch.c and src/vbobatch.h:
       - Vertex format: position (vec3), normal (vec3), colour (vec3),
         node_id (uint, for pick rendering)
       - Functions to begin building a batch, append vertices, upload
         to GPU (GL_STATIC_DRAW), draw, and free
       - Dirty-flag support: rebuild only when flagged stale
-  [ ] Verify: builds cleanly, no functional changes
+  [x] Verify: builds cleanly, no functional changes
 
 Step 1.6 - Initialization
-  [ ] In ogl.c realize_cb (or equivalent): compile shaders, set up the
+  [x] In ogl.c realize_cb (or equivalent): compile shaders, set up the
       shader programs, verify GL 3.3 availability
-  [ ] Run shaders alongside legacy pipeline (shaders compiled but not
+  [x] Run shaders alongside legacy pipeline (shaders compiled but not
       yet used for drawing)
-  [ ] Verify: program starts, prints no GL errors, renders identically
+  [x] Verify: program starts, prints no GL errors, renders identically
       to before
 
   Checkpoint: User tests that the program builds, runs, and renders

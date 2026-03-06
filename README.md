@@ -33,7 +33,7 @@ you may need to fall back to X11: `GDK_BACKEND=x11 fsv /path`.
 
 **Install**
 
-1. `sudo apt-get install libgtk-3-dev libepoxy-dev meson ninja-build`
+1. `sudo apt-get install libgtk-3-dev libepoxy-dev libcglm-dev meson ninja-build`
 2. Clone the repository
 3. Build:
     - `meson setup builddir`

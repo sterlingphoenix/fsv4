@@ -31,11 +31,18 @@
 #include "animation.h" /* redraw( ) */
 #include "camera.h"
 #include "geometry.h"
+#include "glmath.h"
+#include "shader.h"
+#include "shaders.h"
 #include "tmaptext.h" /* text_init( ) */
 
 
 /* Main viewport OpenGL area widget */
 static GtkWidget *viewport_gl_area_w = NULL;
+
+/* Shader programs (compiled in ogl_init, used later for modern GL rendering) */
+ShaderProgram lit_shader;
+ShaderProgram pick_shader;
 
 /* Private FBO for color picking (keeps pick renders off the display FBO) */
 static GLuint pick_fbo = 0;
@@ -110,6 +117,28 @@ ogl_init( void )
 
 	/* Initialize texture-mapped text engine */
 	text_init( );
+
+	/* Initialize glmath module with the same base modelview matrix */
+	glmath_init( );
+	glmath_load_identity_modelview( );
+	glmath_rotated( -90.0, 1.0, 0.0, 0.0 );
+	glmath_rotated( -90.0, 0.0, 0.0, 1.0 );
+	glmath_push_modelview( );
+
+	/* Compile shader programs (not yet used for drawing) */
+	if (!shader_program_create( &lit_shader, lit_vert_src, lit_frag_src ))
+		g_warning( "Failed to compile lit shader" );
+	else {
+		shader_program_add_uniform( &lit_shader, "u_mvp" );
+		shader_program_add_uniform( &lit_shader, "u_modelview" );
+		shader_program_add_uniform( &lit_shader, "u_normal_matrix" );
+	}
+
+	if (!shader_program_create( &pick_shader, pick_vert_src, pick_frag_src ))
+		g_warning( "Failed to compile pick shader" );
+	else {
+		shader_program_add_uniform( &pick_shader, "u_mvp" );
+	}
 }
 
 
