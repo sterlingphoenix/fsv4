@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-FSV (File System Visualizer) is a 3D file system visualizer written in C that renders directory hierarchies in three dimensions. Inspired by SGI's `fsn` from Jurassic Park. This is an actively maintained GTK3 + legacy OpenGL fork.
+FSV (File System Visualizer) is a 3D file system visualizer written in C that renders directory hierarchies in three dimensions. Inspired by SGI's `fsn` from Jurassic Park.
 
-The goal is to migrate this codebase to GTK4 with a modern OpenGL pipeline. The migration plan is defined in `TODO.md`.
+This codebase starts as a GTK3 + legacy OpenGL (fixed-function pipeline) application. The goal is to migrate it to modern OpenGL 3.3 core profile with batched VBOs and shaders, then to GTK4. The migration plan is defined in `TODO.md`.
 
 ## Mandatory Rules
 
@@ -24,12 +24,12 @@ Do NOT mark an item complete if the program does not build and run. Do NOT skip 
 ### 2. Follow TODO.md in strict order
 
 The phases in `TODO.md` are ordered deliberately. Each phase builds on the previous one. **Do not skip phases or reorder items.** Specifically:
-- All OpenGL modernization MUST be completed and tested BEFORE switching from GTK3 to GTK4.
+- All OpenGL modernization (Phases 1-5) MUST be completed and tested BEFORE switching from GTK3 to GTK4 (Phase 6).
 - Do not start a new phase until the current phase's checkpoint passes.
 
 ### 3. Mark items complete in TODO.md as you go
 
-When an item is done (builds, runs, tested), change its checkbox in `TODO.md` from `- [ ]` to `- [x]`. This is how progress is tracked. If you don't update TODO.md, there is no record of what was actually done.
+When an item is done (builds, runs, tested), change its checkbox in `TODO.md` from `[ ]` to `[x]`. This is how progress is tracked. If you don't update TODO.md, there is no record of what was actually done.
 
 ### 4. Stop at phase checkpoints and ask the user to test
 
@@ -42,10 +42,11 @@ Do NOT proceed past a checkpoint without user confirmation.
 
 ### 5. Do not degrade performance
 
-The existing codebase uses display list caching: geometry is built once per directory and replayed via `glCallList()` — O(1) per frame. Any replacement MUST have equivalent or better frame cost. Specifically:
+The rendering pipeline must use a build-once, draw-many pattern. Geometry must be cached and only rebuilt when it actually changes. Specifically:
 - Do NOT rebuild or re-upload vertex data every frame.
 - Do NOT replace cached drawing with per-frame CPU vertex assembly.
-- VBO replacements must use `GL_STATIC_DRAW` with dirty-flag invalidation (build once, draw many, rebuild only when stale) — structurally identical to how display lists work today.
+- VBO batches must use `GL_STATIC_DRAW` with dirty-flag invalidation (build once, draw many, rebuild only when stale).
+- The goal is to reduce draw calls: batch all visible geometry into a small number of large VBOs (ideally 1-3 per frame) rather than thousands of individual draw calls.
 - If you are unsure whether a change impacts performance, say so and ask.
 
 ### 6. Do not claim work is done that isn't done
@@ -58,7 +59,7 @@ Verify your own work:
 
 ### 7. Preserve existing functionality and visuals
 
-The program must look and behave the same after each change. All three visualization modes (DiscV, MapV, TreeV) must render correctly. Mouse interaction (click, double-click, right-click context menu, drag to orbit, scroll to zoom), directory tree sidebar, file list, search, color modes, and About screen must all work.
+The program must look and behave the same after each change. All three visualization modes (DiscV, MapV, TreeV) must render correctly. Mouse interaction (click, double-click, right-click context menu, drag to orbit, scroll to zoom), keyboard panning (arrow keys/WASD), directory tree sidebar, file list, search, color modes, and About screen must all work.
 
 If something breaks, fix it before proceeding.
 
@@ -66,7 +67,7 @@ If something breaks, fix it before proceeding.
 
 ```bash
 # Install dependencies (Debian/Ubuntu)
-sudo apt-get install libgtk-3-dev libepoxy-dev meson ninja-build
+sudo apt-get install libgtk-3-dev libepoxy-dev libcglm-dev meson ninja-build
 
 # Configure and build
 meson setup builddir
@@ -91,8 +92,9 @@ Build system is Meson (>= 0.55). There is no test suite or linter configured.
 
 ## Dependencies
 
-- **gtk+-3.0** (>= 3.16) — GUI framework (will become gtk4 after Phase 5)
+- **gtk+-3.0** (>= 3.16) — GUI framework (will become gtk4 in Phase 6)
 - **libepoxy** — OpenGL function loading
+- **cglm** — C OpenGL mathematics library (added in Phase 1)
 - **libm** — math library
 - **file** command (optional) — MIME type detection
 
@@ -110,9 +112,9 @@ Three 3D layout modes defined in `geometry.c`:
 1. **`fsv.c`** — Entry point, initializes GTK and starts filesystem scan
 2. **`scanfs.c`** — Scans filesystem into a GLib GNode tree
 3. **`geometry.c`** — Computes 3D positions for each node based on active visualization mode
-4. **`ogl.c`** — OpenGL rendering via GtkGLArea, manages display lists (a/b/c_dlist per directory with stale flags)
+4. **`ogl.c`** — OpenGL rendering via GtkGLArea
 5. **`animation.c`** — Morphing system: time-based interpolation of variables with easing and scheduled callbacks
-6. **`viewport.c`** — Input handling (mouse interaction, node selection)
+6. **`viewport.c`** — Input handling (mouse interaction, keyboard panning, node selection)
 7. **`camera.c`** — Camera positioning and movement
 
 ### UI Layer
@@ -131,14 +133,15 @@ Three 3D layout modes defined in `geometry.c`:
 - **`tmaptext.c`** — Texture-mapped text rendering in OpenGL
 - **`lib/nvstore.c`** — Name-value pair storage for user configuration (`~/.config/fsv/fsvrc`)
 
-### OpenGL Rendering Pipeline (current)
+### OpenGL Rendering Pipeline
 
-The rendering uses a 3-tier display list cache — this is what makes it fast:
-1. **Per-node display lists** (`a_dlist`/`b_dlist`/`c_dlist` in `DirNodeDesc`) with stale flags — geometry rebuilt only when directory contents change
-2. **Tree-level display lists** (`fstree_low/high_dlist`) with 3-stage draw — Stage 2 is a single `glCallList()` for the entire tree, zero tree-walk cost
-3. **Pick FBO cache** — color-pick rendering cached until camera/scene changes
+The codebase starts with a legacy fixed-function pipeline using per-directory display lists with stale flags. The migration (Phases 1-5) replaces this with:
+1. **Batched VBOs** — all visible geometry packed into a small number of large vertex buffers, rebuilt only when geometry changes (dirty-flag invalidation)
+2. **Shaders** — vertex and fragment shaders for lit rendering and color-pick rendering
+3. **Matrix utilities** (via cglm) — replace the legacy `glPushMatrix`/`glPopMatrix` stack
+4. **Pick FBO cache** — color-pick rendering cached until camera/scene changes
 
-Any modernization of this pipeline must preserve this caching behavior. See Rule 5 above.
+The key performance principle: geometry is built once and drawn many times. Rebuilds happen only when the scene changes (expand/collapse, color mode change), not every frame.
 
 ### Animation System
 
@@ -148,9 +151,16 @@ Any modernization of this pipeline must preserve this caching behavior. See Rule
 - `framerate_iteration()` — tracks framerate
 - `scheduled_event_iteration()` — fires registered timed callbacks
 
+## New Modules (added during migration)
+
+These files are created during Phase 1 and used throughout:
+- **`src/glmath.c/h`** — Matrix stack utilities wrapping cglm (projection, modelview, MVP, normal matrix)
+- **`src/shader.c/h`** — Shader compilation, linking, uniform location caching
+- **`src/vbobatch.c/h`** — VBO/VAO management (vertex format, batch building, upload, draw, dirty flags)
+
 ## Conventions
 
 - GLib/GTK naming: `g_` prefix for GLib functions, snake_case for all functions
 - Header guards: `FSV_<MODULE>_H`
 - Filesystem tree represented as GLib GNode structures throughout
-- OpenGL display lists cached per directory with dirty flags for invalidation
+- Vertex data cached in VBO batches with dirty flags for invalidation
