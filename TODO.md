@@ -89,13 +89,13 @@ with shaders. MapV is converted first because it has the simplest
 geometry (axis-aligned boxes). DiscV and TreeV continue to use legacy GL.
 
 Step 2.1 - MapV geometry to vertex batches
-  [ ] In geometry.c, create a function that walks the MapV tree and
+  [x] In geometry.c, create a function that walks the MapV tree and
       assembles all visible geometry (nodes, platforms) into a vertex
       batch (position, normal, colour, node_id per vertex)
-  [ ] Use the existing stale flags to determine when to rebuild
-  [ ] The batch is rebuilt only when geometry changes (expand/collapse,
+  [x] Use the existing stale flags to determine when to rebuild
+  [x] The batch is rebuilt only when geometry changes (expand/collapse,
       colour mode change), not every frame
-  [ ] Verify: builds cleanly, vertex batch is assembled but not yet drawn
+  [x] Verify: builds cleanly, vertex batch is assembled but not yet drawn
 
 Step 2.2 - MapV solid geometry rendering
   [ ] Replace MapV's MAPV_DRAW_GEOMETRY tree walk + display list calls
