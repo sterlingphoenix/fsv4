@@ -420,6 +420,10 @@ discv_init_recursive( GNode *dnode, double stem_theta )
 static XYvec discv_cursor_prev_pos;
 static double discv_cursor_prev_radius;
 
+/* VBO batch for DiscV geometry */
+static VBOBatch discv_solid_batch;
+static boolean discv_batch_initialized = FALSE;
+
 
 static void
 discv_init( void )
@@ -530,6 +534,177 @@ discv_build_dir( GNode *dnode )
 		discv_gldraw_node( node, dpm );
 		node = node->next;
 	}
+}
+
+
+/* Number of segments for disc circle approximation */
+#define DISCV_SEG_COUNT ((int)(360.0 / DISCV_CURVE_GRANULARITY + 0.999))
+
+/* Emits triangles for a single DiscV node (disc) into the VBO batch.
+ * cx, cy: world-space center of the disc.
+ * radius: world-space radius. */
+static void
+discv_batch_node( VBOBatch *batch, GNode *node,
+                  double cx, double cy, double radius )
+{
+	float r, g, b;
+	unsigned int nid;
+	float fcx = (float)cx, fcy = (float)cy;
+	int s;
+
+	r = NODE_DESC(node)->color->r;
+	g = NODE_DESC(node)->color->g;
+	b = NODE_DESC(node)->color->b;
+	nid = NODE_DESC(node)->id;
+
+	/* Convert triangle fan to individual triangles */
+	for (s = 0; s < DISCV_SEG_COUNT; s++) {
+		double t0 = (double)s / (double)DISCV_SEG_COUNT * 360.0;
+		double t1 = (double)(s + 1) / (double)DISCV_SEG_COUNT * 360.0;
+		float ex0 = (float)(cx + radius * cos( RAD(t0) ));
+		float ey0 = (float)(cy + radius * sin( RAD(t0) ));
+		float ex1 = (float)(cx + radius * cos( RAD(t1) ));
+		float ey1 = (float)(cy + radius * sin( RAD(t1) ));
+
+		vbo_batch_add_vertex( batch, fcx,fcy,0, 0,0,1, r,g,b, nid );
+		vbo_batch_add_vertex( batch, ex0,ey0,0, 0,0,1, r,g,b, nid );
+		vbo_batch_add_vertex( batch, ex1,ey1,0, 0,0,1, r,g,b, nid );
+	}
+}
+
+
+/* Recursively walks the DiscV tree and batches all geometry.
+ * acc_x, acc_y: accumulated world-space position.
+ * acc_scale: accumulated scale from ancestor deployments. */
+static void
+discv_batch_recursive( VBOBatch *batch, GNode *dnode,
+                       double acc_x, double acc_y, double acc_scale )
+{
+	DirNodeDesc *dir_ndesc;
+	DiscVGeomParams *dir_gparams;
+	GNode *node;
+	double world_x, world_y, world_scale;
+
+	dir_ndesc = DIR_NODE_DESC(dnode);
+	dir_gparams = DISCV_GEOM_PARAMS(dnode);
+
+	world_x = acc_x + acc_scale * dir_gparams->pos.x;
+	world_y = acc_y + acc_scale * dir_gparams->pos.y;
+	world_scale = acc_scale * dir_ndesc->deployment;
+
+	if (DIR_COLLAPSED(dnode))
+		return;
+
+	/* Batch children */
+	node = dnode->children;
+	while (node != NULL) {
+		double child_cx = world_x + world_scale * DISCV_GEOM_PARAMS(node)->pos.x;
+		double child_cy = world_y + world_scale * DISCV_GEOM_PARAMS(node)->pos.y;
+		double child_r = world_scale * DISCV_GEOM_PARAMS(node)->radius;
+		if (child_r > 0.0)
+			discv_batch_node( batch, node, child_cx, child_cy, child_r );
+		node = node->next;
+	}
+
+	/* Recurse into expanded subdirectories */
+	if (DIR_EXPANDED(dnode)) {
+		node = dnode->children;
+		while (node != NULL) {
+			if (!NODE_IS_DIR(node))
+				break;
+			discv_batch_recursive( batch, node, world_x, world_y, world_scale );
+			node = node->next;
+		}
+	}
+}
+
+
+/* Rebuilds the DiscV VBO batch if needed */
+static void
+discv_rebuild_batch( void )
+{
+	if (!discv_batch_initialized) {
+		vbo_batch_init( &discv_solid_batch );
+		discv_batch_initialized = TRUE;
+	}
+
+	if (!discv_solid_batch.dirty)
+		return;
+
+	vbo_batch_begin( &discv_solid_batch );
+	discv_batch_recursive( &discv_solid_batch,
+	                       globals.fstree, 0.0, 0.0, 1.0 );
+	vbo_batch_upload( &discv_solid_batch );
+}
+
+
+/* Sets up the lit shader for DiscV (same as MapV) */
+static void
+discv_setup_lit_shader( void )
+{
+	float mv[16], proj[16];
+	float mvp[16];
+	float norm[9];
+	int i, j, k;
+
+	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
+	glGetFloatv( GL_PROJECTION_MATRIX, proj );
+
+	for (j = 0; j < 4; j++) {
+		for (i = 0; i < 4; i++) {
+			float sum = 0.0f;
+			for (k = 0; k < 4; k++)
+				sum += proj[i + k * 4] * mv[k + j * 4];
+			mvp[i + j * 4] = sum;
+		}
+	}
+
+	for (i = 0; i < 3; i++)
+		for (j = 0; j < 3; j++)
+			norm[i + j * 3] = mv[i + j * 4];
+
+	glDisable( GL_LIGHTING );
+
+	shader_program_use( &lit_shader );
+	glUniformMatrix4fv(
+		shader_program_get_uniform( &lit_shader, "u_mvp" ),
+		1, GL_FALSE, mvp );
+	glUniformMatrix4fv(
+		shader_program_get_uniform( &lit_shader, "u_modelview" ),
+		1, GL_FALSE, mv );
+	glUniformMatrix3fv(
+		shader_program_get_uniform( &lit_shader, "u_normal_matrix" ),
+		1, GL_FALSE, norm );
+	glUniform1f(
+		shader_program_get_uniform( &lit_shader, "u_diffuse_scale" ),
+		1.0f );
+}
+
+
+/* Sets up the pick shader for DiscV */
+static void
+discv_setup_pick_shader( void )
+{
+	float mv[16], proj[16];
+	float mvp[16];
+	int i, j, k;
+
+	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
+	glGetFloatv( GL_PROJECTION_MATRIX, proj );
+
+	for (j = 0; j < 4; j++) {
+		for (i = 0; i < 4; i++) {
+			float sum = 0.0f;
+			for (k = 0; k < 4; k++)
+				sum += proj[i + k * 4] * mv[k + j * 4];
+			mvp[i + j * 4] = sum;
+		}
+	}
+
+	shader_program_use( &pick_shader );
+	glUniformMatrix4fv(
+		shader_program_get_uniform( &pick_shader, "u_mvp" ),
+		1, GL_FALSE, mvp );
 }
 
 
@@ -667,12 +842,27 @@ discv_draw( boolean high_detail )
 {
 	frustum_extract( );
 
-	glLineWidth( 3.0 );
+	/* Rebuild VBO batch if geometry changed */
+	discv_rebuild_batch( );
 
-	/* Draw low-detail geometry (culled tree walk) */
-	discv_draw_recursive( globals.fstree, DISCV_DRAW_GEOMETRY, 0.0, 0.0, 1.0 );
+	/* Draw solid geometry from VBO batch */
+	if (discv_solid_batch.vertex_count > 0) {
+		if (picking_mode)
+			discv_setup_pick_shader( );
+		else
+			discv_setup_lit_shader( );
+		vbo_batch_draw( &discv_solid_batch );
+		if (picking_mode)
+			shader_program_unuse( );
+		else {
+			shader_program_unuse( );
+			glEnable( GL_LIGHTING );
+		}
+	}
 
 	if (high_detail) {
+		glLineWidth( 3.0 );
+
 		/* Node name labels */
 		text_pre( );
 		glColor3f( 0.0, 0.0, 0.0 );
@@ -681,9 +871,9 @@ discv_draw( boolean high_detail )
 
 		/* Node cursor */
 		discv_draw_cursor( CURSOR_POS(camera->pan_part) );
-	}
 
-	glLineWidth( 1.0 );
+		glLineWidth( 1.0 );
+	}
 }
 
 
@@ -3433,10 +3623,13 @@ geometry_queue_rebuild( GNode *dnode )
 	DIR_NODE_DESC(dnode)->b_dlist_stale = TRUE;
 	DIR_NODE_DESC(dnode)->c_dlist_stale = TRUE;
 
-	/* Invalidate MapV VBO batches */
+	/* Invalidate VBO batches */
 	if (globals.fsv_mode == FSV_MAPV && mapv_batch_initialized) {
 		vbo_batch_invalidate( &mapv_solid_batch );
 		vbo_batch_invalidate( &mapv_outline_batch );
+	}
+	if (globals.fsv_mode == FSV_DISCV && discv_batch_initialized) {
+		vbo_batch_invalidate( &discv_solid_batch );
 	}
 
 	queue_uncached_draw( );
@@ -3733,10 +3926,13 @@ geometry_colexp_in_progress( GNode *dnode )
         else
 		queue_uncached_draw( );
 
-	/* Deployment changed — VBO batches have stale z_scale values */
+	/* Deployment changed — VBO batches have stale values */
 	if (globals.fsv_mode == FSV_MAPV && mapv_batch_initialized) {
 		vbo_batch_invalidate( &mapv_solid_batch );
 		vbo_batch_invalidate( &mapv_outline_batch );
+	}
+	if (globals.fsv_mode == FSV_DISCV && discv_batch_initialized) {
+		vbo_batch_invalidate( &discv_solid_batch );
 	}
 
 	if (globals.fsv_mode == FSV_TREEV) {

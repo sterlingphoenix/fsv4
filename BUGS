@@ -1,0 +1,2 @@
+* Input is suspended during expand/initial animation but not collapse animation.
+
