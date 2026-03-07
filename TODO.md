@@ -122,11 +122,11 @@ Step 2.5 - MapV pick rendering
   [x] Verify: hovering and clicking correctly identifies nodes in MapV
 
 Step 2.6 - MapV animation integration
-  [ ] Verify that expand/collapse animations work correctly:
+  [x] Verify that expand/collapse animations work correctly:
       - The VBO must be rebuilt when geometry changes during animation
       - The deployment scaling must be applied correctly
       - Frustum and size culling must still work
-  [ ] Verify: MapV expand/collapse is smooth, camera panning works,
+  [x] Verify: MapV expand/collapse is smooth, camera panning works,
       keyboard pan works
 
   Checkpoint: User tests MapV thoroughly — rendering, interaction,
