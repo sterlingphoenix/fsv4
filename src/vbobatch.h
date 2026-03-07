@@ -47,6 +47,9 @@ void vbo_batch_upload(VBOBatch *batch);
 /* Draw the batch (glDrawArrays GL_TRIANGLES) */
 void vbo_batch_draw(const VBOBatch *batch);
 
+/* Draw the batch as lines (glDrawArrays GL_LINES) */
+void vbo_batch_draw_lines(const VBOBatch *batch);
+
 /* Mark the batch as needing a rebuild */
 void vbo_batch_invalidate(VBOBatch *batch);
 

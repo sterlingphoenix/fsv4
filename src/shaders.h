@@ -52,6 +52,9 @@ static const char lit_frag_src[] =
 "const vec3 light_diffuse  = vec3(0.5, 0.5, 0.5);\n"
 "const vec3 light_pos_eye  = vec3(0.0, 0.0, 0.0);\n"
 "\n"
+"/* 1.0 = full lighting, 0.0 = ambient only (for outline pass) */\n"
+"uniform float u_diffuse_scale;\n"
+"\n"
 "out vec4 frag_color;\n"
 "\n"
 "void main() {\n"
@@ -60,7 +63,7 @@ static const char lit_frag_src[] =
 "    float NdotL = max(dot(N, L), 0.0);\n"
 "\n"
 "    vec3 ambient = light_ambient * v_color;\n"
-"    vec3 diffuse = light_diffuse * v_color * NdotL;\n"
+"    vec3 diffuse = light_diffuse * v_color * NdotL * u_diffuse_scale;\n"
 "\n"
 "    frag_color = vec4(ambient + diffuse, 1.0);\n"
 "}\n";

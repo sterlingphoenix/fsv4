@@ -112,6 +112,18 @@ vbo_batch_draw(const VBOBatch *batch)
 
 
 void
+vbo_batch_draw_lines(const VBOBatch *batch)
+{
+	if (batch->vertex_count == 0 || batch->vao == 0)
+		return;
+
+	glBindVertexArray(batch->vao);
+	glDrawArrays(GL_LINES, 0, batch->vertex_count);
+	glBindVertexArray(0);
+}
+
+
+void
 vbo_batch_invalidate(VBOBatch *batch)
 {
 	batch->dirty = TRUE;

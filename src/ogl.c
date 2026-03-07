@@ -132,6 +132,7 @@ ogl_init( void )
 		shader_program_add_uniform( &lit_shader, "u_mvp" );
 		shader_program_add_uniform( &lit_shader, "u_modelview" );
 		shader_program_add_uniform( &lit_shader, "u_normal_matrix" );
+		shader_program_add_uniform( &lit_shader, "u_diffuse_scale" );
 	}
 
 	if (!shader_program_create( &pick_shader, pick_vert_src, pick_frag_src ))

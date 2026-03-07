@@ -98,11 +98,11 @@ Step 2.1 - MapV geometry to vertex batches
   [x] Verify: builds cleanly, vertex batch is assembled but not yet drawn
 
 Step 2.2 - MapV solid geometry rendering
-  [ ] Replace MapV's MAPV_DRAW_GEOMETRY tree walk + display list calls
+  [x] Replace MapV's MAPV_DRAW_GEOMETRY tree walk + display list calls
       with a single VBO draw call using the lit shader
-  [ ] Set up projection and modelview matrices using glmath utilities,
+  [x] Set up projection and modelview matrices using glmath utilities,
       pass as uniforms to the shader
-  [ ] Verify: MapV renders solid geometry correctly via modern GL.
+  [x] Verify: MapV renders solid geometry correctly via modern GL.
       Colours, lighting, and depth sorting match the legacy rendering.
 
 Step 2.3 - MapV wireframe outline rendering
