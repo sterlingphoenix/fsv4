@@ -1737,35 +1737,43 @@ static void
 mapv_setup_lit_shader( float diffuse_scale )
 {
 	float mv[16], proj[16];
-	mat4 mvp;
-	mat3 norm;
+	float mvp[16];
+	float norm[9];
+	int i, j, k;
 
 	/* Read current GL matrices (set up by ogl.c) */
 	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
 	glGetFloatv( GL_PROJECTION_MATRIX, proj );
 
-	/* Compute MVP and normal matrix */
-	glm_mat4_mul( (vec4 *)proj, (vec4 *)mv, mvp );
-	{
-		mat4 inv;
-		glm_mat4_inv( (vec4 *)mv, inv );
-		for (int i = 0; i < 3; i++)
-			for (int j = 0; j < 3; j++)
-				norm[i][j] = inv[j][i];
+	/* Compute MVP = proj * mv (column-major) */
+	for (j = 0; j < 4; j++) {
+		for (i = 0; i < 4; i++) {
+			float sum = 0.0f;
+			for (k = 0; k < 4; k++)
+				sum += proj[i + k * 4] * mv[k + j * 4];
+			mvp[i + j * 4] = sum;
+		}
 	}
+
+	/* Compute normal matrix = transpose(inverse(upper-left 3x3 of mv)).
+	 * For orthogonal modelview (no non-uniform scale), this equals the
+	 * upper-left 3x3 of mv itself. Use that as a simpler, robust path. */
+	for (i = 0; i < 3; i++)
+		for (j = 0; j < 3; j++)
+			norm[i + j * 3] = mv[i + j * 4];
 
 	glDisable( GL_LIGHTING );
 
 	shader_program_use( &lit_shader );
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &lit_shader, "u_mvp" ),
-		1, GL_FALSE, (const float *)mvp );
+		1, GL_FALSE, mvp );
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &lit_shader, "u_modelview" ),
 		1, GL_FALSE, mv );
 	glUniformMatrix3fv(
 		shader_program_get_uniform( &lit_shader, "u_normal_matrix" ),
-		1, GL_FALSE, (const float *)norm );
+		1, GL_FALSE, norm );
 	glUniform1f(
 		shader_program_get_uniform( &lit_shader, "u_diffuse_scale" ),
 		diffuse_scale );
@@ -1793,35 +1801,28 @@ mapv_draw( boolean high_detail )
 	/* Rebuild VBO batch if geometry changed */
 	mapv_rebuild_batch( );
 
-	/* DEBUG: Draw VBO with fixed-function pipeline to test vertex data */
+	/* Draw solid geometry from VBO batch using lit shader */
 	if (!picking_mode && mapv_solid_batch.vertex_count > 0) {
-		glBindBuffer( GL_ARRAY_BUFFER, mapv_solid_batch.vbo );
-		glEnableClientState( GL_VERTEX_ARRAY );
-		glVertexPointer( 3, GL_FLOAT, sizeof(VBOVertex),
-		                 (void *)offsetof(VBOVertex, position) );
-		glEnableClientState( GL_NORMAL_ARRAY );
-		glNormalPointer( GL_FLOAT, sizeof(VBOVertex),
-		                 (void *)offsetof(VBOVertex, normal) );
-		glEnableClientState( GL_COLOR_ARRAY );
-		glColorPointer( 3, GL_FLOAT, sizeof(VBOVertex),
-		                (void *)offsetof(VBOVertex, color) );
-		glDrawArrays( GL_TRIANGLES, 0, mapv_solid_batch.vertex_count );
-		glDisableClientState( GL_VERTEX_ARRAY );
-		glDisableClientState( GL_NORMAL_ARRAY );
-		glDisableClientState( GL_COLOR_ARRAY );
-		glBindBuffer( GL_ARRAY_BUFFER, 0 );
+		mapv_setup_lit_shader( 1.0f );
+		vbo_batch_draw( &mapv_solid_batch );
+		mapv_teardown_lit_shader( );
 	}
 	else if (picking_mode) {
+		/* Pick mode: still use legacy drawing */
 		mapv_draw_recursive( globals.fstree, MAPV_DRAW_GEOMETRY, 0.0 );
 	}
 
 	if (high_detail) {
-		/* DEBUG: outlines via legacy for now */
-		outline_pre( );
-		drawing_outlines = TRUE;
-		mapv_draw_recursive( globals.fstree, MAPV_DRAW_GEOMETRY, 0.0 );
-		drawing_outlines = FALSE;
-		outline_post( );
+		/* "Cel lines" — edge outlines with ambient-only lighting */
+		if (!picking_mode && mapv_outline_batch.vertex_count > 0) {
+			glDisable( GL_CULL_FACE );
+
+			mapv_setup_lit_shader( 0.0f );
+			vbo_batch_draw_lines( &mapv_outline_batch );
+			mapv_teardown_lit_shader( );
+
+			glEnable( GL_CULL_FACE );
+		}
 
 		/* Node name labels */
 		text_pre( );
