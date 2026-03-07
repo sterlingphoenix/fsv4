@@ -1726,8 +1726,6 @@ mapv_rebuild_batch( void )
 	                      globals.fstree, 0.0, 1.0 );
 	vbo_batch_upload( &mapv_solid_batch );
 	vbo_batch_upload( &mapv_outline_batch );
-	g_message( "MapV batch rebuilt: %d solid verts, %d outline verts",
-	           mapv_solid_batch.vertex_count, mapv_outline_batch.vertex_count );
 }
 
 
@@ -1789,6 +1787,42 @@ mapv_teardown_lit_shader( void )
 }
 
 
+/* Sets up the pick shader with current GL matrices */
+static void
+mapv_setup_pick_shader( void )
+{
+	float mv[16], proj[16];
+	float mvp[16];
+	int i, j, k;
+
+	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
+	glGetFloatv( GL_PROJECTION_MATRIX, proj );
+
+	/* Compute MVP = proj * mv (column-major) */
+	for (j = 0; j < 4; j++) {
+		for (i = 0; i < 4; i++) {
+			float sum = 0.0f;
+			for (k = 0; k < 4; k++)
+				sum += proj[i + k * 4] * mv[k + j * 4];
+			mvp[i + j * 4] = sum;
+		}
+	}
+
+	shader_program_use( &pick_shader );
+	glUniformMatrix4fv(
+		shader_program_get_uniform( &pick_shader, "u_mvp" ),
+		1, GL_FALSE, mvp );
+}
+
+
+/* Tears down the pick shader */
+static void
+mapv_teardown_pick_shader( void )
+{
+	shader_program_unuse( );
+}
+
+
 /* Draws MapV geometry */
 static void
 mapv_draw( boolean high_detail )
@@ -1798,18 +1832,17 @@ mapv_draw( boolean high_detail )
 	/* Rebuild VBO batch if geometry changed */
 	mapv_rebuild_batch( );
 
-	/* Rebuild VBO batch if geometry changed */
-	mapv_rebuild_batch( );
-
-	/* Draw solid geometry from VBO batch using lit shader */
-	if (!picking_mode && mapv_solid_batch.vertex_count > 0) {
-		mapv_setup_lit_shader( 1.0f );
+	/* Draw solid geometry from VBO batch */
+	if (mapv_solid_batch.vertex_count > 0) {
+		if (picking_mode)
+			mapv_setup_pick_shader( );
+		else
+			mapv_setup_lit_shader( 1.0f );
 		vbo_batch_draw( &mapv_solid_batch );
-		mapv_teardown_lit_shader( );
-	}
-	else if (picking_mode) {
-		/* Pick mode: still use legacy drawing */
-		mapv_draw_recursive( globals.fstree, MAPV_DRAW_GEOMETRY, 0.0 );
+		if (picking_mode)
+			mapv_teardown_pick_shader( );
+		else
+			mapv_teardown_lit_shader( );
 	}
 
 	if (high_detail) {

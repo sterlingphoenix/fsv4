@@ -106,15 +106,15 @@ Step 2.2 - MapV solid geometry rendering
       Colours, lighting, and depth sorting match the legacy rendering.
 
 Step 2.3 - MapV wireframe outline rendering
-  [ ] Replace MapV's outline pass (second tree walk in GL_LINE mode)
+  [x] Replace MapV's outline pass (second tree walk in GL_LINE mode)
       with a draw of the same VBO using glPolygonMode(GL_LINE) or a
       separate edge VBO
-  [ ] Verify: MapV outlines render correctly
+  [x] Verify: MapV outlines render correctly
 
 Step 2.4 - MapV label rendering
-  [ ] Convert MapV label rendering to work with the modern pipeline
-  [ ] tmaptext.c may need updates to use shaders for textured quads
-  [ ] Verify: MapV labels render correctly
+  [x] Convert MapV label rendering to work with the modern pipeline
+  [x] tmaptext.c may need updates to use shaders for textured quads
+  [x] Verify: MapV labels render correctly
 
 Step 2.5 - MapV pick rendering
   [ ] Replace MapV's pick rendering with a draw of the VBO using the
