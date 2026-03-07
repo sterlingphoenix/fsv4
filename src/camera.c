@@ -1479,7 +1479,7 @@ camera_pan( double dx, double dy )
 		case FSV_DISCV:
 		/* 2D top-down: pan target in XY plane */
 		DISCV_CAMERA(camera)->target.x += dx * scale;
-		DISCV_CAMERA(camera)->target.y -= dy * scale;
+		DISCV_CAMERA(camera)->target.y += dy * scale;
 		break;
 
 		case FSV_MAPV:
