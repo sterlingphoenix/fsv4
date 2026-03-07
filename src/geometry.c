@@ -3317,21 +3317,6 @@ treev_rebuild_batch( void )
 	                       globals.fstree, NIL, treev_core_radius, 0.0 );
 	vbo_batch_upload( &treev_solid_batch );
 	vbo_batch_upload( &treev_branch_batch );
-
-	/* Debug: log batch stats */
-	{
-		int i;
-		float zmin = 1e30f, zmax = -1e30f;
-		for (i = 0; i < treev_solid_batch.build_count; i++) {
-			float z = treev_solid_batch.vertices[i].position[2];
-			if (z < zmin) zmin = z;
-			if (z > zmax) zmax = z;
-		}
-		g_message("TreeV batch rebuilt: %d solid verts, %d branch verts, z=[%.1f, %.1f]",
-		          treev_solid_batch.build_count,
-		          treev_branch_batch.build_count,
-		          zmin, zmax);
-	}
 }
 
 

@@ -3,4 +3,4 @@
 * DiscV expand/collapse animations should be faster.
 * since MapV is the default, it should be the first option in the visualisation menu
 * In TreeV, initial block is very high which leads to the top "vanishing".
-
+* In TreeV, text often blinks and is partially visible.

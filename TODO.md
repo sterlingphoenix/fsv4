@@ -180,25 +180,25 @@ Step 4.1 - TreeV geometry to vertex batches
   [x] Verify: builds cleanly
 
 Step 4.2 - TreeV solid geometry and branch rendering
-  [ ] Replace TreeV display list drawing with VBO draw calls
-  [ ] Branches may use a separate batch or be included in the main one
-  [ ] Verify: TreeV renders correctly (platforms, leaves, branches)
+  [x] Replace TreeV display list drawing with VBO draw calls
+  [x] Branches may use a separate batch or be included in the main one
+  [x] Verify: TreeV renders correctly (platforms, leaves, branches)
 
 Step 4.3 - TreeV wireframe outline rendering
-  [ ] Replace TreeV outline pass with modern GL equivalent
-  [ ] Verify: TreeV outlines render correctly
+  [x] Replace TreeV outline pass with modern GL equivalent
+  [x] Verify: TreeV outlines render correctly
 
 Step 4.4 - TreeV label rendering
-  [ ] Convert TreeV label rendering to the modern pipeline
-  [ ] Verify: TreeV labels render correctly
+  [x] Convert TreeV label rendering to the modern pipeline
+  [x] Verify: TreeV labels render correctly
 
 Step 4.5 - TreeV pick rendering
-  [ ] Replace TreeV pick rendering with VBO-based pick
-  [ ] Verify: node selection works correctly in TreeV
+  [x] Replace TreeV pick rendering with VBO-based pick
+  [x] Verify: node selection works correctly in TreeV
 
 Step 4.6 - TreeV animation and interaction
-  [ ] Verify expand/collapse, treev_arrange, zoom, orbit, keyboard pan
-  [ ] Verify: TreeV is fully functional
+  [x] Verify expand/collapse, treev_arrange, zoom, orbit, keyboard pan
+  [x] Verify: TreeV is fully functional
 
   Checkpoint: User tests TreeV thoroughly. All three modes now use
   modern GL.
