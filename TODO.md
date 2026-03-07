@@ -117,9 +117,9 @@ Step 2.4 - MapV label rendering
   [x] Verify: MapV labels render correctly
 
 Step 2.5 - MapV pick rendering
-  [ ] Replace MapV's pick rendering with a draw of the VBO using the
+  [x] Replace MapV's pick rendering with a draw of the VBO using the
       pick shader (node_id as colour output, no lighting)
-  [ ] Verify: hovering and clicking correctly identifies nodes in MapV
+  [x] Verify: hovering and clicking correctly identifies nodes in MapV
 
 Step 2.6 - MapV animation integration
   [ ] Verify that expand/collapse animations work correctly:

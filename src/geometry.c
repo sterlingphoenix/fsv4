@@ -3733,6 +3733,12 @@ geometry_colexp_in_progress( GNode *dnode )
         else
 		queue_uncached_draw( );
 
+	/* Deployment changed — VBO batches have stale z_scale values */
+	if (globals.fsv_mode == FSV_MAPV && mapv_batch_initialized) {
+		vbo_batch_invalidate( &mapv_solid_batch );
+		vbo_batch_invalidate( &mapv_outline_batch );
+	}
+
 	if (globals.fsv_mode == FSV_TREEV) {
 		/* Take care of shifting angles */
 		treev_queue_rearrange( dnode );
