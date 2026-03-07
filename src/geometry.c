@@ -788,8 +788,9 @@ static double mapv_leaf_height = 128.0;
 static XYZvec mapv_cursor_prev_c0;
 static XYZvec mapv_cursor_prev_c1;
 
-/* VBO batch for MapV solid geometry */
+/* VBO batches for MapV geometry */
 static VBOBatch mapv_solid_batch;
+static VBOBatch mapv_outline_batch;
 static boolean mapv_batch_initialized = FALSE;
 
 
@@ -1597,11 +1598,70 @@ mapv_batch_node( VBOBatch *batch, GNode *node,
 }
 
 
-/* Recursively walks the MapV tree and batches all visible solid geometry.
+/* Emits line segments for the outer edges of a MapV node (for outline
+ * rendering). Same coordinate logic as mapv_batch_node. */
+static void
+mapv_batch_node_edges( VBOBatch *batch, GNode *node,
+                       double z_offset, double z_scale )
+{
+	MapVGeomParams *gp = MAPV_GEOM_PARAMS(node);
+	double dims_x, dims_y, h_local, h_world, ox, oy, k;
+	float r, g, b;
+	unsigned int nid = NODE_DESC(node)->id;
+
+	float x0 = (float)gp->c0.x, y0 = (float)gp->c0.y;
+	float x1 = (float)gp->c1.x, y1 = (float)gp->c1.y;
+	float zb = (float)z_offset;
+
+	dims_x = gp->c1.x - gp->c0.x;
+	dims_y = gp->c1.y - gp->c0.y;
+	h_local = gp->height;
+	h_world = h_local * z_scale;
+	float zt = (float)(z_offset + h_world);
+
+	k = mapv_side_slant_ratios[NODE_DESC(node)->type];
+	ox = MIN(h_local, k * dims_x);
+	oy = MIN(h_local, k * dims_y);
+	float fox = (float)(ox * z_scale);
+	float foy = (float)(oy * z_scale);
+
+	r = NODE_DESC(node)->color->r;
+	g = NODE_DESC(node)->color->g;
+	b = NODE_DESC(node)->color->b;
+
+	/* Normals not meaningful for lines; use (0,0,1) */
+	#define EDGE(ax,ay,az, bx,by,bz) \
+		vbo_batch_add_vertex(batch, ax,ay,az, 0,0,1, r,g,b, nid); \
+		vbo_batch_add_vertex(batch, bx,by,bz, 0,0,1, r,g,b, nid)
+
+	/* Base edges */
+	EDGE(x0,y0,zb, x1,y0,zb);
+	EDGE(x1,y0,zb, x1,y1,zb);
+	EDGE(x1,y1,zb, x0,y1,zb);
+	EDGE(x0,y1,zb, x0,y0,zb);
+
+	/* Top edges */
+	EDGE(x0+fox,y0+foy,zt, x1-fox,y0+foy,zt);
+	EDGE(x1-fox,y0+foy,zt, x1-fox,y1-foy,zt);
+	EDGE(x1-fox,y1-foy,zt, x0+fox,y1-foy,zt);
+	EDGE(x0+fox,y1-foy,zt, x0+fox,y0+foy,zt);
+
+	/* Vertical (slanted) edges */
+	EDGE(x0,y0,zb, x0+fox,y0+foy,zt);
+	EDGE(x1,y0,zb, x1-fox,y0+foy,zt);
+	EDGE(x1,y1,zb, x1-fox,y1-foy,zt);
+	EDGE(x0,y1,zb, x0+fox,y1-foy,zt);
+
+	#undef EDGE
+}
+
+
+/* Recursively walks the MapV tree and batches all visible geometry.
+ * Fills both the solid triangle batch and the outline edge batch.
  * z_offset: world-space Z of this level's base.
  * z_scale: cumulative Z scale from ancestor deployments. */
 static void
-mapv_batch_recursive( VBOBatch *batch, GNode *dnode,
+mapv_batch_recursive( VBOBatch *solid, VBOBatch *outline, GNode *dnode,
                       double z_offset, double z_scale )
 {
 	DirNodeDesc *dir_ndesc;
@@ -1614,23 +1674,6 @@ mapv_batch_recursive( VBOBatch *batch, GNode *dnode,
 
 	gparams = MAPV_GEOM_PARAMS(dnode);
 	node_z = z_offset + gparams->height * z_scale;
-
-	/* Frustum + size culling */
-	if (NODE_IS_DIR(dnode)) {
-		double half_w = 0.5 * (gparams->c1.x - gparams->c0.x);
-		double half_d = 0.5 * (gparams->c1.y - gparams->c0.y);
-		double half_size = MAX(half_w, half_d);
-		double cx = gparams->c0.x + half_w;
-		double cy = gparams->c0.y + half_d;
-
-		if (half_size > 0.0 &&
-		    screen_size_pixels( cx, cy, node_z, half_size ) < CULL_SIZE_THRESHOLD)
-			return;
-
-		if (!frustum_test_aabb( gparams->c0.x, gparams->c0.y, z_offset - 1.0,
-		                        gparams->c1.x, gparams->c1.y, z_offset + 1e9 ))
-			return;
-	}
 
 	dir_ndesc = DIR_NODE_DESC(dnode);
 	dir_collapsed = DIR_COLLAPSED(dnode);
@@ -1647,7 +1690,8 @@ mapv_batch_recursive( VBOBatch *batch, GNode *dnode,
 		/* Batch children */
 		node = dnode->children;
 		while (node != NULL) {
-			mapv_batch_node( batch, node, node_z, child_z_scale );
+			mapv_batch_node( solid, node, node_z, child_z_scale );
+			mapv_batch_node_edges( outline, node, node_z, child_z_scale );
 			node = node->next;
 		}
 
@@ -1656,19 +1700,20 @@ mapv_batch_recursive( VBOBatch *batch, GNode *dnode,
 		while (node != NULL) {
 			if (!NODE_IS_DIR(node))
 				break;
-			mapv_batch_recursive( batch, node, node_z, child_z_scale );
+			mapv_batch_recursive( solid, outline, node, node_z, child_z_scale );
 			node = node->next;
 		}
 	}
 }
 
 
-/* Rebuilds the MapV solid geometry VBO batch if needed */
+/* Rebuilds the MapV VBO batches if needed */
 static void
 mapv_rebuild_batch( void )
 {
 	if (!mapv_batch_initialized) {
 		vbo_batch_init( &mapv_solid_batch );
+		vbo_batch_init( &mapv_outline_batch );
 		mapv_batch_initialized = TRUE;
 	}
 
@@ -1676,8 +1721,105 @@ mapv_rebuild_batch( void )
 		return;
 
 	vbo_batch_begin( &mapv_solid_batch );
-	mapv_batch_recursive( &mapv_solid_batch, globals.fstree, 0.0, 1.0 );
+	vbo_batch_begin( &mapv_outline_batch );
+	mapv_batch_recursive( &mapv_solid_batch, &mapv_outline_batch,
+	                      globals.fstree, 0.0, 1.0 );
 	vbo_batch_upload( &mapv_solid_batch );
+	vbo_batch_upload( &mapv_outline_batch );
+}
+
+
+/* Sets up the lit shader with current GL matrices.
+ * diffuse_scale: 1.0 = normal lit, 0.0 = ambient only (outlines). */
+static void
+mapv_setup_lit_shader( float diffuse_scale )
+{
+	float mv[16], proj[16];
+	float mvp[16];
+	float norm[9];
+	int i, j, k;
+
+	/* Read current GL matrices (set up by ogl.c) */
+	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
+	glGetFloatv( GL_PROJECTION_MATRIX, proj );
+
+	/* Compute MVP = proj * mv (column-major) */
+	for (j = 0; j < 4; j++) {
+		for (i = 0; i < 4; i++) {
+			float sum = 0.0f;
+			for (k = 0; k < 4; k++)
+				sum += proj[i + k * 4] * mv[k + j * 4];
+			mvp[i + j * 4] = sum;
+		}
+	}
+
+	/* Compute normal matrix = transpose(inverse(upper-left 3x3 of mv)).
+	 * For orthogonal modelview (no non-uniform scale), this equals the
+	 * upper-left 3x3 of mv itself. Use that as a simpler, robust path. */
+	for (i = 0; i < 3; i++)
+		for (j = 0; j < 3; j++)
+			norm[i + j * 3] = mv[i + j * 4];
+
+	glDisable( GL_LIGHTING );
+
+	shader_program_use( &lit_shader );
+	glUniformMatrix4fv(
+		shader_program_get_uniform( &lit_shader, "u_mvp" ),
+		1, GL_FALSE, mvp );
+	glUniformMatrix4fv(
+		shader_program_get_uniform( &lit_shader, "u_modelview" ),
+		1, GL_FALSE, mv );
+	glUniformMatrix3fv(
+		shader_program_get_uniform( &lit_shader, "u_normal_matrix" ),
+		1, GL_FALSE, norm );
+	glUniform1f(
+		shader_program_get_uniform( &lit_shader, "u_diffuse_scale" ),
+		diffuse_scale );
+}
+
+
+/* Tears down the lit shader and restores legacy state */
+static void
+mapv_teardown_lit_shader( void )
+{
+	shader_program_unuse( );
+	glEnable( GL_LIGHTING );
+}
+
+
+/* Sets up the pick shader with current GL matrices */
+static void
+mapv_setup_pick_shader( void )
+{
+	float mv[16], proj[16];
+	float mvp[16];
+	int i, j, k;
+
+	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
+	glGetFloatv( GL_PROJECTION_MATRIX, proj );
+
+	/* Compute MVP = proj * mv (column-major) */
+	for (j = 0; j < 4; j++) {
+		for (i = 0; i < 4; i++) {
+			float sum = 0.0f;
+			for (k = 0; k < 4; k++)
+				sum += proj[i + k * 4] * mv[k + j * 4];
+			mvp[i + j * 4] = sum;
+		}
+	}
+
+	shader_program_use( &pick_shader );
+	glUniformMatrix4fv(
+		shader_program_get_uniform( &pick_shader, "u_mvp" ),
+		1, GL_FALSE, mvp );
+}
+
+
+/* Tears down the pick shader */
+static void
+mapv_teardown_pick_shader( void )
+{
+	shader_program_unuse( );
 }
 
 
@@ -1690,59 +1832,30 @@ mapv_draw( boolean high_detail )
 	/* Rebuild VBO batch if geometry changed */
 	mapv_rebuild_batch( );
 
-	/* Draw solid geometry from VBO batch using lit shader */
-	if (!picking_mode && mapv_solid_batch.vertex_count > 0) {
-		float mv[16], proj[16];
-		mat4 mvp;
-		mat3 norm;
-
-		/* Read current GL matrices (set up by ogl.c) */
-		glGetFloatv( GL_MODELVIEW_MATRIX, mv );
-		glGetFloatv( GL_PROJECTION_MATRIX, proj );
-
-		/* Compute MVP and normal matrix */
-		glm_mat4_mul( (vec4 *)proj, (vec4 *)mv, mvp );
-		{
-			mat4 inv;
-			glm_mat4_inv( (vec4 *)mv, inv );
-			for (int i = 0; i < 3; i++)
-				for (int j = 0; j < 3; j++)
-					norm[i][j] = inv[j][i];
-		}
-
-		/* Disable legacy fixed-function state that conflicts */
-		glDisable( GL_LIGHTING );
-
-		shader_program_use( &lit_shader );
-		glUniformMatrix4fv(
-			shader_program_get_uniform( &lit_shader, "u_mvp" ),
-			1, GL_FALSE, (const float *)mvp );
-		glUniformMatrix4fv(
-			shader_program_get_uniform( &lit_shader, "u_modelview" ),
-			1, GL_FALSE, mv );
-		glUniformMatrix3fv(
-			shader_program_get_uniform( &lit_shader, "u_normal_matrix" ),
-			1, GL_FALSE, (const float *)norm );
-
+	/* Draw solid geometry from VBO batch */
+	if (mapv_solid_batch.vertex_count > 0) {
+		if (picking_mode)
+			mapv_setup_pick_shader( );
+		else
+			mapv_setup_lit_shader( 1.0f );
 		vbo_batch_draw( &mapv_solid_batch );
-
-		shader_program_unuse( );
-
-		/* Re-enable legacy state for subsequent passes */
-		glEnable( GL_LIGHTING );
-	}
-	else if (picking_mode) {
-		/* Pick mode: still use legacy drawing */
-		mapv_draw_recursive( globals.fstree, MAPV_DRAW_GEOMETRY, 0.0 );
+		if (picking_mode)
+			mapv_teardown_pick_shader( );
+		else
+			mapv_teardown_lit_shader( );
 	}
 
 	if (high_detail) {
-		/* "Cel lines" — skip outlines on small/distant subtrees */
-		outline_pre( );
-		drawing_outlines = TRUE;
-		mapv_draw_recursive( globals.fstree, MAPV_DRAW_GEOMETRY, 0.0 );
-		drawing_outlines = FALSE;
-		outline_post( );
+		/* "Cel lines" — edge outlines with ambient-only lighting */
+		if (!picking_mode && mapv_outline_batch.vertex_count > 0) {
+			glDisable( GL_CULL_FACE );
+
+			mapv_setup_lit_shader( 0.0f );
+			vbo_batch_draw_lines( &mapv_outline_batch );
+			mapv_teardown_lit_shader( );
+
+			glEnable( GL_CULL_FACE );
+		}
 
 		/* Node name labels */
 		text_pre( );
@@ -3320,9 +3433,11 @@ geometry_queue_rebuild( GNode *dnode )
 	DIR_NODE_DESC(dnode)->b_dlist_stale = TRUE;
 	DIR_NODE_DESC(dnode)->c_dlist_stale = TRUE;
 
-	/* Invalidate MapV VBO batch */
-	if (globals.fsv_mode == FSV_MAPV && mapv_batch_initialized)
+	/* Invalidate MapV VBO batches */
+	if (globals.fsv_mode == FSV_MAPV && mapv_batch_initialized) {
 		vbo_batch_invalidate( &mapv_solid_batch );
+		vbo_batch_invalidate( &mapv_outline_batch );
+	}
 
 	queue_uncached_draw( );
 }
@@ -3617,6 +3732,12 @@ geometry_colexp_in_progress( GNode *dnode )
 		geometry_queue_rebuild( dnode );
         else
 		queue_uncached_draw( );
+
+	/* Deployment changed — VBO batches have stale z_scale values */
+	if (globals.fsv_mode == FSV_MAPV && mapv_batch_initialized) {
+		vbo_batch_invalidate( &mapv_solid_batch );
+		vbo_batch_invalidate( &mapv_outline_batch );
+	}
 
 	if (globals.fsv_mode == FSV_TREEV) {
 		/* Take care of shifting angles */
