@@ -1790,11 +1790,33 @@ mapv_draw( boolean high_detail )
 	/* Rebuild VBO batch if geometry changed */
 	mapv_rebuild_batch( );
 
-	/* Draw low-detail geometry (culled tree walk) */
-	mapv_draw_recursive( globals.fstree, MAPV_DRAW_GEOMETRY, 0.0 );
+	/* Rebuild VBO batch if geometry changed */
+	mapv_rebuild_batch( );
+
+	/* DEBUG: Draw VBO with fixed-function pipeline to test vertex data */
+	if (!picking_mode && mapv_solid_batch.vertex_count > 0) {
+		glBindBuffer( GL_ARRAY_BUFFER, mapv_solid_batch.vbo );
+		glEnableClientState( GL_VERTEX_ARRAY );
+		glVertexPointer( 3, GL_FLOAT, sizeof(VBOVertex),
+		                 (void *)offsetof(VBOVertex, position) );
+		glEnableClientState( GL_NORMAL_ARRAY );
+		glNormalPointer( GL_FLOAT, sizeof(VBOVertex),
+		                 (void *)offsetof(VBOVertex, normal) );
+		glEnableClientState( GL_COLOR_ARRAY );
+		glColorPointer( 3, GL_FLOAT, sizeof(VBOVertex),
+		                (void *)offsetof(VBOVertex, color) );
+		glDrawArrays( GL_TRIANGLES, 0, mapv_solid_batch.vertex_count );
+		glDisableClientState( GL_VERTEX_ARRAY );
+		glDisableClientState( GL_NORMAL_ARRAY );
+		glDisableClientState( GL_COLOR_ARRAY );
+		glBindBuffer( GL_ARRAY_BUFFER, 0 );
+	}
+	else if (picking_mode) {
+		mapv_draw_recursive( globals.fstree, MAPV_DRAW_GEOMETRY, 0.0 );
+	}
 
 	if (high_detail) {
-		/* "Cel lines" — skip outlines on small/distant subtrees */
+		/* DEBUG: outlines via legacy for now */
 		outline_pre( );
 		drawing_outlines = TRUE;
 		mapv_draw_recursive( globals.fstree, MAPV_DRAW_GEOMETRY, 0.0 );
