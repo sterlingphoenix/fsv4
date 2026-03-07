@@ -2107,6 +2107,11 @@ static double treev_core_radius;
 static RTZvec treev_cursor_prev_c0;
 static RTZvec treev_cursor_prev_c1;
 
+/* VBO batches for TreeV */
+static VBOBatch treev_solid_batch;
+static VBOBatch treev_branch_batch;
+static boolean treev_batch_initialized = FALSE;
+
 
 /* Checks if a node is currently a leaf (i.e. a collapsed directory or some
  * other node), or not (an expanded directory) according to the directory
@@ -2575,6 +2580,828 @@ treev_camera_pan_finished( void )
 {
 	/* Save cursor position */
 	treev_get_corners( globals.current_node, &treev_cursor_prev_c0, &treev_cursor_prev_c1 );
+}
+
+
+/* Rotate a local-space (x,y) point by acc_theta degrees into world XY */
+static void
+treev_rotate_point( double lx, double ly, double acc_theta,
+                    double *wx, double *wy )
+{
+	double s = sin( RAD(acc_theta) );
+	double c = cos( RAD(acc_theta) );
+	*wx = lx * c - ly * s;
+	*wy = lx * s + ly * c;
+}
+
+
+/* Batch a platform's solid geometry into the VBO.
+ * r0: inner radius, acc_theta: accumulated world rotation.
+ * The platform is drawn in the coordinate frame already rotated by
+ * acc_theta, so all inner/outer edge points are local and must be
+ * rotated to world space. */
+static void
+treev_batch_platform( VBOBatch *batch, GNode *dnode, double r0,
+                      double acc_theta )
+{
+	XYvec p0, p1;
+	XYvec delta;
+	double r1, seg_arc_width;
+	double theta, sin_theta, cos_theta;
+	double z1;
+	float cr, cg, cb;
+	float tr, tg, tb;
+	unsigned int nid;
+	int s, seg_count;
+
+	r1 = r0 + TREEV_GEOM_PARAMS(dnode)->platform.depth;
+	seg_count = (int)ceil( TREEV_GEOM_PARAMS(dnode)->platform.arc_width / TREEV_CURVE_GRANULARITY );
+	seg_arc_width = TREEV_GEOM_PARAMS(dnode)->platform.arc_width / (double)seg_count;
+
+	/* Calculate inner/outer edge vertices (local coords) */
+	theta = -0.5 * TREEV_GEOM_PARAMS(dnode)->platform.arc_width;
+	for (s = 0; s <= seg_count; s++) {
+		sin_theta = sin( RAD(theta) );
+		cos_theta = cos( RAD(theta) );
+		p0.x = r0 * cos_theta;
+		p0.y = r0 * sin_theta;
+		p1.x = r1 * cos_theta;
+		p1.y = r1 * sin_theta;
+		if (s == 0) {
+			delta.x = - sin_theta * (0.5 * TREEV_PLATFORM_SPACING_WIDTH);
+			delta.y = cos_theta * (0.5 * TREEV_PLATFORM_SPACING_WIDTH);
+			p0.x += delta.x; p0.y += delta.y;
+			p1.x += delta.x; p1.y += delta.y;
+		}
+		else if (s == seg_count) {
+			delta.x = sin_theta * (0.5 * TREEV_PLATFORM_SPACING_WIDTH);
+			delta.y = - cos_theta * (0.5 * TREEV_PLATFORM_SPACING_WIDTH);
+			p0.x += delta.x; p0.y += delta.y;
+			p1.x += delta.x; p1.y += delta.y;
+		}
+		inner_edge_buf[s].x = p0.x;
+		inner_edge_buf[s].y = p0.y;
+		outer_edge_buf[s].x = p1.x;
+		outer_edge_buf[s].y = p1.y;
+		theta += seg_arc_width;
+	}
+
+	z1 = TREEV_GEOM_PARAMS(dnode)->platform.height;
+	nid = NODE_DESC(dnode)->id;
+
+	/* Side faces use the node's base color */
+	cr = NODE_DESC(dnode)->color->r;
+	cg = NODE_DESC(dnode)->color->g;
+	cb = NODE_DESC(dnode)->color->b;
+	/* Top face: use same color (face=1 in pick, but VBO uses same color;
+	 * top face ID is encoded via node_id with high bits) */
+	tr = cr; tg = cg; tb = cb;
+
+	/* Inner edge: quads converted to triangles */
+	{
+		double s_t = sin( RAD(acc_theta) );
+		double c_t = cos( RAD(acc_theta) );
+		for (s = 0; s < seg_count; s++) {
+			double lx0 = inner_edge_buf[s].x;
+			double ly0 = inner_edge_buf[s].y;
+			double lx1 = inner_edge_buf[s + 1].x;
+			double ly1 = inner_edge_buf[s + 1].y;
+			double wx0, wy0, wx1, wy1;
+			float lnx0, lny0, lnx1, lny1;
+			float wnx0, wny0, wnx1, wny1;
+
+			treev_rotate_point( lx0, ly0, acc_theta, &wx0, &wy0 );
+			treev_rotate_point( lx1, ly1, acc_theta, &wx1, &wy1 );
+
+			/* Local normals (inward-facing for inner edge) */
+			lnx0 = (float)(-lx0 / r0); lny0 = (float)(-ly0 / r0);
+			lnx1 = (float)(-lx1 / r0); lny1 = (float)(-ly1 / r0);
+			{ float len = sqrtf(lnx0*lnx0+lny0*lny0); if(len>0){lnx0/=len;lny0/=len;} }
+			{ float len = sqrtf(lnx1*lnx1+lny1*lny1); if(len>0){lnx1/=len;lny1/=len;} }
+
+			/* Rotate normals to world space */
+			wnx0 = (float)(lnx0 * c_t - lny0 * s_t);
+			wny0 = (float)(lnx0 * s_t + lny0 * c_t);
+			wnx1 = (float)(lnx1 * c_t - lny1 * s_t);
+			wny1 = (float)(lnx1 * s_t + lny1 * c_t);
+
+			/* Two triangles for the quad */
+			vbo_batch_add_vertex(batch, wx0,wy0,0,   wnx0,wny0,0, cr,cg,cb, nid);
+			vbo_batch_add_vertex(batch, wx0,wy0,z1,  wnx0,wny0,0, cr,cg,cb, nid);
+			vbo_batch_add_vertex(batch, wx1,wy1,z1,  wnx1,wny1,0, cr,cg,cb, nid);
+
+			vbo_batch_add_vertex(batch, wx0,wy0,0,   wnx0,wny0,0, cr,cg,cb, nid);
+			vbo_batch_add_vertex(batch, wx1,wy1,z1,  wnx1,wny1,0, cr,cg,cb, nid);
+			vbo_batch_add_vertex(batch, wx1,wy1,0,   wnx1,wny1,0, cr,cg,cb, nid);
+		}
+	}
+
+	/* Outer edge: quads converted to triangles (reverse winding) */
+	for (s = seg_count; s > 0; s--) {
+		double lx0 = outer_edge_buf[s].x;
+		double ly0 = outer_edge_buf[s].y;
+		double lx1 = outer_edge_buf[s - 1].x;
+		double ly1 = outer_edge_buf[s - 1].y;
+		double wx0, wy0, wx1, wy1;
+		float nx0, ny0, nx1, ny1;
+
+		treev_rotate_point( lx0, ly0, acc_theta, &wx0, &wy0 );
+		treev_rotate_point( lx1, ly1, acc_theta, &wx1, &wy1 );
+
+		/* Outward-facing normals (note: negated because outer edge faces outward
+		 * but the original code uses -p/r which points inward for outer edge;
+		 * actually the original code does glNormal3d(-p1.x/r1, -p1.y/r1, 0) which
+		 * for outer edge points INWARD. Let's match the original.) */
+		nx0 = (float)(-lx0 / r1); ny0 = (float)(-ly0 / r1);
+		nx1 = (float)(-lx1 / r1); ny1 = (float)(-ly1 / r1);
+		{ float len = sqrtf(nx0*nx0+ny0*ny0); if(len>0){nx0/=len;ny0/=len;} }
+		{ float len = sqrtf(nx1*nx1+ny1*ny1); if(len>0){nx1/=len;ny1/=len;} }
+
+		/* Rotate normals to world space too */
+		float wnx0, wny0, wnx1, wny1;
+		{
+			double s_t = sin( RAD(acc_theta) );
+			double c_t = cos( RAD(acc_theta) );
+			wnx0 = (float)(nx0 * c_t - ny0 * s_t);
+			wny0 = (float)(nx0 * s_t + ny0 * c_t);
+			wnx1 = (float)(nx1 * c_t - ny1 * s_t);
+			wny1 = (float)(nx1 * s_t + ny1 * c_t);
+		}
+
+		vbo_batch_add_vertex(batch, wx0,wy0,0,   wnx0,wny0,0, cr,cg,cb, nid);
+		vbo_batch_add_vertex(batch, wx0,wy0,z1,  wnx0,wny0,0, cr,cg,cb, nid);
+		vbo_batch_add_vertex(batch, wx1,wy1,z1,  wnx1,wny1,0, cr,cg,cb, nid);
+
+		vbo_batch_add_vertex(batch, wx0,wy0,0,   wnx0,wny0,0, cr,cg,cb, nid);
+		vbo_batch_add_vertex(batch, wx1,wy1,z1,  wnx1,wny1,0, cr,cg,cb, nid);
+		vbo_batch_add_vertex(batch, wx1,wy1,0,   wnx1,wny1,0, cr,cg,cb, nid);
+	}
+
+	/* Leading edge face */
+	{
+		double lx0 = inner_edge_buf[0].x, ly0 = inner_edge_buf[0].y;
+		double lx1 = outer_edge_buf[0].x, ly1 = outer_edge_buf[0].y;
+		double wx0, wy0, wx1, wy1;
+		float nx, ny;
+
+		treev_rotate_point( lx0, ly0, acc_theta, &wx0, &wy0 );
+		treev_rotate_point( lx1, ly1, acc_theta, &wx1, &wy1 );
+
+		/* Normal in local space, then rotate */
+		{
+			double lnx = ly0 / r0, lny = -lx0 / r0;
+			double s_t = sin( RAD(acc_theta) );
+			double c_t = cos( RAD(acc_theta) );
+			nx = (float)(lnx * c_t - lny * s_t);
+			ny = (float)(lnx * s_t + lny * c_t);
+		}
+
+		vbo_batch_add_vertex(batch, wx0,wy0,0,   nx,ny,0, cr,cg,cb, nid);
+		vbo_batch_add_vertex(batch, wx1,wy1,0,   nx,ny,0, cr,cg,cb, nid);
+		vbo_batch_add_vertex(batch, wx1,wy1,z1,  nx,ny,0, cr,cg,cb, nid);
+
+		vbo_batch_add_vertex(batch, wx0,wy0,0,   nx,ny,0, cr,cg,cb, nid);
+		vbo_batch_add_vertex(batch, wx1,wy1,z1,  nx,ny,0, cr,cg,cb, nid);
+		vbo_batch_add_vertex(batch, wx0,wy0,z1,  nx,ny,0, cr,cg,cb, nid);
+	}
+
+	/* Trailing edge face */
+	{
+		double lx0 = inner_edge_buf[seg_count].x, ly0 = inner_edge_buf[seg_count].y;
+		double lx1 = outer_edge_buf[seg_count].x, ly1 = outer_edge_buf[seg_count].y;
+		double wx0, wy0, wx1, wy1;
+		float nx, ny;
+
+		treev_rotate_point( lx0, ly0, acc_theta, &wx0, &wy0 );
+		treev_rotate_point( lx1, ly1, acc_theta, &wx1, &wy1 );
+
+		{
+			double lnx = -ly0 / r0, lny = lx0 / r0;
+			double s_t = sin( RAD(acc_theta) );
+			double c_t = cos( RAD(acc_theta) );
+			nx = (float)(lnx * c_t - lny * s_t);
+			ny = (float)(lnx * s_t + lny * c_t);
+		}
+
+		vbo_batch_add_vertex(batch, wx0,wy0,z1,  nx,ny,0, cr,cg,cb, nid);
+		vbo_batch_add_vertex(batch, wx1,wy1,z1,  nx,ny,0, cr,cg,cb, nid);
+		vbo_batch_add_vertex(batch, wx1,wy1,0,   nx,ny,0, cr,cg,cb, nid);
+
+		vbo_batch_add_vertex(batch, wx0,wy0,z1,  nx,ny,0, cr,cg,cb, nid);
+		vbo_batch_add_vertex(batch, wx1,wy1,0,   nx,ny,0, cr,cg,cb, nid);
+		vbo_batch_add_vertex(batch, wx0,wy0,0,   nx,ny,0, cr,cg,cb, nid);
+	}
+
+	/* Top face: quads converted to triangles.
+	 * Encode face=1 in node_id for pick (top face detection). */
+	for (s = 0; s < seg_count; s++) {
+		double lix0 = inner_edge_buf[s].x, liy0 = inner_edge_buf[s].y;
+		double lox0 = outer_edge_buf[s].x, loy0 = outer_edge_buf[s].y;
+		double lix1 = inner_edge_buf[s+1].x, liy1 = inner_edge_buf[s+1].y;
+		double lox1 = outer_edge_buf[s+1].x, loy1 = outer_edge_buf[s+1].y;
+		double wix0, wiy0, wox0, woy0, wix1, wiy1, wox1, woy1;
+
+		treev_rotate_point( lix0, liy0, acc_theta, &wix0, &wiy0 );
+		treev_rotate_point( lox0, loy0, acc_theta, &wox0, &woy0 );
+		treev_rotate_point( lix1, liy1, acc_theta, &wix1, &wiy1 );
+		treev_rotate_point( lox1, loy1, acc_theta, &wox1, &woy1 );
+
+		/* Top face node_id: encode face=1 in bits 24-31 */
+		unsigned int top_nid = nid | (1u << 24);
+
+		/* Two triangles for each quad segment */
+		vbo_batch_add_vertex(batch, wix0,wiy0,z1, 0,0,1, tr,tg,tb, top_nid);
+		vbo_batch_add_vertex(batch, wox0,woy0,z1, 0,0,1, tr,tg,tb, top_nid);
+		vbo_batch_add_vertex(batch, wox1,woy1,z1, 0,0,1, tr,tg,tb, top_nid);
+
+		vbo_batch_add_vertex(batch, wix0,wiy0,z1, 0,0,1, tr,tg,tb, top_nid);
+		vbo_batch_add_vertex(batch, wox1,woy1,z1, 0,0,1, tr,tg,tb, top_nid);
+		vbo_batch_add_vertex(batch, wix1,wiy1,z1, 0,0,1, tr,tg,tb, top_nid);
+	}
+}
+
+
+/* Batch a leaf node into the VBO.
+ * r0: inner radius of parent platform.
+ * acc_theta: accumulated world rotation.
+ * full_node: TRUE for full 3D leaf, FALSE for just the top footprint. */
+static void
+treev_batch_leaf( VBOBatch *batch, GNode *node, double r0,
+                  double acc_theta, boolean full_node )
+{
+	XYvec corners[4], p;
+	double z0, z1;
+	double edge, height;
+	double sin_theta, cos_theta;
+	float cr, cg, cb;
+	unsigned int nid;
+	int i;
+
+	if (full_node) {
+		edge = TREEV_LEAF_NODE_EDGE;
+		height = TREEV_GEOM_PARAMS(node)->leaf.height;
+		if (NODE_IS_DIR(node))
+			height *= (1.0 - DIR_NODE_DESC(node)->deployment);
+	}
+	else {
+		edge = (0.875 * TREEV_LEAF_NODE_EDGE);
+		height = (TREEV_LEAF_NODE_EDGE / 64.0);
+	}
+
+	/* Set up corners in local space, centered around (r0+distance, 0) */
+	corners[0].x = r0 + TREEV_GEOM_PARAMS(node)->leaf.distance - 0.5 * edge;
+	corners[0].y = -0.5 * edge;
+	corners[1].x = corners[0].x + edge;
+	corners[1].y = corners[0].y;
+	corners[2].x = corners[1].x;
+	corners[2].y = corners[0].y + edge;
+	corners[3].x = corners[0].x;
+	corners[3].y = corners[2].y;
+
+	z0 = TREEV_GEOM_PARAMS(node->parent)->platform.height;
+	z1 = z0 + height;
+
+	/* Leaf's own local rotation */
+	sin_theta = sin( RAD(TREEV_GEOM_PARAMS(node)->leaf.theta) );
+	cos_theta = cos( RAD(TREEV_GEOM_PARAMS(node)->leaf.theta) );
+
+	/* Rotate corners by leaf theta, then by acc_theta to world space */
+	for (i = 0; i < 4; i++) {
+		double lx, ly;
+		p.x = corners[i].x;
+		p.y = corners[i].y;
+		/* Apply leaf local rotation */
+		lx = p.x * cos_theta - p.y * sin_theta;
+		ly = p.x * sin_theta + p.y * cos_theta;
+		/* Apply world rotation */
+		treev_rotate_point( lx, ly, acc_theta,
+		                    &corners[i].x, &corners[i].y );
+	}
+
+	cr = NODE_DESC(node)->color->r;
+	cg = NODE_DESC(node)->color->g;
+	cb = NODE_DESC(node)->color->b;
+	nid = NODE_DESC(node)->id;
+
+	/* Top face: two triangles */
+	vbo_batch_add_vertex(batch, corners[0].x,corners[0].y,z1, 0,0,1, cr,cg,cb, nid);
+	vbo_batch_add_vertex(batch, corners[1].x,corners[1].y,z1, 0,0,1, cr,cg,cb, nid);
+	vbo_batch_add_vertex(batch, corners[2].x,corners[2].y,z1, 0,0,1, cr,cg,cb, nid);
+
+	vbo_batch_add_vertex(batch, corners[0].x,corners[0].y,z1, 0,0,1, cr,cg,cb, nid);
+	vbo_batch_add_vertex(batch, corners[2].x,corners[2].y,z1, 0,0,1, cr,cg,cb, nid);
+	vbo_batch_add_vertex(batch, corners[3].x,corners[3].y,z1, 0,0,1, cr,cg,cb, nid);
+
+	if (!full_node)
+		return;
+
+	/* Side faces: 4 quads as 8 triangles.
+	 * Normals are rotated by both leaf theta and acc_theta. */
+	{
+		/* Side normals in leaf-local space (before leaf theta rotation) */
+		double side_normals[4][2] = {
+			{ 0.0, -1.0 },   /* front: -Y */
+			{ 1.0, 0.0 },    /* right: +X */
+			{ 0.0, 1.0 },    /* back: +Y */
+			{ -1.0, 0.0 }    /* left: -X */
+		};
+
+		for (i = 0; i < 4; i++) {
+			int j = (i + 1) % 4;
+			double lnx, lny;
+			float wnx, wny;
+
+			/* Rotate normal by leaf theta */
+			lnx = side_normals[i][0] * cos_theta - side_normals[i][1] * sin_theta;
+			lny = side_normals[i][0] * sin_theta + side_normals[i][1] * cos_theta;
+			/* Rotate normal by acc_theta */
+			{
+				double s_t = sin( RAD(acc_theta) );
+				double c_t = cos( RAD(acc_theta) );
+				wnx = (float)(lnx * c_t - lny * s_t);
+				wny = (float)(lnx * s_t + lny * c_t);
+			}
+
+			/* Two triangles for this side quad */
+			vbo_batch_add_vertex(batch,
+				corners[i].x,corners[i].y,z1,
+				wnx,wny,0, cr,cg,cb, nid);
+			vbo_batch_add_vertex(batch,
+				corners[i].x,corners[i].y,z0,
+				wnx,wny,0, cr,cg,cb, nid);
+			vbo_batch_add_vertex(batch,
+				corners[j].x,corners[j].y,z0,
+				wnx,wny,0, cr,cg,cb, nid);
+
+			vbo_batch_add_vertex(batch,
+				corners[i].x,corners[i].y,z1,
+				wnx,wny,0, cr,cg,cb, nid);
+			vbo_batch_add_vertex(batch,
+				corners[j].x,corners[j].y,z0,
+				wnx,wny,0, cr,cg,cb, nid);
+			vbo_batch_add_vertex(batch,
+				corners[j].x,corners[j].y,z1,
+				wnx,wny,0, cr,cg,cb, nid);
+		}
+	}
+}
+
+
+/* Batch the central loop branch around the TreeV center */
+static void
+treev_batch_loop( VBOBatch *batch, double loop_r, unsigned int nid )
+{
+	static const int seg_count = (int)(360.0 / TREEV_CURVE_GRANULARITY + 0.5);
+	double loop_r0, loop_r1;
+	float br = branch_color.r, bg = branch_color.g, bb = branch_color.b;
+	int s;
+
+	loop_r0 = loop_r - (0.5 * TREEV_BRANCH_WIDTH);
+	loop_r1 = loop_r + (0.5 * TREEV_BRANCH_WIDTH);
+
+	/* Quad strip converted to triangles; z=0, normal=(0,0,1) */
+	for (s = 0; s < seg_count; s++) {
+		double t0 = 360.0 * (double)s / (double)seg_count;
+		double t1 = 360.0 * (double)(s + 1) / (double)seg_count;
+		double s0 = sin( RAD(t0) ), c0 = cos( RAD(t0) );
+		double s1 = sin( RAD(t1) ), c1 = cos( RAD(t1) );
+		float ix0 = loop_r0*c0, iy0 = loop_r0*s0;
+		float ox0 = loop_r1*c0, oy0 = loop_r1*s0;
+		float ix1 = loop_r0*c1, iy1 = loop_r0*s1;
+		float ox1 = loop_r1*c1, oy1 = loop_r1*s1;
+
+		vbo_batch_add_vertex(batch, ix0,iy0,0, 0,0,1, br,bg,bb, nid);
+		vbo_batch_add_vertex(batch, ox0,oy0,0, 0,0,1, br,bg,bb, nid);
+		vbo_batch_add_vertex(batch, ox1,oy1,0, 0,0,1, br,bg,bb, nid);
+
+		vbo_batch_add_vertex(batch, ix0,iy0,0, 0,0,1, br,bg,bb, nid);
+		vbo_batch_add_vertex(batch, ox1,oy1,0, 0,0,1, br,bg,bb, nid);
+		vbo_batch_add_vertex(batch, ix1,iy1,0, 0,0,1, br,bg,bb, nid);
+	}
+}
+
+
+/* Batch the inbranch (connector at inner edge of platform) */
+static void
+treev_batch_inbranch( VBOBatch *batch, double r0, double acc_theta,
+                      unsigned int nid )
+{
+	double c0x, c0y, c1x, c1y;
+	double w0x, w0y, w1x, w1y, w2x, w2y, w3x, w3y;
+	float br = branch_color.r, bg = branch_color.g, bb = branch_color.b;
+
+	/* Local coords of rectangle */
+	c0x = r0 - (0.5 * TREEV_PLATFORM_SPACING_DEPTH);
+	c0y = (-0.5 * TREEV_BRANCH_WIDTH);
+	c1x = r0;
+	c1y = (0.5 * TREEV_BRANCH_WIDTH);
+
+	/* Four corners in world space */
+	treev_rotate_point( c0x, c0y, acc_theta, &w0x, &w0y );
+	treev_rotate_point( c1x, c0y, acc_theta, &w1x, &w1y );
+	treev_rotate_point( c1x, c1y, acc_theta, &w2x, &w2y );
+	treev_rotate_point( c0x, c1y, acc_theta, &w3x, &w3y );
+
+	vbo_batch_add_vertex(batch, w0x,w0y,0, 0,0,1, br,bg,bb, nid);
+	vbo_batch_add_vertex(batch, w1x,w1y,0, 0,0,1, br,bg,bb, nid);
+	vbo_batch_add_vertex(batch, w2x,w2y,0, 0,0,1, br,bg,bb, nid);
+
+	vbo_batch_add_vertex(batch, w0x,w0y,0, 0,0,1, br,bg,bb, nid);
+	vbo_batch_add_vertex(batch, w2x,w2y,0, 0,0,1, br,bg,bb, nid);
+	vbo_batch_add_vertex(batch, w3x,w3y,0, 0,0,1, br,bg,bb, nid);
+}
+
+
+/* Batch the outbranch (connector at outer edge, with arc) */
+static void
+treev_batch_outbranch( VBOBatch *batch, double r1,
+                       double theta0, double theta1,
+                       double acc_theta, unsigned int nid )
+{
+	double arc_r, arc_r0, arc_r1;
+	double arc_width, seg_arc_width, supp_arc_width;
+	double w0x, w0y, w1x, w1y, w2x, w2y, w3x, w3y;
+	float br = branch_color.r, bg = branch_color.g, bb = branch_color.b;
+	int s, seg_count;
+
+	arc_r = r1 + (0.5 * TREEV_PLATFORM_SPACING_DEPTH);
+	arc_r0 = arc_r - (0.5 * TREEV_BRANCH_WIDTH);
+	arc_r1 = arc_r + (0.5 * TREEV_BRANCH_WIDTH);
+
+	/* Stem rectangle (local coords) */
+	{
+		double lx0 = r1, ly0 = -0.5 * TREEV_BRANCH_WIDTH;
+		double lx1 = arc_r, ly1 = 0.5 * TREEV_BRANCH_WIDTH;
+
+		treev_rotate_point( lx0, ly0, acc_theta, &w0x, &w0y );
+		treev_rotate_point( lx1, ly0, acc_theta, &w1x, &w1y );
+		treev_rotate_point( lx1, ly1, acc_theta, &w2x, &w2y );
+		treev_rotate_point( lx0, ly1, acc_theta, &w3x, &w3y );
+
+		vbo_batch_add_vertex(batch, w0x,w0y,0, 0,0,1, br,bg,bb, nid);
+		vbo_batch_add_vertex(batch, w1x,w1y,0, 0,0,1, br,bg,bb, nid);
+		vbo_batch_add_vertex(batch, w2x,w2y,0, 0,0,1, br,bg,bb, nid);
+
+		vbo_batch_add_vertex(batch, w0x,w0y,0, 0,0,1, br,bg,bb, nid);
+		vbo_batch_add_vertex(batch, w2x,w2y,0, 0,0,1, br,bg,bb, nid);
+		vbo_batch_add_vertex(batch, w3x,w3y,0, 0,0,1, br,bg,bb, nid);
+	}
+
+	/* Arc portion */
+	arc_width = theta1 - theta0;
+	if (arc_width < EPSILON)
+		return;
+
+	supp_arc_width = (180.0 * TREEV_BRANCH_WIDTH / PI) / arc_r0;
+	seg_count = (int)ceil( (arc_width + supp_arc_width) / TREEV_CURVE_GRANULARITY );
+	seg_arc_width = (arc_width + supp_arc_width) / (double)seg_count;
+
+	{
+		double theta = theta0 - 0.5 * supp_arc_width;
+		for (s = 0; s < seg_count; s++) {
+			double t0 = theta;
+			double t1 = theta + seg_arc_width;
+			double s0 = sin( RAD(t0) ), c0 = cos( RAD(t0) );
+			double s1 = sin( RAD(t1) ), c1 = cos( RAD(t1) );
+
+			/* Inner/outer edge points in local space */
+			double ix0 = arc_r0 * c0, iy0 = arc_r0 * s0;
+			double ox0 = arc_r1 * c0, oy0 = arc_r1 * s0;
+			double ix1 = arc_r0 * c1, iy1 = arc_r0 * s1;
+			double ox1 = arc_r1 * c1, oy1 = arc_r1 * s1;
+
+			/* Rotate to world */
+			treev_rotate_point( ix0, iy0, acc_theta, &w0x, &w0y );
+			treev_rotate_point( ox0, oy0, acc_theta, &w1x, &w1y );
+			treev_rotate_point( ix1, iy1, acc_theta, &w2x, &w2y );
+			treev_rotate_point( ox1, oy1, acc_theta, &w3x, &w3y );
+
+			vbo_batch_add_vertex(batch, w0x,w0y,0, 0,0,1, br,bg,bb, nid);
+			vbo_batch_add_vertex(batch, w1x,w1y,0, 0,0,1, br,bg,bb, nid);
+			vbo_batch_add_vertex(batch, w3x,w3y,0, 0,0,1, br,bg,bb, nid);
+
+			vbo_batch_add_vertex(batch, w0x,w0y,0, 0,0,1, br,bg,bb, nid);
+			vbo_batch_add_vertex(batch, w3x,w3y,0, 0,0,1, br,bg,bb, nid);
+			vbo_batch_add_vertex(batch, w2x,w2y,0, 0,0,1, br,bg,bb, nid);
+
+			theta += seg_arc_width;
+		}
+	}
+}
+
+
+/* Lays out leaf nodes on a directory and batches them + the platform.
+ * Same layout logic as treev_build_dir but outputs to VBO batch. */
+static void
+treev_batch_dir( VBOBatch *batch, GNode *dnode, double r0,
+                 double acc_theta )
+{
+#define edge05 (0.5 * TREEV_LEAF_NODE_EDGE)
+#define edge15 (1.5 * TREEV_LEAF_NODE_EDGE)
+	GNode *node;
+	RTvec pos;
+	double arc_len, inter_arc_width;
+	int n, row_node_count, remaining_node_count;
+
+	remaining_node_count = g_list_length( (GList *)dnode->children );
+	pos.r = r0 + TREEV_LEAF_NODE_EDGE;
+	node = (GNode *)g_list_last( (GList *)dnode->children );
+	while (node != NULL) {
+		arc_len = (PI / 180.0) * pos.r * TREEV_GEOM_PARAMS(dnode)->platform.arc_width - TREEV_PLATFORM_SPACING_WIDTH;
+		row_node_count = (int)floor( (arc_len - edge05) / edge15 );
+		inter_arc_width = (180.0 * edge15 / PI) / pos.r;
+
+		pos.theta = 0.5 * inter_arc_width * (double)(MIN(row_node_count, remaining_node_count) - 1);
+		for (n = 0; (n < row_node_count) && (node != NULL); n++) {
+			TREEV_GEOM_PARAMS(node)->leaf.theta = pos.theta;
+			TREEV_GEOM_PARAMS(node)->leaf.distance = pos.r - r0;
+			treev_batch_leaf( batch, node, r0, acc_theta,
+			                  !NODE_IS_DIR(node) );
+			pos.theta -= inter_arc_width;
+			node = node->prev;
+		}
+
+		remaining_node_count -= row_node_count;
+		pos.r += edge15;
+	}
+
+	pos.r -= edge05;
+	TREEV_GEOM_PARAMS(dnode)->platform.depth = pos.r - r0;
+
+	/* Batch the platform underneath */
+	treev_batch_platform( batch, dnode, r0, acc_theta );
+
+#undef edge05
+#undef edge15
+}
+
+
+/* Apply the deployment transform to vertices in the staging buffer.
+ * This scales all vertices from start_idx to current build_count
+ * toward a pivot point (the leaf position in world space).
+ * The vertices are already in world space; we undo the world rotation,
+ * apply the deployment scaling in the parent's local frame, then
+ * re-apply the world rotation. */
+static void
+treev_apply_deployment( VBOBatch *batch, int start_idx,
+                        double deployment, double leaf_r, double leaf_theta,
+                        double parent_acc_theta )
+{
+	int i;
+	/* Leaf center in parent local space */
+	double leaf_lx = leaf_r * cos( RAD(leaf_theta) );
+	double leaf_ly = leaf_r * sin( RAD(leaf_theta) );
+	/* Leaf center in world space */
+	double leaf_wx, leaf_wy;
+	double s_p = sin( RAD(parent_acc_theta) );
+	double c_p = cos( RAD(parent_acc_theta) );
+
+	leaf_wx = leaf_lx * c_p - leaf_ly * s_p;
+	leaf_wy = leaf_lx * s_p + leaf_ly * c_p;
+
+	for (i = start_idx; i < batch->build_count; i++) {
+		VBOVertex *v = &batch->vertices[i];
+		double dx, dy, dz;
+		double local_dx, local_dy;
+		double scaled_lx, scaled_ly;
+
+		/* Vector from leaf center to vertex (world space) */
+		dx = v->position[0] - leaf_wx;
+		dy = v->position[1] - leaf_wy;
+		dz = v->position[2];
+
+		/* Rotate delta to parent local frame */
+		local_dx = dx * c_p + dy * s_p;
+		local_dy = -dx * s_p + dy * c_p;
+
+		/* Scale in parent local frame */
+		local_dx *= deployment;
+		local_dy *= deployment;
+		dz *= deployment;
+
+		/* Rotate back to world frame */
+		scaled_lx = local_dx * c_p - local_dy * s_p;
+		scaled_ly = local_dx * s_p + local_dy * c_p;
+
+		v->position[0] = (float)(leaf_wx + scaled_lx);
+		v->position[1] = (float)(leaf_wy + scaled_ly);
+		v->position[2] = (float)dz;
+	}
+}
+
+
+/* Recursively walks TreeV tree and batches all geometry.
+ * acc_theta: accumulated rotation from all ancestors (degrees).
+ * Handles deployment animation by applying the deployment transform
+ * to vertex positions. */
+static void
+treev_batch_recursive( VBOBatch *solid, VBOBatch *branches,
+                       GNode *dnode, double prev_r0, double r0,
+                       double acc_theta )
+{
+	TreeVGeomParams *dir_gparams;
+	GNode *node;
+	GNode *first_node = NULL, *last_node = NULL;
+	double subtree_r0;
+	double theta0, theta1;
+	double new_acc_theta;
+	boolean dir_collapsed;
+	boolean dir_expanded;
+
+	dir_gparams = TREEV_GEOM_PARAMS(dnode);
+
+	dir_collapsed = DIR_COLLAPSED(dnode);
+	dir_expanded = DIR_EXPANDED(dnode);
+
+	if (!dir_collapsed) {
+		if (!dir_expanded) {
+			/* Partially deployed: batch the shrinking/growing leaf */
+			treev_batch_leaf( solid, dnode, prev_r0, acc_theta, TRUE );
+		}
+
+		new_acc_theta = acc_theta + dir_gparams->platform.theta;
+
+		/* Record start indices for deployment transform */
+		int solid_start = solid->build_count;
+		int branch_start = branches->build_count;
+
+		if (NODE_IS_DIR(dnode)) {
+			/* Batch the directory (leaves + platform) */
+			treev_batch_dir( solid, dnode, r0, new_acc_theta );
+		}
+
+		if (!dir_expanded) {
+			/* Recurse first, then apply deployment to all
+			 * subtree vertices produced so far */
+		}
+
+		/* Recurse into subdirectories */
+		subtree_r0 = r0 + dir_gparams->platform.depth + TREEV_PLATFORM_SPACING_DEPTH;
+		node = dnode->children;
+		while (node != NULL) {
+			if (!NODE_IS_DIR(node))
+				break;
+			treev_batch_recursive( solid, branches, node,
+			                       r0, subtree_r0, new_acc_theta );
+			if (DIR_EXPANDED(node)) {
+				if (first_node == NULL)
+					first_node = node;
+				last_node = node;
+			}
+			node = node->next;
+		}
+
+		/* Batch branches */
+		if (dir_expanded) {
+			unsigned int nid = NODE_DESC(dnode)->id;
+			if (NODE_IS_METANODE(dnode)) {
+				treev_batch_loop( branches, r0, nid );
+				treev_batch_outbranch( branches, r0, 0.0, 0.0,
+				                       new_acc_theta, nid );
+			}
+			else {
+				treev_batch_inbranch( branches, r0, new_acc_theta, nid );
+				if (first_node != NULL) {
+					theta0 = MIN(0.0, TREEV_GEOM_PARAMS(first_node)->platform.theta);
+					theta1 = MAX(0.0, TREEV_GEOM_PARAMS(last_node)->platform.theta);
+					treev_batch_outbranch( branches,
+					                       r0 + dir_gparams->platform.depth,
+					                       theta0, theta1,
+					                       new_acc_theta, nid );
+				}
+			}
+		}
+
+		/* Apply deployment scaling if partially deployed */
+		if (!dir_expanded) {
+			double deployment = DIR_NODE_DESC(dnode)->deployment;
+			treev_apply_deployment( solid, solid_start,
+			                        deployment,
+			                        prev_r0 + dir_gparams->leaf.distance,
+			                        dir_gparams->leaf.theta,
+			                        acc_theta );
+			treev_apply_deployment( branches, branch_start,
+			                        deployment,
+			                        prev_r0 + dir_gparams->leaf.distance,
+			                        dir_gparams->leaf.theta,
+			                        acc_theta );
+		}
+	}
+	else {
+		new_acc_theta = acc_theta;
+		/* Collapsed: batch as a leaf */
+		treev_batch_leaf( solid, dnode, prev_r0, acc_theta, TRUE );
+	}
+
+	/* Update geometry status */
+	DIR_NODE_DESC(dnode)->geom_expanded = !dir_collapsed;
+}
+
+
+/* Rebuilds the TreeV VBO batches if needed */
+static void
+treev_rebuild_batch( void )
+{
+	if (!treev_batch_initialized) {
+		vbo_batch_init( &treev_solid_batch );
+		vbo_batch_init( &treev_branch_batch );
+		treev_batch_initialized = TRUE;
+	}
+
+	if (!treev_solid_batch.dirty)
+		return;
+
+	vbo_batch_begin( &treev_solid_batch );
+	vbo_batch_begin( &treev_branch_batch );
+	treev_batch_recursive( &treev_solid_batch, &treev_branch_batch,
+	                       globals.fstree, NIL, treev_core_radius, 0.0 );
+	vbo_batch_upload( &treev_solid_batch );
+	vbo_batch_upload( &treev_branch_batch );
+
+	/* Debug: log batch stats */
+	{
+		int i;
+		float zmin = 1e30f, zmax = -1e30f;
+		for (i = 0; i < treev_solid_batch.build_count; i++) {
+			float z = treev_solid_batch.vertices[i].position[2];
+			if (z < zmin) zmin = z;
+			if (z > zmax) zmax = z;
+		}
+		g_message("TreeV batch rebuilt: %d solid verts, %d branch verts, z=[%.1f, %.1f]",
+		          treev_solid_batch.build_count,
+		          treev_branch_batch.build_count,
+		          zmin, zmax);
+	}
+}
+
+
+/* Sets up the lit shader for TreeV */
+static void
+treev_setup_lit_shader( void )
+{
+	float mv[16], proj[16];
+	float mvp[16];
+	float norm[9];
+	int i, j, k;
+
+	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
+	glGetFloatv( GL_PROJECTION_MATRIX, proj );
+
+	for (j = 0; j < 4; j++) {
+		for (i = 0; i < 4; i++) {
+			float sum = 0.0f;
+			for (k = 0; k < 4; k++)
+				sum += proj[i + k * 4] * mv[k + j * 4];
+			mvp[i + j * 4] = sum;
+		}
+	}
+
+	for (i = 0; i < 3; i++)
+		for (j = 0; j < 3; j++)
+			norm[i + j * 3] = mv[i + j * 4];
+
+	glDisable( GL_LIGHTING );
+
+	shader_program_use( &lit_shader );
+	glUniformMatrix4fv(
+		shader_program_get_uniform( &lit_shader, "u_mvp" ),
+		1, GL_FALSE, mvp );
+	glUniformMatrix4fv(
+		shader_program_get_uniform( &lit_shader, "u_modelview" ),
+		1, GL_FALSE, mv );
+	glUniformMatrix3fv(
+		shader_program_get_uniform( &lit_shader, "u_normal_matrix" ),
+		1, GL_FALSE, norm );
+	glUniform1f(
+		shader_program_get_uniform( &lit_shader, "u_diffuse_scale" ),
+		1.0f );
+}
+
+
+/* Sets up the pick shader for TreeV */
+static void
+treev_setup_pick_shader( void )
+{
+	float mv[16], proj[16];
+	float mvp[16];
+	int i, j, k;
+
+	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
+	glGetFloatv( GL_PROJECTION_MATRIX, proj );
+
+	for (j = 0; j < 4; j++) {
+		for (i = 0; i < 4; i++) {
+			float sum = 0.0f;
+			for (k = 0; k < 4; k++)
+				sum += proj[i + k * 4] * mv[k + j * 4];
+			mvp[i + j * 4] = sum;
+		}
+	}
+
+	shader_program_use( &pick_shader );
+	glUniformMatrix4fv(
+		shader_program_get_uniform( &pick_shader, "u_mvp" ),
+		1, GL_FALSE, mvp );
 }
 
 
@@ -3516,11 +4343,41 @@ treev_draw( boolean high_detail )
 
 	frustum_extract( );
 
-	/* Draw low-detail geometry (culled tree walk) */
-	treev_draw_recursive( globals.fstree, NIL, treev_core_radius, TREEV_DRAW_GEOMETRY_WITH_BRANCHES, 0.0 );
+	/* Rebuild VBO batches if geometry changed */
+	treev_rebuild_batch( );
+
+	/* Draw solid geometry from VBO batch.
+	 * Disable polygon offset so VBO geometry sits at true depth,
+	 * preventing the outline wireframe from overwriting it. */
+	if (treev_solid_batch.vertex_count > 0) {
+		glDisable( GL_POLYGON_OFFSET_FILL );
+		if (picking_mode)
+			treev_setup_pick_shader( );
+		else
+			treev_setup_lit_shader( );
+		vbo_batch_draw( &treev_solid_batch );
+		if (picking_mode)
+			shader_program_unuse( );
+		else {
+			shader_program_unuse( );
+			glEnable( GL_LIGHTING );
+		}
+		glEnable( GL_POLYGON_OFFSET_FILL );
+	}
+
+	/* Draw branches from VBO batch */
+	if (!picking_mode && treev_branch_batch.vertex_count > 0) {
+		glDisable( GL_POLYGON_OFFSET_FILL );
+		treev_setup_lit_shader( );
+		vbo_batch_draw( &treev_branch_batch );
+		shader_program_unuse( );
+		glEnable( GL_LIGHTING );
+		glEnable( GL_POLYGON_OFFSET_FILL );
+	}
 
 	if (high_detail) {
-		/* "Cel lines" — skip outlines on small/distant subtrees */
+		/* "Cel lines" — outline pass uses polygon offset to push
+		 * outlines behind the solid, preventing Z-fighting */
 		outline_pre( );
 		drawing_outlines = TRUE;
 		treev_draw_recursive( globals.fstree, NIL, treev_core_radius, TREEV_DRAW_GEOMETRY, 0.0 );
@@ -3630,6 +4487,10 @@ geometry_queue_rebuild( GNode *dnode )
 	}
 	if (globals.fsv_mode == FSV_DISCV && discv_batch_initialized) {
 		vbo_batch_invalidate( &discv_solid_batch );
+	}
+	if (globals.fsv_mode == FSV_TREEV && treev_batch_initialized) {
+		vbo_batch_invalidate( &treev_solid_batch );
+		vbo_batch_invalidate( &treev_branch_batch );
 	}
 
 	queue_uncached_draw( );
@@ -3933,6 +4794,10 @@ geometry_colexp_in_progress( GNode *dnode )
 	}
 	if (globals.fsv_mode == FSV_DISCV && discv_batch_initialized) {
 		vbo_batch_invalidate( &discv_solid_batch );
+	}
+	if (globals.fsv_mode == FSV_TREEV && treev_batch_initialized) {
+		vbo_batch_invalidate( &treev_solid_batch );
+		vbo_batch_invalidate( &treev_branch_batch );
 	}
 
 	if (globals.fsv_mode == FSV_TREEV) {

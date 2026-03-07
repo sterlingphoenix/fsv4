@@ -141,26 +141,26 @@ Convert Disc View rendering to batched VBOs with shaders. Same pattern
 as Phase 2.
 
 Step 3.1 - DiscV geometry to vertex batches
-  [ ] Walk the DiscV tree and assemble visible geometry into a vertex
+  [x] Walk the DiscV tree and assemble visible geometry into a vertex
       batch
-  [ ] Rebuild only when stale flags fire
-  [ ] Verify: builds cleanly
+  [x] Rebuild only when stale flags fire
+  [x] Verify: builds cleanly
 
 Step 3.2 - DiscV solid geometry rendering
-  [ ] Replace DiscV display list drawing with VBO draw calls
-  [ ] Verify: DiscV renders correctly
+  [x] Replace DiscV display list drawing with VBO draw calls
+  [x] Verify: DiscV renders correctly
 
 Step 3.3 - DiscV label rendering
-  [ ] Convert DiscV label rendering to the modern pipeline
-  [ ] Verify: DiscV labels render correctly
+  [x] Convert DiscV label rendering to the modern pipeline
+  [x] Verify: DiscV labels render correctly
 
 Step 3.4 - DiscV pick rendering
-  [ ] Replace DiscV pick rendering with VBO-based pick
-  [ ] Verify: node selection works correctly in DiscV
+  [x] Replace DiscV pick rendering with VBO-based pick
+  [x] Verify: node selection works correctly in DiscV
 
 Step 3.5 - DiscV animation and interaction
-  [ ] Verify expand/collapse, zoom, pan, keyboard pan all work
-  [ ] Verify: DiscV is fully functional
+  [x] Verify expand/collapse, zoom, pan, keyboard pan all work
+  [x] Verify: DiscV is fully functional
 
   Checkpoint: User tests DiscV thoroughly. MapV and DiscV both use
   modern GL. TreeV still uses legacy GL.
@@ -174,10 +174,10 @@ most complex mode (platforms, leaves, branches, radial layout) so it is
 done last.
 
 Step 4.1 - TreeV geometry to vertex batches
-  [ ] Walk the TreeV tree and assemble visible geometry (platforms,
+  [x] Walk the TreeV tree and assemble visible geometry (platforms,
       leaves, branches) into vertex batches
-  [ ] Rebuild only when stale flags fire
-  [ ] Verify: builds cleanly
+  [x] Rebuild only when stale flags fire
+  [x] Verify: builds cleanly
 
 Step 4.2 - TreeV solid geometry and branch rendering
   [ ] Replace TreeV display list drawing with VBO draw calls
