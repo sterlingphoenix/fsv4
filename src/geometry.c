@@ -425,31 +425,23 @@ discv_gldraw_node_colored( GNode *node, double dir_deployment,
 	DiscVGeomParams *gparams;
 	float cx, cy;
 	float *verts;
-	double theta0, theta1;
+	double theta;
 	int s, v = 0;
 
 	gparams = DISCV_GEOM_PARAMS(node);
 	cx = (float)(dir_deployment * gparams->pos.x);
 	cy = (float)(dir_deployment * gparams->pos.y);
 
-	/* Triangle fan → individual triangles: seg_count triangles × 3 verts */
-	verts = g_alloca( seg_count * 3 * 3 * sizeof(float) );
+	/* Circle outline: seg_count vertices as GL_LINE_LOOP */
+	verts = g_alloca( seg_count * 3 * sizeof(float) );
 	for (s = 0; s < seg_count; s++) {
-		theta0 = (double)s / (double)seg_count * 360.0;
-		theta1 = (double)(s + 1) / (double)seg_count * 360.0;
-		/* Center */
-		verts[v++] = cx;  verts[v++] = cy;  verts[v++] = 0.0f;
-		/* Edge point s */
-		verts[v++] = cx + (float)(gparams->radius * cos( RAD(theta0) ));
-		verts[v++] = cy + (float)(gparams->radius * sin( RAD(theta0) ));
-		verts[v++] = 0.0f;
-		/* Edge point s+1 */
-		verts[v++] = cx + (float)(gparams->radius * cos( RAD(theta1) ));
-		verts[v++] = cy + (float)(gparams->radius * sin( RAD(theta1) ));
+		theta = (double)s / (double)seg_count * 360.0;
+		verts[v++] = cx + (float)(gparams->radius * cos( RAD(theta) ));
+		verts[v++] = cy + (float)(gparams->radius * sin( RAD(theta) ));
 		verts[v++] = 0.0f;
 	}
 
-	flat_draw_lines( verts, v / 3, GL_TRIANGLES, r, g, b, 1.0f );
+	flat_draw_lines( verts, v / 3, GL_LINE_LOOP, r, g, b, 1.0f );
 }
 
 
@@ -1165,7 +1157,7 @@ mapv_gldraw_node_colored( GNode *node, float r, float g, float b )
 	XYZvec dims;
 	XYvec offset;
 	double k;
-	float verts[30 * 3]; /* 4 side quads (2 tris each = 8 tris) + 1 top quad (2 tris) = 10 tris × 3 verts */
+	float verts[24 * 3]; /* 12 edges × 2 verts × 3 floats */
 	int v = 0;
 	float bx0, by0, bx1, by1; /* base corners */
 	float tx0, ty0, tx1, ty1; /* top corners */
@@ -1187,23 +1179,26 @@ mapv_gldraw_node_colored( GNode *node, float r, float g, float b )
 	h = (float)gparams->height;
 
 #define V(x,y,z) do { verts[v++]=(x); verts[v++]=(y); verts[v++]=(z); } while(0)
-#define QUAD(ax,ay,az, bx2,by2,bz, cx2,cy2,cz, dx2,dy2,dz) do { \
-	V(ax,ay,az); V(bx2,by2,bz); V(cx2,cy2,cz); \
-	V(ax,ay,az); V(cx2,cy2,cz); V(dx2,dy2,dz); } while(0)
-	/* Rear face */
-	QUAD(bx0,by1,0, bx1,by1,0, tx1,ty1,h, tx0,ty1,h);
-	/* Right face */
-	QUAD(bx1,by1,0, bx1,by0,0, tx1,ty0,h, tx1,ty1,h);
-	/* Front face */
-	QUAD(bx1,by0,0, bx0,by0,0, tx0,ty0,h, tx1,ty0,h);
-	/* Left face */
-	QUAD(bx0,by0,0, bx0,by1,0, tx0,ty1,h, tx0,ty0,h);
-	/* Top face */
-	QUAD(tx0,ty0,h, tx1,ty0,h, tx1,ty1,h, tx0,ty1,h);
+#define EDGE(ax,ay,az, bx2,by2,bz) do { V(ax,ay,az); V(bx2,by2,bz); } while(0)
+	/* Base edges */
+	EDGE(bx0,by0,0, bx1,by0,0);
+	EDGE(bx1,by0,0, bx1,by1,0);
+	EDGE(bx1,by1,0, bx0,by1,0);
+	EDGE(bx0,by1,0, bx0,by0,0);
+	/* Top edges */
+	EDGE(tx0,ty0,h, tx1,ty0,h);
+	EDGE(tx1,ty0,h, tx1,ty1,h);
+	EDGE(tx1,ty1,h, tx0,ty1,h);
+	EDGE(tx0,ty1,h, tx0,ty0,h);
+	/* Slanted vertical edges */
+	EDGE(bx0,by0,0, tx0,ty0,h);
+	EDGE(bx1,by0,0, tx1,ty0,h);
+	EDGE(bx1,by1,0, tx1,ty1,h);
+	EDGE(bx0,by1,0, tx0,ty1,h);
 #undef V
-#undef QUAD
+#undef EDGE
 
-	flat_draw_lines( verts, v / 3, GL_TRIANGLES, r, g, b, 1.0f );
+	flat_draw_lines( verts, v / 3, GL_LINES, r, g, b, 1.0f );
 }
 
 
@@ -1832,6 +1827,7 @@ static RTZvec treev_cursor_prev_c1;
 /* VBO batches for TreeV */
 static VBOBatch treev_solid_batch;
 static VBOBatch treev_branch_batch;
+static VBOBatch treev_outline_batch;
 static boolean treev_batch_initialized = FALSE;
 
 
@@ -2814,9 +2810,15 @@ treev_batch_outbranch( VBOBatch *batch, double r1,
 
 /* Lays out leaf nodes on a directory and batches them + the platform.
  * Same layout logic as treev_build_dir but outputs to VBO batch. */
+/* Forward declarations for edge batching functions */
+static void treev_batch_platform_edges( VBOBatch *batch, GNode *dnode,
+                                         double r0, double acc_theta );
+static void treev_batch_leaf_edges( VBOBatch *batch, GNode *node, double r0,
+                                     double acc_theta, boolean full_node );
+
 static void
-treev_batch_dir( VBOBatch *batch, GNode *dnode, double r0,
-                 double acc_theta )
+treev_batch_dir( VBOBatch *batch, VBOBatch *outline, GNode *dnode,
+                 double r0, double acc_theta )
 {
 #define edge05 (0.5 * TREEV_LEAF_NODE_EDGE)
 #define edge15 (1.5 * TREEV_LEAF_NODE_EDGE)
@@ -2839,6 +2841,8 @@ treev_batch_dir( VBOBatch *batch, GNode *dnode, double r0,
 			TREEV_GEOM_PARAMS(node)->leaf.distance = pos.r - r0;
 			treev_batch_leaf( batch, node, r0, acc_theta,
 			                  !NODE_IS_DIR(node) );
+			treev_batch_leaf_edges( outline, node, r0, acc_theta,
+			                        !NODE_IS_DIR(node) );
 			pos.theta -= inter_arc_width;
 			node = node->prev;
 		}
@@ -2852,6 +2856,7 @@ treev_batch_dir( VBOBatch *batch, GNode *dnode, double r0,
 
 	/* Batch the platform underneath */
 	treev_batch_platform( batch, dnode, r0, acc_theta );
+	treev_batch_platform_edges( outline, dnode, r0, acc_theta );
 
 #undef edge05
 #undef edge15
@@ -2912,12 +2917,182 @@ treev_apply_deployment( VBOBatch *batch, int start_idx,
 }
 
 
+/* Batch edge lines for a TreeV platform into the outline batch.
+ * Emits edges for inner/outer arcs, vertical corners, and face edges. */
+static void
+treev_batch_platform_edges( VBOBatch *batch, GNode *dnode, double r0,
+                             double acc_theta )
+{
+	XYvec p0, p1, delta;
+	double r1, seg_arc_width, theta, sin_theta, cos_theta, z1;
+	float cr, cg, cb;
+	unsigned int nid;
+	int s, seg_count;
+
+	r1 = r0 + TREEV_GEOM_PARAMS(dnode)->platform.depth;
+	seg_count = (int)ceil( TREEV_GEOM_PARAMS(dnode)->platform.arc_width / TREEV_CURVE_GRANULARITY );
+	seg_arc_width = TREEV_GEOM_PARAMS(dnode)->platform.arc_width / (double)seg_count;
+
+	theta = -0.5 * TREEV_GEOM_PARAMS(dnode)->platform.arc_width;
+	for (s = 0; s <= seg_count; s++) {
+		sin_theta = sin( RAD(theta) );
+		cos_theta = cos( RAD(theta) );
+		p0.x = r0 * cos_theta; p0.y = r0 * sin_theta;
+		p1.x = r1 * cos_theta; p1.y = r1 * sin_theta;
+		if (s == 0) {
+			delta.x = - sin_theta * (0.5 * TREEV_PLATFORM_SPACING_WIDTH);
+			delta.y = cos_theta * (0.5 * TREEV_PLATFORM_SPACING_WIDTH);
+			p0.x += delta.x; p0.y += delta.y;
+			p1.x += delta.x; p1.y += delta.y;
+		}
+		else if (s == seg_count) {
+			delta.x = sin_theta * (0.5 * TREEV_PLATFORM_SPACING_WIDTH);
+			delta.y = - cos_theta * (0.5 * TREEV_PLATFORM_SPACING_WIDTH);
+			p0.x += delta.x; p0.y += delta.y;
+			p1.x += delta.x; p1.y += delta.y;
+		}
+		inner_edge_buf[s].x = p0.x; inner_edge_buf[s].y = p0.y;
+		outer_edge_buf[s].x = p1.x; outer_edge_buf[s].y = p1.y;
+		theta += seg_arc_width;
+	}
+
+	z1 = TREEV_GEOM_PARAMS(dnode)->platform.height;
+	cr = NODE_DESC(dnode)->color->r;
+	cg = NODE_DESC(dnode)->color->g;
+	cb = NODE_DESC(dnode)->color->b;
+	nid = NODE_DESC(dnode)->id;
+
+	#define EDGE_W(lx0,ly0,lz0, lx1,ly1,lz1) do { \
+		double wx0_, wy0_, wx1_, wy1_; \
+		treev_rotate_point(lx0, ly0, acc_theta, &wx0_, &wy0_); \
+		treev_rotate_point(lx1, ly1, acc_theta, &wx1_, &wy1_); \
+		vbo_batch_add_vertex(batch, wx0_,wy0_,lz0, 0,0,1, cr,cg,cb, nid); \
+		vbo_batch_add_vertex(batch, wx1_,wy1_,lz1, 0,0,1, cr,cg,cb, nid); \
+	} while(0)
+
+	/* Inner arc: bottom and top */
+	for (s = 0; s < seg_count; s++) {
+		EDGE_W(inner_edge_buf[s].x, inner_edge_buf[s].y, 0.0,
+		       inner_edge_buf[s+1].x, inner_edge_buf[s+1].y, 0.0);
+		EDGE_W(inner_edge_buf[s].x, inner_edge_buf[s].y, z1,
+		       inner_edge_buf[s+1].x, inner_edge_buf[s+1].y, z1);
+	}
+	/* Outer arc: bottom and top */
+	for (s = 0; s < seg_count; s++) {
+		EDGE_W(outer_edge_buf[s].x, outer_edge_buf[s].y, 0.0,
+		       outer_edge_buf[s+1].x, outer_edge_buf[s+1].y, 0.0);
+		EDGE_W(outer_edge_buf[s].x, outer_edge_buf[s].y, z1,
+		       outer_edge_buf[s+1].x, outer_edge_buf[s+1].y, z1);
+	}
+	/* Vertical edges at corners */
+	EDGE_W(inner_edge_buf[0].x, inner_edge_buf[0].y, 0.0,
+	       inner_edge_buf[0].x, inner_edge_buf[0].y, z1);
+	EDGE_W(inner_edge_buf[seg_count].x, inner_edge_buf[seg_count].y, 0.0,
+	       inner_edge_buf[seg_count].x, inner_edge_buf[seg_count].y, z1);
+	EDGE_W(outer_edge_buf[0].x, outer_edge_buf[0].y, 0.0,
+	       outer_edge_buf[0].x, outer_edge_buf[0].y, z1);
+	EDGE_W(outer_edge_buf[seg_count].x, outer_edge_buf[seg_count].y, 0.0,
+	       outer_edge_buf[seg_count].x, outer_edge_buf[seg_count].y, z1);
+	/* Leading face horizontal edges */
+	EDGE_W(inner_edge_buf[0].x, inner_edge_buf[0].y, 0.0,
+	       outer_edge_buf[0].x, outer_edge_buf[0].y, 0.0);
+	EDGE_W(inner_edge_buf[0].x, inner_edge_buf[0].y, z1,
+	       outer_edge_buf[0].x, outer_edge_buf[0].y, z1);
+	/* Trailing face horizontal edges */
+	EDGE_W(inner_edge_buf[seg_count].x, inner_edge_buf[seg_count].y, 0.0,
+	       outer_edge_buf[seg_count].x, outer_edge_buf[seg_count].y, 0.0);
+	EDGE_W(inner_edge_buf[seg_count].x, inner_edge_buf[seg_count].y, z1,
+	       outer_edge_buf[seg_count].x, outer_edge_buf[seg_count].y, z1);
+
+	#undef EDGE_W
+}
+
+
+/* Batch edge lines for a TreeV leaf node into the outline batch.
+ * Emits edges for bottom, top, and vertical edges of the box. */
+static void
+treev_batch_leaf_edges( VBOBatch *batch, GNode *node, double r0,
+                         double acc_theta, boolean full_node )
+{
+	XYvec corners[4], p;
+	double z0, z1;
+	double edge, height;
+	double sin_theta, cos_theta;
+	float cr, cg, cb;
+	unsigned int nid;
+	int i;
+
+	if (full_node) {
+		edge = TREEV_LEAF_NODE_EDGE;
+		height = TREEV_GEOM_PARAMS(node)->leaf.height;
+		if (NODE_IS_DIR(node))
+			height *= (1.0 - DIR_NODE_DESC(node)->deployment);
+	}
+	else {
+		edge = (0.875 * TREEV_LEAF_NODE_EDGE);
+		height = (TREEV_LEAF_NODE_EDGE / 64.0);
+	}
+
+	corners[0].x = r0 + TREEV_GEOM_PARAMS(node)->leaf.distance - 0.5 * edge;
+	corners[0].y = -0.5 * edge;
+	corners[1].x = corners[0].x + edge;
+	corners[1].y = corners[0].y;
+	corners[2].x = corners[1].x;
+	corners[2].y = corners[0].y + edge;
+	corners[3].x = corners[0].x;
+	corners[3].y = corners[2].y;
+
+	z0 = TREEV_GEOM_PARAMS(node->parent)->platform.height;
+	z1 = z0 + height;
+
+	sin_theta = sin( RAD(TREEV_GEOM_PARAMS(node)->leaf.theta) );
+	cos_theta = cos( RAD(TREEV_GEOM_PARAMS(node)->leaf.theta) );
+
+	for (i = 0; i < 4; i++) {
+		double lx, ly;
+		p.x = corners[i].x;
+		p.y = corners[i].y;
+		lx = p.x * cos_theta - p.y * sin_theta;
+		ly = p.x * sin_theta + p.y * cos_theta;
+		treev_rotate_point( lx, ly, acc_theta,
+		                    &corners[i].x, &corners[i].y );
+	}
+
+	cr = NODE_DESC(node)->color->r;
+	cg = NODE_DESC(node)->color->g;
+	cb = NODE_DESC(node)->color->b;
+	nid = NODE_DESC(node)->id;
+
+	/* Top edges */
+	for (i = 0; i < 4; i++) {
+		int j = (i + 1) % 4;
+		vbo_batch_add_vertex(batch, corners[i].x,corners[i].y,z1, 0,0,1, cr,cg,cb, nid);
+		vbo_batch_add_vertex(batch, corners[j].x,corners[j].y,z1, 0,0,1, cr,cg,cb, nid);
+	}
+
+	if (full_node) {
+		/* Bottom edges */
+		for (i = 0; i < 4; i++) {
+			int j = (i + 1) % 4;
+			vbo_batch_add_vertex(batch, corners[i].x,corners[i].y,z0, 0,0,1, cr,cg,cb, nid);
+			vbo_batch_add_vertex(batch, corners[j].x,corners[j].y,z0, 0,0,1, cr,cg,cb, nid);
+		}
+		/* Vertical edges */
+		for (i = 0; i < 4; i++) {
+			vbo_batch_add_vertex(batch, corners[i].x,corners[i].y,z0, 0,0,1, cr,cg,cb, nid);
+			vbo_batch_add_vertex(batch, corners[i].x,corners[i].y,z1, 0,0,1, cr,cg,cb, nid);
+		}
+	}
+}
+
+
 /* Recursively walks TreeV tree and batches all geometry.
  * acc_theta: accumulated rotation from all ancestors (degrees).
  * Handles deployment animation by applying the deployment transform
  * to vertex positions. */
 static void
 treev_batch_recursive( VBOBatch *solid, VBOBatch *branches,
+                       VBOBatch *outline,
                        GNode *dnode, double prev_r0, double r0,
                        double acc_theta )
 {
@@ -2939,6 +3114,7 @@ treev_batch_recursive( VBOBatch *solid, VBOBatch *branches,
 		if (!dir_expanded) {
 			/* Partially deployed: batch the shrinking/growing leaf */
 			treev_batch_leaf( solid, dnode, prev_r0, acc_theta, TRUE );
+			treev_batch_leaf_edges( outline, dnode, prev_r0, acc_theta, TRUE );
 		}
 
 		new_acc_theta = acc_theta + dir_gparams->platform.theta;
@@ -2946,10 +3122,11 @@ treev_batch_recursive( VBOBatch *solid, VBOBatch *branches,
 		/* Record start indices for deployment transform */
 		int solid_start = solid->build_count;
 		int branch_start = branches->build_count;
+		int outline_start = outline->build_count;
 
 		if (NODE_IS_DIR(dnode)) {
 			/* Batch the directory (leaves + platform) */
-			treev_batch_dir( solid, dnode, r0, new_acc_theta );
+			treev_batch_dir( solid, outline, dnode, r0, new_acc_theta );
 		}
 
 		if (!dir_expanded) {
@@ -2963,7 +3140,7 @@ treev_batch_recursive( VBOBatch *solid, VBOBatch *branches,
 		while (node != NULL) {
 			if (!NODE_IS_DIR(node))
 				break;
-			treev_batch_recursive( solid, branches, node,
+			treev_batch_recursive( solid, branches, outline, node,
 			                       r0, subtree_r0, new_acc_theta );
 			if (DIR_EXPANDED(node)) {
 				if (first_node == NULL)
@@ -3007,12 +3184,18 @@ treev_batch_recursive( VBOBatch *solid, VBOBatch *branches,
 			                        prev_r0 + dir_gparams->leaf.distance,
 			                        dir_gparams->leaf.theta,
 			                        acc_theta );
+			treev_apply_deployment( outline, outline_start,
+			                        deployment,
+			                        prev_r0 + dir_gparams->leaf.distance,
+			                        dir_gparams->leaf.theta,
+			                        acc_theta );
 		}
 	}
 	else {
 		new_acc_theta = acc_theta;
 		/* Collapsed: batch as a leaf */
 		treev_batch_leaf( solid, dnode, prev_r0, acc_theta, TRUE );
+		treev_batch_leaf_edges( outline, dnode, prev_r0, acc_theta, TRUE );
 	}
 
 	/* Update geometry status */
@@ -3027,6 +3210,7 @@ treev_rebuild_batch( void )
 	if (!treev_batch_initialized) {
 		vbo_batch_init( &treev_solid_batch );
 		vbo_batch_init( &treev_branch_batch );
+		vbo_batch_init( &treev_outline_batch );
 		treev_batch_initialized = TRUE;
 	}
 
@@ -3035,10 +3219,13 @@ treev_rebuild_batch( void )
 
 	vbo_batch_begin( &treev_solid_batch );
 	vbo_batch_begin( &treev_branch_batch );
+	vbo_batch_begin( &treev_outline_batch );
 	treev_batch_recursive( &treev_solid_batch, &treev_branch_batch,
+	                       &treev_outline_batch,
 	                       globals.fstree, NIL, treev_core_radius, 0.0 );
 	vbo_batch_upload( &treev_solid_batch );
 	vbo_batch_upload( &treev_branch_batch );
+	vbo_batch_upload( &treev_outline_batch );
 }
 
 
@@ -3201,95 +3388,57 @@ treev_gldraw_platform_colored( GNode *dnode, double r0,
 	/* Height of top face */
 	z1 = TREEV_GEOM_PARAMS(dnode)->platform.height;
 
-	/* Total quads: seg_count (inner) + seg_count (outer) +
-	 * 1 (leading) + 1 (trailing) + seg_count (top) = 4*seg_count + 2
-	 * Each quad = 2 triangles = 6 vertices, 3 floats each */
-	max_verts = (4 * seg_count + 2) * 6;
+	/* Edge outline: 4*seg_count arc segments + 8 straight edges.
+	 * Each edge = 2 vertices × 3 floats */
+	max_verts = (4 * seg_count + 8) * 2;
 	verts = g_alloca( max_verts * 3 * sizeof(float) );
 
-	/* Helper macro: emit one triangle (3 vertices) */
 #define EMIT_V(vx, vy, vz) do { \
 	verts[v++] = (float)(vx); verts[v++] = (float)(vy); verts[v++] = (float)(vz); \
 } while(0)
 
-#define EMIT_QUAD(x0,y0,z0, x1,y1,z1q, x2,y2,z2, x3,y3,z3) do { \
-	EMIT_V(x0,y0,z0); EMIT_V(x1,y1,z1q); EMIT_V(x2,y2,z2); \
-	EMIT_V(x0,y0,z0); EMIT_V(x2,y2,z2); EMIT_V(x3,y3,z3); \
+#define EMIT_EDGE(x0,y0,z0, x1,y1,zz1) do { \
+	EMIT_V(x0,y0,z0); EMIT_V(x1,y1,zz1); \
 } while(0)
 
-	/* Inner edge: seg_count quads */
+	/* Inner arc: bottom and top */
 	for (s = 0; s < seg_count; s++) {
-		double ix0 = inner_edge_buf[s].x;
-		double iy0 = inner_edge_buf[s].y;
-		double ix1 = inner_edge_buf[s + 1].x;
-		double iy1 = inner_edge_buf[s + 1].y;
-		/* Quad: (ix0,iy0,0) (ix0,iy0,z1) (ix1,iy1,z1) (ix1,iy1,0) */
-		EMIT_QUAD( ix0, iy0, 0.0,
-		           ix0, iy0, z1,
-		           ix1, iy1, z1,
-		           ix1, iy1, 0.0 );
+		EMIT_EDGE(inner_edge_buf[s].x, inner_edge_buf[s].y, 0.0,
+		          inner_edge_buf[s+1].x, inner_edge_buf[s+1].y, 0.0);
+		EMIT_EDGE(inner_edge_buf[s].x, inner_edge_buf[s].y, z1,
+		          inner_edge_buf[s+1].x, inner_edge_buf[s+1].y, z1);
 	}
-
-	/* Outer edge: seg_count quads (reversed winding from inner) */
-	for (s = seg_count; s > 0; s--) {
-		double ox0 = outer_edge_buf[s].x;
-		double oy0 = outer_edge_buf[s].y;
-		double ox1 = outer_edge_buf[s - 1].x;
-		double oy1 = outer_edge_buf[s - 1].y;
-		/* Quad: (ox0,oy0,0) (ox0,oy0,z1) (ox1,oy1,z1) (ox1,oy1,0) */
-		EMIT_QUAD( ox0, oy0, 0.0,
-		           ox0, oy0, z1,
-		           ox1, oy1, z1,
-		           ox1, oy1, 0.0 );
-	}
-
-	/* Leading edge face */
-	{
-		double ix = inner_edge_buf[0].x;
-		double iy = inner_edge_buf[0].y;
-		double ox = outer_edge_buf[0].x;
-		double oy = outer_edge_buf[0].y;
-		/* Quad: (ix,iy,0) (ox,oy,0) (ox,oy,z1) (ix,iy,z1) */
-		EMIT_QUAD( ix, iy, 0.0,
-		           ox, oy, 0.0,
-		           ox, oy, z1,
-		           ix, iy, z1 );
-	}
-
-	/* Trailing edge face */
-	{
-		double ix = inner_edge_buf[seg_count].x;
-		double iy = inner_edge_buf[seg_count].y;
-		double ox = outer_edge_buf[seg_count].x;
-		double oy = outer_edge_buf[seg_count].y;
-		/* Quad: (ix,iy,z1) (ox,oy,z1) (ox,oy,0) (ix,iy,0) */
-		EMIT_QUAD( ix, iy, z1,
-		           ox, oy, z1,
-		           ox, oy, 0.0,
-		           ix, iy, 0.0 );
-	}
-
-	/* Top face: seg_count quads */
+	/* Outer arc: bottom and top */
 	for (s = 0; s < seg_count; s++) {
-		double ix0 = inner_edge_buf[s].x;
-		double iy0 = inner_edge_buf[s].y;
-		double ox0 = outer_edge_buf[s].x;
-		double oy0 = outer_edge_buf[s].y;
-		double ix1 = inner_edge_buf[s + 1].x;
-		double iy1 = inner_edge_buf[s + 1].y;
-		double ox1 = outer_edge_buf[s + 1].x;
-		double oy1 = outer_edge_buf[s + 1].y;
-		/* Quad: (ix0,iy0,z1) (ox0,oy0,z1) (ox1,oy1,z1) (ix1,iy1,z1) */
-		EMIT_QUAD( ix0, iy0, z1,
-		           ox0, oy0, z1,
-		           ox1, oy1, z1,
-		           ix1, iy1, z1 );
+		EMIT_EDGE(outer_edge_buf[s].x, outer_edge_buf[s].y, 0.0,
+		          outer_edge_buf[s+1].x, outer_edge_buf[s+1].y, 0.0);
+		EMIT_EDGE(outer_edge_buf[s].x, outer_edge_buf[s].y, z1,
+		          outer_edge_buf[s+1].x, outer_edge_buf[s+1].y, z1);
 	}
+	/* Vertical edges at corners */
+	EMIT_EDGE(inner_edge_buf[0].x, inner_edge_buf[0].y, 0.0,
+	          inner_edge_buf[0].x, inner_edge_buf[0].y, z1);
+	EMIT_EDGE(inner_edge_buf[seg_count].x, inner_edge_buf[seg_count].y, 0.0,
+	          inner_edge_buf[seg_count].x, inner_edge_buf[seg_count].y, z1);
+	EMIT_EDGE(outer_edge_buf[0].x, outer_edge_buf[0].y, 0.0,
+	          outer_edge_buf[0].x, outer_edge_buf[0].y, z1);
+	EMIT_EDGE(outer_edge_buf[seg_count].x, outer_edge_buf[seg_count].y, 0.0,
+	          outer_edge_buf[seg_count].x, outer_edge_buf[seg_count].y, z1);
+	/* Leading face horizontal edges */
+	EMIT_EDGE(inner_edge_buf[0].x, inner_edge_buf[0].y, 0.0,
+	          outer_edge_buf[0].x, outer_edge_buf[0].y, 0.0);
+	EMIT_EDGE(inner_edge_buf[0].x, inner_edge_buf[0].y, z1,
+	          outer_edge_buf[0].x, outer_edge_buf[0].y, z1);
+	/* Trailing face horizontal edges */
+	EMIT_EDGE(inner_edge_buf[seg_count].x, inner_edge_buf[seg_count].y, 0.0,
+	          outer_edge_buf[seg_count].x, outer_edge_buf[seg_count].y, 0.0);
+	EMIT_EDGE(inner_edge_buf[seg_count].x, inner_edge_buf[seg_count].y, z1,
+	          outer_edge_buf[seg_count].x, outer_edge_buf[seg_count].y, z1);
 
-#undef EMIT_QUAD
+#undef EMIT_EDGE
 #undef EMIT_V
 
-	flat_draw_lines( verts, v / 3, GL_TRIANGLES, r, g, b, 1.0f );
+	flat_draw_lines( verts, v / 3, GL_LINES, r, g, b, 1.0f );
 }
 
 
@@ -3361,62 +3510,45 @@ treev_gldraw_leaf_colored( GNode *node, double r0, boolean full_node,
 } while(0)
 
 	if (!full_node) {
-		/* Top face (1 quad = 2 triangles = 6 verts) +
-		 * X mark (2 lines = 4 verts) */
-		/* Allocate for top face triangles */
-		verts = g_alloca( 6 * 3 * sizeof(float) );
-		/* Top face quad: corners 0,1,2,3 */
-		EMIT_V( corners[0].x, corners[0].y, z1 );
-		EMIT_V( corners[1].x, corners[1].y, z1 );
-		EMIT_V( corners[2].x, corners[2].y, z1 );
-		EMIT_V( corners[0].x, corners[0].y, z1 );
-		EMIT_V( corners[2].x, corners[2].y, z1 );
-		EMIT_V( corners[3].x, corners[3].y, z1 );
-		flat_draw_lines( verts, v / 3, GL_TRIANGLES, r, g, b, 1.0f );
-
-		/* Draw the "X" as lines */
-		v = 0;
-		verts = g_alloca( 4 * 3 * sizeof(float) );
+		/* Top face outline (4 edges) + X mark (2 lines) = 12 verts */
+		verts = g_alloca( 12 * 3 * sizeof(float) );
+		for (i = 0; i < 4; i++) {
+			int j = (i + 1) % 4;
+			EMIT_V( corners[i].x, corners[i].y, z1 );
+			EMIT_V( corners[j].x, corners[j].y, z1 );
+		}
+		/* X mark */
 		for (i = 0; i < 4; i++)
 			EMIT_V( corners[x_verts[i]].x, corners[x_verts[i]].y, z1 );
 		flat_draw_lines( verts, v / 3, GL_LINES, r, g, b, 1.0f );
-
 		return;
 	}
 
-	/* Full node: top face (1 quad) + 4 side faces (4 quads) = 5 quads
-	 * = 10 triangles = 30 vertices */
-	verts = g_alloca( 30 * 3 * sizeof(float) );
+	/* Full leaf: 12 edges = 24 vertices */
+	verts = g_alloca( 24 * 3 * sizeof(float) );
 
-	/* Top face quad: corners 0,1,2,3 at z1 */
-	EMIT_V( corners[0].x, corners[0].y, z1 );
-	EMIT_V( corners[1].x, corners[1].y, z1 );
-	EMIT_V( corners[2].x, corners[2].y, z1 );
-	EMIT_V( corners[0].x, corners[0].y, z1 );
-	EMIT_V( corners[2].x, corners[2].y, z1 );
-	EMIT_V( corners[3].x, corners[3].y, z1 );
-
-	/* Side faces: 4 quads from the quad strip.
-	 * Original strip emitted pairs (top,bottom) for corners 0,1,2,3,0.
-	 * Each pair of consecutive strip vertices forms a quad:
-	 *   side i: corners[i] top, corners[i] bottom,
-	 *           corners[(i+1)%4] bottom, corners[(i+1)%4] top */
+	/* Bottom edges */
+	for (i = 0; i < 4; i++) {
+		int j = (i + 1) % 4;
+		EMIT_V( corners[i].x, corners[i].y, z0 );
+		EMIT_V( corners[j].x, corners[j].y, z0 );
+	}
+	/* Top edges */
 	for (i = 0; i < 4; i++) {
 		int j = (i + 1) % 4;
 		EMIT_V( corners[i].x, corners[i].y, z1 );
-		EMIT_V( corners[i].x, corners[i].y, z0 );
-		EMIT_V( corners[j].x, corners[j].y, z0 );
-		EMIT_V( corners[i].x, corners[i].y, z1 );
-		EMIT_V( corners[j].x, corners[j].y, z0 );
 		EMIT_V( corners[j].x, corners[j].y, z1 );
+	}
+	/* Vertical edges */
+	for (i = 0; i < 4; i++) {
+		EMIT_V( corners[i].x, corners[i].y, z0 );
+		EMIT_V( corners[i].x, corners[i].y, z1 );
 	}
 
 #undef EMIT_V
 
-	flat_draw_lines( verts, v / 3, GL_TRIANGLES, r, g, b, 1.0f );
+	flat_draw_lines( verts, v / 3, GL_LINES, r, g, b, 1.0f );
 }
-
-
 
 
 
@@ -3721,16 +3853,14 @@ treev_draw( boolean high_detail )
 	}
 
 	if (high_detail) {
-		/* "Cel lines" — draw solid batch in wireframe mode,
+		/* "Cel lines" — draw outline edge batch with
 		 * ambient-only lighting for dark outlines */
-		if (!picking_mode && treev_solid_batch.vertex_count > 0) {
+		if (!picking_mode && treev_outline_batch.vertex_count > 0) {
 			glDisable( GL_CULL_FACE );
-			glPolygonMode( GL_FRONT_AND_BACK, GL_LINE );
 			treev_setup_lit_shader_ex( 0.0f );
-			vbo_batch_draw( &treev_solid_batch );
+			vbo_batch_draw_lines( &treev_outline_batch );
 			shader_program_unuse( );
 			glEnable( GL_LIGHTING );
-			glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
 			glEnable( GL_CULL_FACE );
 		}
 
@@ -3811,6 +3941,85 @@ flat_draw_lines( const float *positions, int vertex_count, GLenum mode,
 }
 
 
+/* Scratch VAO/VBO for lit triangle drawing (FSV letters etc.) */
+static GLuint scratch_lit_vao = 0;
+static GLuint scratch_lit_vbo = 0;
+
+/* Draws triangles using the lit shader with per-vertex position, normal,
+ * and color data. Uses the current legacy GL matrices for MVP computation. */
+static void
+lit_draw_scratch( const VBOVertex *data, int vertex_count )
+{
+	float mv[16], proj[16], mvp[16], norm[9];
+	int i, j, k;
+
+	if (vertex_count <= 0)
+		return;
+
+	if (scratch_lit_vao == 0) {
+		glGenVertexArrays( 1, &scratch_lit_vao );
+		glGenBuffers( 1, &scratch_lit_vbo );
+		glBindVertexArray( scratch_lit_vao );
+		glBindBuffer( GL_ARRAY_BUFFER, scratch_lit_vbo );
+		/* Position (location 0) */
+		glVertexAttribPointer( 0, 3, GL_FLOAT, GL_FALSE, sizeof(VBOVertex),
+		                       (void *)offsetof(VBOVertex, position) );
+		glEnableVertexAttribArray( 0 );
+		/* Normal (location 1) */
+		glVertexAttribPointer( 1, 3, GL_FLOAT, GL_FALSE, sizeof(VBOVertex),
+		                       (void *)offsetof(VBOVertex, normal) );
+		glEnableVertexAttribArray( 1 );
+		/* Color (location 2) */
+		glVertexAttribPointer( 2, 3, GL_FLOAT, GL_FALSE, sizeof(VBOVertex),
+		                       (void *)offsetof(VBOVertex, color) );
+		glEnableVertexAttribArray( 2 );
+		/* Node ID (location 3) */
+		glVertexAttribIPointer( 3, 1, GL_UNSIGNED_INT, sizeof(VBOVertex),
+		                        (void *)offsetof(VBOVertex, node_id) );
+		glEnableVertexAttribArray( 3 );
+		glBindVertexArray( 0 );
+	}
+
+	/* Compute MVP and normal matrix from current GL matrices */
+	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
+	glGetFloatv( GL_PROJECTION_MATRIX, proj );
+	for (j = 0; j < 4; j++)
+		for (i = 0; i < 4; i++) {
+			float sum = 0.0f;
+			for (k = 0; k < 4; k++)
+				sum += proj[i + k * 4] * mv[k + j * 4];
+			mvp[i + j * 4] = sum;
+		}
+	for (i = 0; i < 3; i++)
+		for (j = 0; j < 3; j++)
+			norm[i + j * 3] = mv[i + j * 4];
+
+	glBindVertexArray( scratch_lit_vao );
+	glBindBuffer( GL_ARRAY_BUFFER, scratch_lit_vbo );
+	glBufferData( GL_ARRAY_BUFFER, vertex_count * sizeof(VBOVertex),
+	              data, GL_STREAM_DRAW );
+
+	shader_program_use( &lit_shader );
+	glUniformMatrix4fv(
+		shader_program_get_uniform( &lit_shader, "u_mvp" ),
+		1, GL_FALSE, mvp );
+	glUniformMatrix4fv(
+		shader_program_get_uniform( &lit_shader, "u_modelview" ),
+		1, GL_FALSE, mv );
+	glUniformMatrix3fv(
+		shader_program_get_uniform( &lit_shader, "u_normal_matrix" ),
+		1, GL_FALSE, norm );
+	glUniform1f(
+		shader_program_get_uniform( &lit_shader, "u_diffuse_scale" ),
+		1.0f );
+
+	glDrawArrays( GL_TRIANGLES, 0, vertex_count );
+
+	shader_program_unuse( );
+	glBindVertexArray( 0 );
+}
+
+
 /* Call before drawing the cursor */
 static void
 cursor_pre( void )
@@ -3880,6 +4089,7 @@ geometry_queue_rebuild( G_GNUC_UNUSED GNode *dnode )
 	if (globals.fsv_mode == FSV_TREEV && treev_batch_initialized) {
 		vbo_batch_invalidate( &treev_solid_batch );
 		vbo_batch_invalidate( &treev_branch_batch );
+		vbo_batch_invalidate( &treev_outline_batch );
 	}
 
 	queue_uncached_draw( );
@@ -3913,17 +4123,21 @@ geometry_init( FsvMode mode )
 }
 
 
-/* Draws "fsv" in 3D using the flat shader */
+/* Draws "fsv" in 3D using the lit shader with proper normals */
 void
 geometry_gldraw_fsv( void )
 {
 	const float *vertices = NULL;
 	const int *triangles = NULL, *edges = NULL;
 	int c, e, i, tri_count, edge_count;
-	float *verts;
+	VBOVertex *vdata;
 	int v;
 
 	for (c = 0; c < 3; c++) {
+		float cr = fsv_colors[c].r;
+		float cg = fsv_colors[c].g;
+		float cb = fsv_colors[c].b;
+
 		vertices = fsv_vertices[c];
 		triangles = fsv_triangles[c];
 		edges = fsv_edges[c];
@@ -3936,50 +4150,70 @@ geometry_gldraw_fsv( void )
 
 		/* Side faces: (edge_count-1) quads = 2*(edge_count-1) triangles
 		 * Front faces: tri_count/3 triangles
-		 * Back faces: tri_count/3 triangles
-		 * Total vertices: ((edge_count-1)*2 + tri_count/3*2) * 3 */
+		 * Back faces: tri_count/3 triangles */
 		int side_tris = (edge_count - 1) * 2;
 		int face_tris = (tri_count / 3) * 2;
 		int total_verts = (side_tris + face_tris) * 3;
-		verts = g_alloca( total_verts * 3 * sizeof(float) );
+		vdata = g_alloca( total_verts * sizeof(VBOVertex) );
 		v = 0;
 
-		/* Side faces: convert quad strip to triangles */
+		/* Side faces: convert quad strip to triangles with normals */
 		for (e = 0; e < edge_count - 1; e++) {
 			float ax, ay, bx, by;
+			float dx, dy, len, nx, ny;
 			i = edges[e];
 			ax = vertices[2 * i];  ay = vertices[2 * i + 1];
 			i = edges[e + 1];
 			bx = vertices[2 * i];  by = vertices[2 * i + 1];
-			/* Quad: (ax,ay,30), (ax,ay,-30), (bx,by,30), (bx,by,-30) */
+
+			/* Edge direction and outward normal */
+			dx = bx - ax;  dy = by - ay;
+			len = sqrtf( dx * dx + dy * dy );
+			if (len > 0.0f) { nx = -dy / len;  ny = dx / len; }
+			else { nx = 0.0f;  ny = 1.0f; }
+
+#define SV(px,py,pz) do { \
+	vdata[v].position[0] = (px); vdata[v].position[1] = (py); vdata[v].position[2] = (pz); \
+	vdata[v].normal[0] = nx; vdata[v].normal[1] = ny; vdata[v].normal[2] = 0.0f; \
+	vdata[v].color[0] = cr; vdata[v].color[1] = cg; vdata[v].color[2] = cb; \
+	vdata[v].node_id = 0; v++; \
+} while(0)
 			/* Triangle 1 */
-			verts[v++] = ax;  verts[v++] = ay;  verts[v++] = 30.0f;
-			verts[v++] = ax;  verts[v++] = ay;  verts[v++] = -30.0f;
-			verts[v++] = bx;  verts[v++] = by;  verts[v++] = 30.0f;
+			SV(ax, ay, 30.0f);
+			SV(ax, ay, -30.0f);
+			SV(bx, by, 30.0f);
 			/* Triangle 2 */
-			verts[v++] = bx;  verts[v++] = by;  verts[v++] = 30.0f;
-			verts[v++] = ax;  verts[v++] = ay;  verts[v++] = -30.0f;
-			verts[v++] = bx;  verts[v++] = by;  verts[v++] = -30.0f;
+			SV(bx, by, 30.0f);
+			SV(ax, ay, -30.0f);
+			SV(bx, by, -30.0f);
+#undef SV
 		}
 
-		/* Front faces */
+		/* Front faces: normal = (0, 0, 1) */
 		for (e = 0; e < tri_count; e++) {
 			i = triangles[e];
-			verts[v++] = vertices[2 * i];
-			verts[v++] = vertices[2 * i + 1];
-			verts[v++] = 30.0f;
+			vdata[v].position[0] = vertices[2 * i];
+			vdata[v].position[1] = vertices[2 * i + 1];
+			vdata[v].position[2] = 30.0f;
+			vdata[v].normal[0] = 0.0f; vdata[v].normal[1] = 0.0f; vdata[v].normal[2] = 1.0f;
+			vdata[v].color[0] = cr; vdata[v].color[1] = cg; vdata[v].color[2] = cb;
+			vdata[v].node_id = 0;
+			v++;
 		}
 
-		/* Back faces (reversed winding) */
+		/* Back faces (reversed winding): normal = (0, 0, -1) */
 		for (e = tri_count - 1; e >= 0; e--) {
 			i = triangles[e];
-			verts[v++] = vertices[2 * i];
-			verts[v++] = vertices[2 * i + 1];
-			verts[v++] = -30.0f;
+			vdata[v].position[0] = vertices[2 * i];
+			vdata[v].position[1] = vertices[2 * i + 1];
+			vdata[v].position[2] = -30.0f;
+			vdata[v].normal[0] = 0.0f; vdata[v].normal[1] = 0.0f; vdata[v].normal[2] = -1.0f;
+			vdata[v].color[0] = cr; vdata[v].color[1] = cg; vdata[v].color[2] = cb;
+			vdata[v].node_id = 0;
+			v++;
 		}
 
-		flat_draw_lines( verts, v / 3, GL_TRIANGLES,
-		                 fsv_colors[c].r, fsv_colors[c].g, fsv_colors[c].b, 1.0f );
+		lit_draw_scratch( vdata, v );
 	}
 }
 
@@ -4191,6 +4425,7 @@ geometry_colexp_in_progress( GNode *dnode )
 	if (globals.fsv_mode == FSV_TREEV && treev_batch_initialized) {
 		vbo_batch_invalidate( &treev_solid_batch );
 		vbo_batch_invalidate( &treev_branch_batch );
+		vbo_batch_invalidate( &treev_outline_batch );
 	}
 
 	if (globals.fsv_mode == FSV_TREEV) {
@@ -4283,7 +4518,6 @@ geometry_draw_highlight( void )
 
 	glDisable( GL_DEPTH_TEST );
 	glDisable( GL_LIGHTING );
-	glPolygonMode( GL_FRONT_AND_BACK, GL_LINE );
 
 	if (cur_highlight_strong) {
 		glLineWidth( 7.0 );
@@ -4296,7 +4530,6 @@ geometry_draw_highlight( void )
 		draw_node( cur_highlight_node, 1.0f, 1.0f, 1.0f );
 	glLineWidth( 1.0 );
 
-	glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
 	glEnable( GL_LIGHTING );
 	glEnable( GL_DEPTH_TEST );
 }
