@@ -561,8 +561,6 @@ discv_setup_lit_shader( void )
 	glmath_get_mvp( mvp );
 	glmath_get_normal_matrix( norm );
 
-	glDisable( GL_LIGHTING );
-
 	shader_program_use( &lit_shader );
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &lit_shader, "u_mvp" ),
@@ -708,7 +706,6 @@ discv_draw( boolean high_detail )
 			shader_program_unuse( );
 		else {
 			shader_program_unuse( );
-			glEnable( GL_LIGHTING );
 		}
 	}
 
@@ -1627,8 +1624,6 @@ mapv_setup_lit_shader( float diffuse_scale )
 	glmath_get_mvp( mvp );
 	glmath_get_normal_matrix( norm );
 
-	glDisable( GL_LIGHTING );
-
 	shader_program_use( &lit_shader );
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &lit_shader, "u_mvp" ),
@@ -1650,7 +1645,6 @@ static void
 mapv_teardown_lit_shader( void )
 {
 	shader_program_unuse( );
-	glEnable( GL_LIGHTING );
 }
 
 
@@ -3180,8 +3174,6 @@ treev_setup_lit_shader_ex( float diffuse_scale )
 	glmath_get_mvp( mvp );
 	glmath_get_normal_matrix( norm );
 
-	glDisable( GL_LIGHTING );
-
 	shader_program_use( &lit_shader );
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &lit_shader, "u_mvp" ),
@@ -3747,7 +3739,6 @@ treev_draw( boolean high_detail )
 			shader_program_unuse( );
 		else {
 			shader_program_unuse( );
-			glEnable( GL_LIGHTING );
 		}
 		glEnable( GL_POLYGON_OFFSET_FILL );
 	}
@@ -3758,7 +3749,6 @@ treev_draw( boolean high_detail )
 		treev_setup_lit_shader( );
 		vbo_batch_draw( &treev_branch_batch );
 		shader_program_unuse( );
-		glEnable( GL_LIGHTING );
 		glEnable( GL_POLYGON_OFFSET_FILL );
 	}
 
@@ -3770,7 +3760,6 @@ treev_draw( boolean high_detail )
 			treev_setup_lit_shader_ex( 0.0f );
 			vbo_batch_draw_lines( &treev_outline_batch );
 			shader_program_unuse( );
-			glEnable( GL_LIGHTING );
 			glEnable( GL_CULL_FACE );
 		}
 
@@ -3915,7 +3904,6 @@ lit_draw_scratch( const VBOVertex *data, int vertex_count )
 static void
 cursor_pre( void )
 {
-	glDisable( GL_LIGHTING );
 }
 
 
@@ -3926,8 +3914,6 @@ static void
 cursor_draw_hidden( const float *positions, int vertex_count, GLenum mode )
 {
 	glDepthFunc( GL_GREATER );
-	glEnable( GL_LINE_STIPPLE );
-	glLineStipple( 3, 0x3333 );
 	glLineWidth( 3.0 );
 	flat_draw_lines( positions, vertex_count, mode, 0.75f, 0.75f, 0.75f, 1.0f );
 }
@@ -3938,7 +3924,6 @@ static void
 cursor_draw_visible( const float *positions, int vertex_count, GLenum mode )
 {
 	glDepthFunc( GL_LEQUAL );
-	glDisable( GL_LINE_STIPPLE );
 	glLineWidth( 5.0 );
 	flat_draw_lines( positions, vertex_count, mode, 1.0f, 1.0f, 1.0f, 1.0f );
 }
@@ -3949,7 +3934,6 @@ static void
 cursor_post( void )
 {
 	glLineWidth( 1.0 );
-	glEnable( GL_LIGHTING );
 }
 
 
@@ -4402,7 +4386,6 @@ geometry_draw_highlight( void )
 		return;
 
 	glDisable( GL_DEPTH_TEST );
-	glDisable( GL_LIGHTING );
 
 	if (cur_highlight_strong) {
 		glLineWidth( 7.0 );
@@ -4415,7 +4398,6 @@ geometry_draw_highlight( void )
 		draw_node( cur_highlight_node, 1.0f, 1.0f, 1.0f );
 	glLineWidth( 1.0 );
 
-	glEnable( GL_LIGHTING );
 	glEnable( GL_DEPTH_TEST );
 }
 

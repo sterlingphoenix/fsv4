@@ -228,14 +228,14 @@ Step 5.2 - Remove legacy matrix stack
   [x] Verify: grep confirms no legacy matrix calls remain
 
 Step 5.3 - Remove legacy state management
-  [ ] Remove glEnable/glDisable for fixed-function features that are now
+  [x] Remove glEnable/glDisable for fixed-function features that are now
       handled by shaders (GL_LIGHTING, GL_LIGHT0, GL_COLOR_MATERIAL,
       GL_NORMALIZE)
-  [ ] Remove glShadeModel, glLightfv, glMaterialfv, glColorMaterial
-  [ ] Keep GL state that is still relevant in core profile (GL_DEPTH_TEST,
+  [x] Remove glShadeModel, glLightfv, glMaterialfv, glColorMaterial
+  [x] Keep GL state that is still relevant in core profile (GL_DEPTH_TEST,
       GL_CULL_FACE, GL_BLEND, GL_POLYGON_OFFSET_FILL, glPolygonMode,
       glLineWidth, glViewport, glClear)
-  [ ] Verify: program runs with no GL errors
+  [x] Verify: program runs with no GL errors
 
 Step 5.4 - Switch to core profile
   [ ] In ogl.c create-context signal handler, request a GL 3.3 core

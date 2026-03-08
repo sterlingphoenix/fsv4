@@ -52,14 +52,6 @@ draw_fsv( void )
 {
 	double dy, p, q;
 
-	if (about_part < 0.5) {
-		/* Set up a black, all-encompassing fog */
-		glEnable( GL_FOG );
-		glFogi( GL_FOG_MODE, GL_LINEAR );
-		glFogf( GL_FOG_START, 200.0 );
-		glFogf( GL_FOG_END, 1800.0 );
-	}
-
 	/* Set up projection matrix */
 	glmath_push_projection( );
 	glmath_load_identity_projection( );
@@ -99,8 +91,6 @@ draw_fsv( void )
 	/* Restore previous matrices */
 	glmath_pop_projection( );
 	glmath_pop_modelview( );
-
-	glDisable( GL_FOG );
 }
 
 

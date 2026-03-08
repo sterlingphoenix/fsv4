@@ -77,11 +77,6 @@ ogl_queue_render( void )
 static void
 ogl_init( void )
 {
-	float light_ambient[] = { 0.2, 0.2, 0.2, 1.0 };
-	float light_diffuse[] = { 0.5, 0.5, 0.5, 1.0 };
-	float light_specular[] = { 0.4, 0.4, 0.4, 1.0 };
-	float light_position[] = { 0.0, 0.0, 0.0, 1.0 };
-
 	/* Set viewport size */
 	ogl_resize( );
 
@@ -94,23 +89,9 @@ ogl_init( void )
 	glmath_rotated( -90.0, 0.0, 0.0, 1.0 );
 	glmath_push_modelview( ); /* Base matrix stays just below top of stack */
 
-	/* Set up lighting */
-	glEnable( GL_LIGHTING );
-	glEnable( GL_LIGHT0 );
-	glLightfv( GL_LIGHT0, GL_AMBIENT, light_ambient );
-	glLightfv( GL_LIGHT0, GL_DIFFUSE, light_diffuse );
-	glLightfv( GL_LIGHT0, GL_SPECULAR, light_specular );
-	glLightfv( GL_LIGHT0, GL_POSITION, light_position );
-
-	/* Set up materials */
-	glColorMaterial( GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE );
-	glEnable( GL_COLOR_MATERIAL );
-
 	/* Miscellaneous */
-	glAlphaFunc( GL_GEQUAL, 0.0625 );
 	glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
 	glEnable( GL_CULL_FACE );
-	glShadeModel( GL_FLAT );
 	glEnable( GL_DEPTH_TEST );
 	glDepthFunc( GL_LEQUAL );
 	glEnable( GL_POLYGON_OFFSET_FILL );
@@ -335,14 +316,8 @@ ogl_color_pick( int x, int y, unsigned int *face_id )
 		glBindFramebuffer( GL_FRAMEBUFFER, pick_fbo );
 		glViewport( 0, 0, viewport[2], viewport[3] );
 
-		/* Set up for flat-color picking (no lighting/texturing) */
-		glDisable( GL_LIGHTING );
-		glDisable( GL_TEXTURE_2D );
+		/* Set up for flat-color picking */
 		glDisable( GL_BLEND );
-		glDisable( GL_DITHER );
-		glDisable( GL_FOG );
-		glDisable( GL_ALPHA_TEST );
-		glShadeModel( GL_FLAT );
 
 		/* Clear to black (node ID 0 = no hit) */
 		glClearColor( 0.0, 0.0, 0.0, 0.0 );
@@ -357,8 +332,6 @@ ogl_color_pick( int x, int y, unsigned int *face_id )
 		gtk_gl_area_attach_buffers( GTK_GL_AREA(viewport_gl_area_w) );
 		glViewport( viewport[0], viewport[1], viewport[2], viewport[3] );
 		glClearColor( 0.0, 0.0, 0.0, 0.0 );
-		glEnable( GL_LIGHTING );
-		glShadeModel( GL_FLAT );
 		glEnable( GL_DEPTH_TEST );
 		glEnable( GL_CULL_FACE );
 		glEnable( GL_POLYGON_OFFSET_FILL );
