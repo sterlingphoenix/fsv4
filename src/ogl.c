@@ -43,6 +43,8 @@ static GtkWidget *viewport_gl_area_w = NULL;
 /* Shader programs (compiled in ogl_init, used later for modern GL rendering) */
 ShaderProgram lit_shader;
 ShaderProgram pick_shader;
+ShaderProgram text_shader;
+ShaderProgram flat_shader;
 
 /* Private FBO for color picking (keeps pick renders off the display FBO) */
 static GLuint pick_fbo = 0;
@@ -139,6 +141,20 @@ ogl_init( void )
 		g_warning( "Failed to compile pick shader" );
 	else {
 		shader_program_add_uniform( &pick_shader, "u_mvp" );
+	}
+
+	if (!shader_program_create( &text_shader, text_vert_src, text_frag_src ))
+		g_warning( "Failed to compile text shader" );
+	else {
+		shader_program_add_uniform( &text_shader, "u_mvp" );
+		shader_program_add_uniform( &text_shader, "u_texture" );
+	}
+
+	if (!shader_program_create( &flat_shader, flat_vert_src, flat_frag_src ))
+		g_warning( "Failed to compile flat shader" );
+	else {
+		shader_program_add_uniform( &flat_shader, "u_mvp" );
+		shader_program_add_uniform( &flat_shader, "u_color" );
 	}
 }
 

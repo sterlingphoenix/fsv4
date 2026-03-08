@@ -41,10 +41,12 @@ GtkWidget *ogl_widget_new( void );
 gboolean ogl_gl_query( void );
 #endif
 
-/* Shader programs (defined in ogl.c, used by geometry.c) */
+/* Shader programs (defined in ogl.c, used by geometry.c and tmaptext.c) */
 #ifdef FSV_SHADER_H
 extern ShaderProgram lit_shader;
 extern ShaderProgram pick_shader;
+extern ShaderProgram text_shader;
+extern ShaderProgram flat_shader;
 #endif
 
 

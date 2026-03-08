@@ -26,6 +26,10 @@
 #include "tmaptext.h"
 
 #include <epoxy/gl.h>
+#include <string.h>
+
+#include "shader.h"
+#include "ogl.h"
 
 /* Bitmap font definition */
 #define char_width 16
@@ -38,12 +42,32 @@
 /* Mipmaps make faraway text look nice */
 #define TEXT_USE_MIPMAPS
 
+/* Initial capacity for text vertex staging buffer */
+#define TEXT_INITIAL_CAPACITY 256
+
 
 /* Normal character aspect ratio */
 static const double char_aspect_ratio = (double)char_width / (double)char_height;
 
 /* Font texture object */
 static GLuint text_tobj;
+
+/* Per-vertex data for text rendering */
+typedef struct {
+	float position[3];
+	float texcoord[2];
+	float color[3];
+} TextVertex;
+
+/* Scratch VBO/VAO for text rendering */
+static GLuint text_vao = 0;
+static GLuint text_vbo = 0;
+static TextVertex *text_vertices = NULL;
+static int text_capacity = 0;
+static int text_count = 0;
+
+/* Current text color (set via text_set_color) */
+static float text_cur_color[3] = { 1.0f, 1.0f, 1.0f };
 
 
 /* Simple XBM parser - bits to bytes. Caller assumes responsibility for
@@ -81,7 +105,6 @@ xbm_pixels( const byte *xbm_bits, int pixel_count )
 void
 text_init( void )
 {
-	float border_color[] = { 0.0, 0.0, 0.0, 1.0 };
 	byte *charset_pixels;
 
 	/* Set up text texture object */
@@ -89,51 +112,205 @@ text_init( void )
 	glBindTexture( GL_TEXTURE_2D, text_tobj );
 
 	/* Set up texture-mapping parameters */
-	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP );
-	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP );
+	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
 #ifdef TEXT_USE_MIPMAPS
 	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR );
 #else
 	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
 #endif
 	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
-	glTexParameterfv( GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, border_color );
 
-	/* Load texture */
+	/* Load texture: use GL_R8 format (core profile compatible) */
 	glPixelStorei( GL_UNPACK_ALIGNMENT, 1 );
 	charset_pixels = xbm_pixels( charset_bits, charset_width * charset_height );
 #ifdef TEXT_USE_MIPMAPS
-	glTexImage2D( GL_TEXTURE_2D, 0, GL_INTENSITY4, charset_width, charset_height, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, charset_pixels );
+	glTexImage2D( GL_TEXTURE_2D, 0, GL_R8, charset_width, charset_height, 0, GL_RED, GL_UNSIGNED_BYTE, charset_pixels );
 	glGenerateMipmap( GL_TEXTURE_2D );
 #else
-	glTexImage2D( GL_TEXTURE_2D, 0, GL_INTENSITY4, charset_width, charset_height, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, charset_pixels );
+	glTexImage2D( GL_TEXTURE_2D, 0, GL_R8, charset_width, charset_height, 0, GL_RED, GL_UNSIGNED_BYTE, charset_pixels );
 #endif
 	xfree( charset_pixels );
+
+	/* Create VAO/VBO for text rendering */
+	glGenVertexArrays( 1, &text_vao );
+	glGenBuffers( 1, &text_vbo );
+
+	glBindVertexArray( text_vao );
+	glBindBuffer( GL_ARRAY_BUFFER, text_vbo );
+
+	/* position: location 0 */
+	glVertexAttribPointer( 0, 3, GL_FLOAT, GL_FALSE,
+	                       sizeof(TextVertex),
+	                       (void *)offsetof(TextVertex, position) );
+	glEnableVertexAttribArray( 0 );
+
+	/* texcoord: location 1 */
+	glVertexAttribPointer( 1, 2, GL_FLOAT, GL_FALSE,
+	                       sizeof(TextVertex),
+	                       (void *)offsetof(TextVertex, texcoord) );
+	glEnableVertexAttribArray( 1 );
+
+	/* color: location 2 */
+	glVertexAttribPointer( 2, 3, GL_FLOAT, GL_FALSE,
+	                       sizeof(TextVertex),
+	                       (void *)offsetof(TextVertex, color) );
+	glEnableVertexAttribArray( 2 );
+
+	glBindVertexArray( 0 );
+	glBindBuffer( GL_ARRAY_BUFFER, 0 );
 }
 
 
-/* Call before drawing text */
+/* Ensures the staging buffer has room for n more vertices */
+static void
+text_ensure_capacity( int n )
+{
+	int needed = text_count + n;
+	if (needed > text_capacity) {
+		int new_cap = text_capacity ? text_capacity * 2 : TEXT_INITIAL_CAPACITY;
+		while (new_cap < needed)
+			new_cap *= 2;
+		text_vertices = g_realloc( text_vertices, new_cap * sizeof(TextVertex) );
+		text_capacity = new_cap;
+	}
+}
+
+
+/* Adds a quad (two triangles, 6 vertices) to the text staging buffer */
+static void
+text_add_quad( float x0, float y0, float x1, float y1,
+               float x2, float y2, float x3, float y3,
+               float z,
+               float tx0, float ty0, float tx1, float ty1 )
+{
+	TextVertex *v;
+
+	text_ensure_capacity( 6 );
+	v = &text_vertices[text_count];
+
+	/* Triangle 1: v0, v1, v2 (lower-left, lower-right, upper-right) */
+	v[0].position[0] = x0; v[0].position[1] = y0; v[0].position[2] = z;
+	v[0].texcoord[0] = tx0; v[0].texcoord[1] = ty0;
+	v[0].color[0] = text_cur_color[0]; v[0].color[1] = text_cur_color[1]; v[0].color[2] = text_cur_color[2];
+
+	v[1].position[0] = x1; v[1].position[1] = y1; v[1].position[2] = z;
+	v[1].texcoord[0] = tx1; v[1].texcoord[1] = ty0;
+	v[1].color[0] = text_cur_color[0]; v[1].color[1] = text_cur_color[1]; v[1].color[2] = text_cur_color[2];
+
+	v[2].position[0] = x2; v[2].position[1] = y2; v[2].position[2] = z;
+	v[2].texcoord[0] = tx1; v[2].texcoord[1] = ty1;
+	v[2].color[0] = text_cur_color[0]; v[2].color[1] = text_cur_color[1]; v[2].color[2] = text_cur_color[2];
+
+	/* Triangle 2: v0, v2, v3 (lower-left, upper-right, upper-left) */
+	v[3] = v[0];
+	v[4] = v[2];
+
+	v[5].position[0] = x3; v[5].position[1] = y3; v[5].position[2] = z;
+	v[5].texcoord[0] = tx0; v[5].texcoord[1] = ty1;
+	v[5].color[0] = text_cur_color[0]; v[5].color[1] = text_cur_color[1]; v[5].color[2] = text_cur_color[2];
+
+	text_count += 6;
+}
+
+
+/* Uploads accumulated quads and draws them with the current MVP */
+static void
+text_flush( void )
+{
+	float mv[16], proj[16];
+	float mvp[16];
+	int i, j, k;
+
+	if (text_count == 0)
+		return;
+
+	/* Read current GL matrices */
+	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
+	glGetFloatv( GL_PROJECTION_MATRIX, proj );
+
+	/* Compute MVP */
+	for (j = 0; j < 4; j++)
+		for (i = 0; i < 4; i++) {
+			float sum = 0.0f;
+			for (k = 0; k < 4; k++)
+				sum += proj[i + k * 4] * mv[k + j * 4];
+			mvp[i + j * 4] = sum;
+		}
+
+	/* Upload text vertices */
+	glBindBuffer( GL_ARRAY_BUFFER, text_vbo );
+	glBufferData( GL_ARRAY_BUFFER,
+	              text_count * sizeof(TextVertex),
+	              text_vertices, GL_STREAM_DRAW );
+	glBindBuffer( GL_ARRAY_BUFFER, 0 );
+
+	/* Set MVP uniform and draw */
+	glUniformMatrix4fv(
+		shader_program_get_uniform( &text_shader, "u_mvp" ),
+		1, GL_FALSE, mvp );
+
+	glBindVertexArray( text_vao );
+	glDrawArrays( GL_TRIANGLES, 0, text_count );
+	glBindVertexArray( 0 );
+
+	text_count = 0;
+}
+
+
+/* Sets the current text color for subsequent text_draw_* calls */
+void
+text_set_color( float r, float g, float b )
+{
+	/* Flush any pending text that uses the old color */
+	text_flush( );
+	text_cur_color[0] = r;
+	text_cur_color[1] = g;
+	text_cur_color[2] = b;
+}
+
+
+/* Call before drawing text.
+ * Binds the text shader and font texture; disables polygon offset. */
 void
 text_pre( void )
 {
-	glDisable( GL_LIGHTING );
 	glDisable( GL_POLYGON_OFFSET_FILL );
-	glEnable( GL_ALPHA_TEST );
 	glEnable( GL_BLEND );
-	glEnable( GL_TEXTURE_2D );
+	glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+	glDisable( GL_CULL_FACE );
+
+	/* Bind text shader and font texture */
+	shader_program_use( &text_shader );
+	glActiveTexture( GL_TEXTURE0 );
 	glBindTexture( GL_TEXTURE_2D, text_tobj );
+	glUniform1i(
+		shader_program_get_uniform( &text_shader, "u_texture" ),
+		0 );
+
+	/* Reset the text batch */
+	text_count = 0;
 }
 
 
-/* Call after drawing text */
+/* Flush accumulated text and call before the GL matrix changes */
+void
+text_pre_matrix_change( void )
+{
+	text_flush( );
+}
+
+
+/* Call after drawing text — flushes remaining text and restores GL state */
 void
 text_post( void )
 {
-	glDisable( GL_TEXTURE_2D );
-	glDisable( GL_BLEND );
-	glDisable( GL_ALPHA_TEST );
+	text_flush( );
+	shader_program_unuse( );
+
 	glEnable( GL_POLYGON_OFFSET_FILL );
-	glEnable( GL_LIGHTING );
+	glEnable( GL_CULL_FACE );
+	glDisable( GL_BLEND );
 }
 
 
@@ -208,39 +385,33 @@ void
 text_draw_straight( const char *text, const XYZvec *text_pos, const XYvec *text_max_dims )
 {
 	XYvec cdims;
-	XYvec t_c0, t_c1, c0, c1;
+	XYvec t_c0, t_c1;
+	float x0, y0, x1, y1;
 	int len, i;
 
 	len = strlen( text );
 	get_char_dims( len, text_max_dims, &cdims );
 
 	/* Corners of first character */
-	c0.x = text_pos->x - 0.5 * (double)len * cdims.x;
-	c0.y = text_pos->y - 0.5 * cdims.y;
-	c1.x = c0.x + cdims.x;
-	c1.y = c0.y + cdims.y;
+	x0 = (float)(text_pos->x - 0.5 * (double)len * cdims.x);
+	y0 = (float)(text_pos->y - 0.5 * cdims.y);
+	x1 = x0 + (float)cdims.x;
+	y1 = y0 + (float)cdims.y;
 
-	glBegin( GL_QUADS );
 	for (i = 0; i < len; i++) {
 		get_char_tex_coords( text[i], &t_c0, &t_c1 );
 
-		/* Lower left */
-		glTexCoord2d( t_c0.x, t_c0.y );
-		glVertex3d( c0.x, c0.y, text_pos->z );
-		/* Lower right */
-		glTexCoord2d( t_c1.x, t_c0.y );
-		glVertex3d( c1.x, c0.y, text_pos->z );
-		/* Upper right */
-		glTexCoord2d( t_c1.x, t_c1.y );
-		glVertex3d( c1.x, c1.y, text_pos->z );
-		/* Upper left */
-		glTexCoord2d( t_c0.x, t_c1.y );
-		glVertex3d( c0.x, c1.y, text_pos->z );
+		text_add_quad( x0, y0, x1, y0,
+		               x1, y1, x0, y1,
+		               (float)text_pos->z,
+		               (float)t_c0.x, (float)t_c0.y,
+		               (float)t_c1.x, (float)t_c1.y );
 
-		c0.x = c1.x;
-		c1.x += cdims.x;
+		x0 = x1;
+		x1 += (float)cdims.x;
 	}
-	glEnd( );
+
+	text_flush( );
 }
 
 
@@ -251,9 +422,10 @@ void
 text_draw_straight_rotated( const char *text, const RTZvec *text_pos, const XYvec *text_max_dims )
 {
 	XYvec cdims;
-	XYvec t_c0, t_c1, c0, c1;
+	XYvec t_c0, t_c1;
 	XYvec hdelta, vdelta;
 	double sin_theta, cos_theta;
+	float c0x, c0y, c1x, c1y;
 	int len, i;
 
 	len = strlen( text );
@@ -270,34 +442,29 @@ text_draw_straight_rotated( const char *text, const RTZvec *text_pos, const XYve
 	vdelta.y = sin_theta * cdims.y;
 
 	/* Corners of first character */
-	c0.x = cos_theta * text_pos->r - 0.5 * ((double)len * hdelta.x + vdelta.x);
-	c0.y = sin_theta * text_pos->r - 0.5 * ((double)len * hdelta.y + vdelta.y);
-	c1.x = c0.x + hdelta.x + vdelta.x;
-	c1.y = c0.y + hdelta.y + vdelta.y;
+	c0x = (float)(cos_theta * text_pos->r - 0.5 * ((double)len * hdelta.x + vdelta.x));
+	c0y = (float)(sin_theta * text_pos->r - 0.5 * ((double)len * hdelta.y + vdelta.y));
+	c1x = (float)(c0x + hdelta.x + vdelta.x);
+	c1y = (float)(c0y + hdelta.y + vdelta.y);
 
-	glBegin( GL_QUADS );
 	for (i = 0; i < len; i++) {
 		get_char_tex_coords( text[i], &t_c0, &t_c1 );
 
-		/* Lower left */
-		glTexCoord2d( t_c0.x, t_c0.y );
-		glVertex3d( c0.x, c0.y, text_pos->z );
-		/* Lower right */
-		glTexCoord2d( t_c1.x, t_c0.y );
-		glVertex3d( c0.x + hdelta.x, c0.y + hdelta.y, text_pos->z );
-		/* Upper right */
-		glTexCoord2d( t_c1.x, t_c1.y );
-		glVertex3d( c1.x, c1.y, text_pos->z );
-		/* Upper left */
-		glTexCoord2d( t_c0.x, t_c1.y );
-		glVertex3d( c1.x - hdelta.x, c1.y - hdelta.y, text_pos->z );
+		text_add_quad( c0x, c0y,
+		               (float)(c0x + hdelta.x), (float)(c0y + hdelta.y),
+		               c1x, c1y,
+		               (float)(c1x - hdelta.x), (float)(c1y - hdelta.y),
+		               (float)text_pos->z,
+		               (float)t_c0.x, (float)t_c0.y,
+		               (float)t_c1.x, (float)t_c1.y );
 
-		c0.x += hdelta.x;
-		c0.y += hdelta.y;
-		c1.x += hdelta.x;
-		c1.y += hdelta.y;
+		c0x += (float)hdelta.x;
+		c0y += (float)hdelta.y;
+		c1x += (float)hdelta.x;
+		c1y += (float)hdelta.y;
 	}
-	glEnd( );
+
+	text_flush( );
 }
 
 
@@ -328,7 +495,6 @@ text_draw_curved( const char *text, const RTZvec *text_pos, const RTvec *text_ma
 	char_arc_width = (180.0 / PI) * cdims.x / text_r;
 
 	theta = text_pos->theta + 0.5 * (double)(len - 1) * char_arc_width;
-	glBegin( GL_QUADS );
 	for (i = 0; i < len; i++) {
 		sin_theta = sin( RAD(theta) );
 		cos_theta = cos( RAD(theta) );
@@ -344,22 +510,19 @@ text_draw_curved( const char *text, const RTZvec *text_pos, const RTvec *text_ma
 
 		get_char_tex_coords( text[i], &t_c0, &t_c1 );
 
-		/* Lower left */
-		glTexCoord2d( t_c0.x, t_c0.y );
-		glVertex3d( char_pos.x - fwsl.x, char_pos.y - fwsl.y, text_pos->z );
-		/* Lower right */
-		glTexCoord2d( t_c1.x, t_c0.y );
-		glVertex3d( char_pos.x + bwsl.x, char_pos.y + bwsl.y, text_pos->z );
-		/* Upper right */
-		glTexCoord2d( t_c1.x, t_c1.y );
-		glVertex3d( char_pos.x + fwsl.x, char_pos.y + fwsl.y, text_pos->z );
-		/* Upper left */
-		glTexCoord2d( t_c0.x, t_c1.y );
-		glVertex3d( char_pos.x - bwsl.x, char_pos.y - bwsl.y, text_pos->z );
+		text_add_quad(
+			(float)(char_pos.x - fwsl.x), (float)(char_pos.y - fwsl.y),
+			(float)(char_pos.x + bwsl.x), (float)(char_pos.y + bwsl.y),
+			(float)(char_pos.x + fwsl.x), (float)(char_pos.y + fwsl.y),
+			(float)(char_pos.x - bwsl.x), (float)(char_pos.y - bwsl.y),
+			(float)text_pos->z,
+			(float)t_c0.x, (float)t_c0.y,
+			(float)t_c1.x, (float)t_c1.y );
 
 		theta -= char_arc_width;
 	}
-	glEnd( );
+
+	text_flush( );
 }
 
 

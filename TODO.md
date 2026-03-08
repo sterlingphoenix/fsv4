@@ -211,13 +211,13 @@ Remove all legacy OpenGL code now that all three modes use the modern
 pipeline.
 
 Step 5.1 - Remove legacy drawing code
-  [ ] Remove all glBegin/glEnd/glVertex/glNormal/glColor immediate-mode
+  [x] Remove all glBegin/glEnd/glVertex/glNormal/glColor immediate-mode
       calls from geometry.c
-  [ ] Remove display list management (glNewList, glEndList, glCallList,
+  [x] Remove display list management (glNewList, glEndList, glCallList,
       glGenLists, glDeleteLists) and the a_dlist/b_dlist/c_dlist fields
-  [ ] Remove the per-directory display list stale flags (replaced by
+  [x] Remove the per-directory display list stale flags (replaced by
       VBO batch dirty flags)
-  [ ] Verify: grep confirms no legacy draw calls remain (comments
+  [x] Verify: grep confirms no legacy draw calls remain (comments
       excluded)
 
 Step 5.2 - Remove legacy matrix stack
