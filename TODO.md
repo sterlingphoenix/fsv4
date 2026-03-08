@@ -238,10 +238,10 @@ Step 5.3 - Remove legacy state management
   [x] Verify: program runs with no GL errors
 
 Step 5.4 - Switch to core profile
-  [ ] In ogl.c create-context signal handler, request a GL 3.3 core
+  [x] In ogl.c create-context signal handler, request a GL 3.3 core
       profile context instead of compatibility
-  [ ] Remove gdk_gl_context_set_forward_compatible(FALSE)
-  [ ] Verify: program runs in core profile with no GL errors
+  [x] Remove gdk_gl_context_set_forward_compatible(FALSE)
+  [x] Verify: program runs in core profile with no GL errors
 
 Step 5.5 - Clean up
   [ ] Remove any dead code, unused includes, unused variables left over

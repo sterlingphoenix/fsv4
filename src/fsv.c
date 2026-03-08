@@ -639,22 +639,6 @@ main( int argc, char **argv )
 		}
 	}
 
-	/* Request a legacy (compatibility profile) GL context.
-	 * GtkGLArea defaults to core profile, which doesn't support
-	 * the legacy GL calls (glBegin/glEnd, display lists, fixed-
-	 * function lighting) used throughout this codebase. */
-	{
-		const char *gdk_gl = g_getenv( "GDK_GL" );
-		if (gdk_gl == NULL) {
-			g_setenv( "GDK_GL", "legacy", TRUE );
-		}
-		else if (strstr( gdk_gl, "legacy" ) == NULL) {
-			char *new_val = g_strdup_printf( "%s,legacy", gdk_gl );
-			g_setenv( "GDK_GL", new_val, TRUE );
-			g_free( new_val );
-		}
-	}
-
 	/* Patch incomplete cursor themes before GTK opens the display */
 	cursor_theme_fixup( );
 

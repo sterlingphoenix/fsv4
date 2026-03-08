@@ -407,9 +407,10 @@ ogl_widget_new( void )
 	/* We control when rendering happens (via queue_render from animation loop) */
 	gtk_gl_area_set_auto_render( GTK_GL_AREA(viewport_gl_area_w), FALSE );
 
-	/* Connect signals.
-	 * Note: compatibility profile is requested via GDK_GL=legacy
-	 * environment variable set in main() before gtk_init() */
+	/* Request GL 3.3 core profile (GtkGLArea default) */
+	gtk_gl_area_set_required_version( GTK_GL_AREA(viewport_gl_area_w), 3, 3 );
+
+	/* Connect signals */
 	g_signal_connect( viewport_gl_area_w, "realize", G_CALLBACK(realize_cb), NULL );
 	g_signal_connect( viewport_gl_area_w, "render", G_CALLBACK(render_cb), NULL );
 	g_signal_connect( viewport_gl_area_w, "resize", G_CALLBACK(resize_cb), NULL );
