@@ -221,11 +221,11 @@ Step 5.1 - Remove legacy drawing code
       excluded)
 
 Step 5.2 - Remove legacy matrix stack
-  [ ] Remove all glMatrixMode, glPushMatrix, glPopMatrix, glLoadIdentity,
+  [x] Remove all glMatrixMode, glPushMatrix, glPopMatrix, glLoadIdentity,
       glTranslated, glRotated, glScaled calls
-  [ ] All matrix operations now go through the glmath module
-  [ ] Remove the base modelview matrix setup in ogl.c realize_cb
-  [ ] Verify: grep confirms no legacy matrix calls remain
+  [x] All matrix operations now go through the glmath module
+  [x] Remove the base modelview matrix setup in ogl.c realize_cb
+  [x] Verify: grep confirms no legacy matrix calls remain
 
 Step 5.3 - Remove legacy state management
   [ ] Remove glEnable/glDisable for fixed-function features that are now

@@ -85,14 +85,14 @@ ogl_init( void )
 	/* Set viewport size */
 	ogl_resize( );
 
-	/* Create the initial modelview matrix
+	/* Create the initial modelview matrix via glmath
 	 * (right-handed coordinate system, +z = straight up,
 	 * camera at origin looking in -x direction) */
-	glMatrixMode( GL_MODELVIEW );
-	glLoadIdentity( );
-	glRotated( -90.0, 1.0, 0.0, 0.0 );
-	glRotated( -90.0, 0.0, 0.0, 1.0 );
-	glPushMatrix( ); /* Matrix will stay just below top of MVM stack */
+	glmath_init( );
+	glmath_load_identity_modelview( );
+	glmath_rotated( -90.0, 1.0, 0.0, 0.0 );
+	glmath_rotated( -90.0, 0.0, 0.0, 1.0 );
+	glmath_push_modelview( ); /* Base matrix stays just below top of stack */
 
 	/* Set up lighting */
 	glEnable( GL_LIGHTING );
@@ -119,13 +119,6 @@ ogl_init( void )
 
 	/* Initialize texture-mapped text engine */
 	text_init( );
-
-	/* Initialize glmath module with the same base modelview matrix */
-	glmath_init( );
-	glmath_load_identity_modelview( );
-	glmath_rotated( -90.0, 1.0, 0.0, 0.0 );
-	glmath_rotated( -90.0, 0.0, 0.0, 1.0 );
-	glmath_push_modelview( );
 
 	/* Compile shader programs (not yet used for drawing) */
 	if (!shader_program_create( &lit_shader, lit_vert_src, lit_frag_src ))
@@ -204,10 +197,9 @@ setup_projection_matrix( boolean full_reset )
 
 	dx = camera->near_clip * tan( 0.5 * RAD(camera->fov) );
 	dy = dx / ogl_aspect_ratio( );
-	glMatrixMode( GL_PROJECTION );
 	if (full_reset)
-		glLoadIdentity( );
-	glFrustum( - dx, dx, - dy, dy, camera->near_clip, camera->far_clip );
+		glmath_load_identity_projection( );
+	glmath_frustum( - dx, dx, - dy, dy, camera->near_clip, camera->far_clip );
 }
 
 
@@ -215,35 +207,34 @@ setup_projection_matrix( boolean full_reset )
 static void
 setup_modelview_matrix( void )
 {
-	glMatrixMode( GL_MODELVIEW );
 	/* Remember, base matrix lives just below top of stack */
-	glPopMatrix( );
-	glPushMatrix( );
+	glmath_pop_modelview( );
+	glmath_push_modelview( );
 
 	switch (globals.fsv_mode) {
 		case FSV_SPLASH:
 		break;
 
 		case FSV_DISCV:
-		glTranslated( - camera->distance, 0.0, 0.0 );
-		glRotated( 90.0, 0.0, 1.0, 0.0 );
-		glRotated( 90.0, 0.0, 0.0, 1.0 );
-		glTranslated( - DISCV_CAMERA(camera)->target.x, - DISCV_CAMERA(camera)->target.y, 0.0 );
+		glmath_translated( - camera->distance, 0.0, 0.0 );
+		glmath_rotated( 90.0, 0.0, 1.0, 0.0 );
+		glmath_rotated( 90.0, 0.0, 0.0, 1.0 );
+		glmath_translated( - DISCV_CAMERA(camera)->target.x, - DISCV_CAMERA(camera)->target.y, 0.0 );
 		break;
 
 		case FSV_MAPV:
-		glTranslated( - camera->distance, 0.0, 0.0 );
-		glRotated( camera->phi, 0.0, 1.0, 0.0 );
-		glRotated( - camera->theta, 0.0, 0.0, 1.0 );
-		glTranslated( - MAPV_CAMERA(camera)->target.x, - MAPV_CAMERA(camera)->target.y, - MAPV_CAMERA(camera)->target.z );
+		glmath_translated( - camera->distance, 0.0, 0.0 );
+		glmath_rotated( camera->phi, 0.0, 1.0, 0.0 );
+		glmath_rotated( - camera->theta, 0.0, 0.0, 1.0 );
+		glmath_translated( - MAPV_CAMERA(camera)->target.x, - MAPV_CAMERA(camera)->target.y, - MAPV_CAMERA(camera)->target.z );
 		break;
 
 		case FSV_TREEV:
-		glTranslated( - camera->distance, 0.0, 0.0 );
-		glRotated( camera->phi, 0.0, 1.0, 0.0 );
-		glRotated( - camera->theta, 0.0, 0.0, 1.0 );
-		glTranslated( TREEV_CAMERA(camera)->target.r, 0.0, - TREEV_CAMERA(camera)->target.z );
-		glRotated( 180.0 - TREEV_CAMERA(camera)->target.theta, 0.0, 0.0, 1.0 );
+		glmath_translated( - camera->distance, 0.0, 0.0 );
+		glmath_rotated( camera->phi, 0.0, 1.0, 0.0 );
+		glmath_rotated( - camera->theta, 0.0, 0.0, 1.0 );
+		glmath_translated( TREEV_CAMERA(camera)->target.r, 0.0, - TREEV_CAMERA(camera)->target.z );
+		glmath_rotated( 180.0 - TREEV_CAMERA(camera)->target.theta, 0.0, 0.0, 1.0 );
 		break;
 
 		SWITCH_FAIL

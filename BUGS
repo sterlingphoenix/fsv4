@@ -1,6 +1,8 @@
 * Input is suspended during expand/initial animation but not collapse animation.
 * In TreeV mode, initial animation doesn't show. If switching when already expandedd, animatino is very very slow.
 * DiscV expand/collapse animations should be faster.
+In DiscV, discs render underneath other discs. 
 * since MapV is the default, it should be the first option in the visualisation menu
 * In TreeV, initial block is very high which leads to the top "vanishing".
 * In TreeV, text often blinks and is partially visible.
+* About page should render a lot faster. 

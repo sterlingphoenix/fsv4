@@ -75,14 +75,19 @@ static int frustum_viewport_h; /* viewport height in pixels */
 static void
 frustum_extract( void )
 {
+	const float *fmv = glmath_get_modelview( );
+	const float *fproj = glmath_get_projection( );
 	double mv[16], proj[16];
 	double *m = frustum_mvp;
 	double len;
 	int i, j;
 	GLint viewport[4];
 
-	glGetDoublev( GL_MODELVIEW_MATRIX, mv );
-	glGetDoublev( GL_PROJECTION_MATRIX, proj );
+	/* Copy float matrices to double for frustum plane extraction */
+	for (i = 0; i < 16; i++) {
+		mv[i] = (double)fmv[i];
+		proj[i] = (double)fproj[i];
+	}
 	glGetIntegerv( GL_VIEWPORT, viewport );
 
 	frustum_proj_scale = proj[5]; /* P[1][1] = cot(fov/2) */
@@ -550,39 +555,24 @@ discv_rebuild_batch( void )
 static void
 discv_setup_lit_shader( void )
 {
-	float mv[16], proj[16];
-	float mvp[16];
-	float norm[9];
-	int i, j, k;
+	mat4 mvp;
+	mat3 norm;
 
-	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
-	glGetFloatv( GL_PROJECTION_MATRIX, proj );
-
-	for (j = 0; j < 4; j++) {
-		for (i = 0; i < 4; i++) {
-			float sum = 0.0f;
-			for (k = 0; k < 4; k++)
-				sum += proj[i + k * 4] * mv[k + j * 4];
-			mvp[i + j * 4] = sum;
-		}
-	}
-
-	for (i = 0; i < 3; i++)
-		for (j = 0; j < 3; j++)
-			norm[i + j * 3] = mv[i + j * 4];
+	glmath_get_mvp( mvp );
+	glmath_get_normal_matrix( norm );
 
 	glDisable( GL_LIGHTING );
 
 	shader_program_use( &lit_shader );
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &lit_shader, "u_mvp" ),
-		1, GL_FALSE, mvp );
+		1, GL_FALSE, (const float *)mvp );
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &lit_shader, "u_modelview" ),
-		1, GL_FALSE, mv );
+		1, GL_FALSE, glmath_get_modelview( ) );
 	glUniformMatrix3fv(
 		shader_program_get_uniform( &lit_shader, "u_normal_matrix" ),
-		1, GL_FALSE, norm );
+		1, GL_FALSE, (const float *)norm );
 	glUniform1f(
 		shader_program_get_uniform( &lit_shader, "u_diffuse_scale" ),
 		1.0f );
@@ -593,26 +583,14 @@ discv_setup_lit_shader( void )
 static void
 discv_setup_pick_shader( void )
 {
-	float mv[16], proj[16];
-	float mvp[16];
-	int i, j, k;
+	mat4 mvp;
 
-	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
-	glGetFloatv( GL_PROJECTION_MATRIX, proj );
-
-	for (j = 0; j < 4; j++) {
-		for (i = 0; i < 4; i++) {
-			float sum = 0.0f;
-			for (k = 0; k < 4; k++)
-				sum += proj[i + k * 4] * mv[k + j * 4];
-			mvp[i + j * 4] = sum;
-		}
-	}
+	glmath_get_mvp( mvp );
 
 	shader_program_use( &pick_shader );
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &pick_shader, "u_mvp" ),
-		1, GL_FALSE, mvp );
+		1, GL_FALSE, (const float *)mvp );
 }
 
 
@@ -673,13 +651,13 @@ discv_draw_recursive( GNode *dnode, double acc_x, double acc_y, double acc_scale
 	visible = world_radius <= 0.0 ||
 	          frustum_test_sphere( world_x, world_y, 0.0, world_radius );
 
-	glPushMatrix( );
+	glmath_push_modelview( );
 
 	dir_collapsed = DIR_COLLAPSED(dnode);
 	dir_expanded = DIR_EXPANDED(dnode);
 
-	glTranslated( dir_gparams->pos.x, dir_gparams->pos.y, 0.0 );
-	glScaled( dir_ndesc->deployment,  dir_ndesc->deployment,  1.0 );
+	glmath_translated( dir_gparams->pos.x, dir_gparams->pos.y, 0.0 );
+	glmath_scaled( dir_ndesc->deployment,  dir_ndesc->deployment,  1.0 );
 
 	if (visible &&
 	    !(world_radius > 0.0 &&
@@ -706,7 +684,7 @@ discv_draw_recursive( GNode *dnode, double acc_x, double acc_y, double acc_scale
 		}
 	}
 
-	glPopMatrix( );
+	glmath_pop_modelview( );
 }
 
 
@@ -1270,8 +1248,8 @@ mapv_draw_recursive( GNode *dnode, double acc_z )
 			return;
 	}
 
-	glPushMatrix( );
-	glTranslated( 0.0, 0.0, gparams->height );
+	glmath_push_modelview( );
+	glmath_translated( 0.0, 0.0, gparams->height );
 
 	dir_ndesc = DIR_NODE_DESC(dnode);
 	dir_collapsed = DIR_COLLAPSED(dnode);
@@ -1279,8 +1257,7 @@ mapv_draw_recursive( GNode *dnode, double acc_z )
 
 	if (!dir_collapsed && !dir_expanded) {
 		/* Grow/shrink children heightwise */
-		glEnable( GL_NORMALIZE );
-		glScaled( 1.0, 1.0, dir_ndesc->deployment );
+		glmath_scaled( 1.0, 1.0, dir_ndesc->deployment );
 	}
 
 	{
@@ -1319,10 +1296,7 @@ mapv_draw_recursive( GNode *dnode, double acc_z )
 		}
 	}
 
-	if (!dir_collapsed && !dir_expanded)
-		glDisable( GL_NORMALIZE );
-
-	glPopMatrix( );
+	glmath_pop_modelview( );
 }
 
 
@@ -1647,44 +1621,24 @@ mapv_rebuild_batch( void )
 static void
 mapv_setup_lit_shader( float diffuse_scale )
 {
-	float mv[16], proj[16];
-	float mvp[16];
-	float norm[9];
-	int i, j, k;
+	mat4 mvp;
+	mat3 norm;
 
-	/* Read current GL matrices (set up by ogl.c) */
-	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
-	glGetFloatv( GL_PROJECTION_MATRIX, proj );
-
-	/* Compute MVP = proj * mv (column-major) */
-	for (j = 0; j < 4; j++) {
-		for (i = 0; i < 4; i++) {
-			float sum = 0.0f;
-			for (k = 0; k < 4; k++)
-				sum += proj[i + k * 4] * mv[k + j * 4];
-			mvp[i + j * 4] = sum;
-		}
-	}
-
-	/* Compute normal matrix = transpose(inverse(upper-left 3x3 of mv)).
-	 * For orthogonal modelview (no non-uniform scale), this equals the
-	 * upper-left 3x3 of mv itself. Use that as a simpler, robust path. */
-	for (i = 0; i < 3; i++)
-		for (j = 0; j < 3; j++)
-			norm[i + j * 3] = mv[i + j * 4];
+	glmath_get_mvp( mvp );
+	glmath_get_normal_matrix( norm );
 
 	glDisable( GL_LIGHTING );
 
 	shader_program_use( &lit_shader );
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &lit_shader, "u_mvp" ),
-		1, GL_FALSE, mvp );
+		1, GL_FALSE, (const float *)mvp );
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &lit_shader, "u_modelview" ),
-		1, GL_FALSE, mv );
+		1, GL_FALSE, glmath_get_modelview( ) );
 	glUniformMatrix3fv(
 		shader_program_get_uniform( &lit_shader, "u_normal_matrix" ),
-		1, GL_FALSE, norm );
+		1, GL_FALSE, (const float *)norm );
 	glUniform1f(
 		shader_program_get_uniform( &lit_shader, "u_diffuse_scale" ),
 		diffuse_scale );
@@ -1704,27 +1658,14 @@ mapv_teardown_lit_shader( void )
 static void
 mapv_setup_pick_shader( void )
 {
-	float mv[16], proj[16];
-	float mvp[16];
-	int i, j, k;
+	mat4 mvp;
 
-	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
-	glGetFloatv( GL_PROJECTION_MATRIX, proj );
-
-	/* Compute MVP = proj * mv (column-major) */
-	for (j = 0; j < 4; j++) {
-		for (i = 0; i < 4; i++) {
-			float sum = 0.0f;
-			for (k = 0; k < 4; k++)
-				sum += proj[i + k * 4] * mv[k + j * 4];
-			mvp[i + j * 4] = sum;
-		}
-	}
+	glmath_get_mvp( mvp );
 
 	shader_program_use( &pick_shader );
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &pick_shader, "u_mvp" ),
-		1, GL_FALSE, mvp );
+		1, GL_FALSE, (const float *)mvp );
 }
 
 
@@ -3233,39 +3174,24 @@ treev_rebuild_batch( void )
 static void
 treev_setup_lit_shader_ex( float diffuse_scale )
 {
-	float mv[16], proj[16];
-	float mvp[16];
-	float norm[9];
-	int i, j, k;
+	mat4 mvp;
+	mat3 norm;
 
-	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
-	glGetFloatv( GL_PROJECTION_MATRIX, proj );
-
-	for (j = 0; j < 4; j++) {
-		for (i = 0; i < 4; i++) {
-			float sum = 0.0f;
-			for (k = 0; k < 4; k++)
-				sum += proj[i + k * 4] * mv[k + j * 4];
-			mvp[i + j * 4] = sum;
-		}
-	}
-
-	for (i = 0; i < 3; i++)
-		for (j = 0; j < 3; j++)
-			norm[i + j * 3] = mv[i + j * 4];
+	glmath_get_mvp( mvp );
+	glmath_get_normal_matrix( norm );
 
 	glDisable( GL_LIGHTING );
 
 	shader_program_use( &lit_shader );
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &lit_shader, "u_mvp" ),
-		1, GL_FALSE, mvp );
+		1, GL_FALSE, (const float *)mvp );
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &lit_shader, "u_modelview" ),
-		1, GL_FALSE, mv );
+		1, GL_FALSE, glmath_get_modelview( ) );
 	glUniformMatrix3fv(
 		shader_program_get_uniform( &lit_shader, "u_normal_matrix" ),
-		1, GL_FALSE, norm );
+		1, GL_FALSE, (const float *)norm );
 	glUniform1f(
 		shader_program_get_uniform( &lit_shader, "u_diffuse_scale" ),
 		diffuse_scale );
@@ -3282,26 +3208,14 @@ treev_setup_lit_shader( void )
 static void
 treev_setup_pick_shader( void )
 {
-	float mv[16], proj[16];
-	float mvp[16];
-	int i, j, k;
+	mat4 mvp;
 
-	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
-	glGetFloatv( GL_PROJECTION_MATRIX, proj );
-
-	for (j = 0; j < 4; j++) {
-		for (i = 0; i < 4; i++) {
-			float sum = 0.0f;
-			for (k = 0; k < 4; k++)
-				sum += proj[i + k * 4] * mv[k + j * 4];
-			mvp[i + j * 4] = sum;
-		}
-	}
+	glmath_get_mvp( mvp );
 
 	shader_program_use( &pick_shader );
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &pick_shader, "u_mvp" ),
-		1, GL_FALSE, mvp );
+		1, GL_FALSE, (const float *)mvp );
 }
 
 
@@ -3626,7 +3540,7 @@ treev_draw_recursive( GNode *dnode, double prev_r0, double r0, double acc_theta 
 			return;
 	}
 
-	glPushMatrix( );
+	glmath_push_modelview( );
 
 	if (!dir_collapsed) {
 		if (!dir_expanded) {
@@ -3637,17 +3551,16 @@ treev_draw_recursive( GNode *dnode, double prev_r0, double r0, double acc_theta 
 
 			/* Platform should shrink to / grow from
 			 * corresponding leaf position */
-			glEnable( GL_NORMALIZE );
 			leaf.r = prev_r0 + dir_gparams->leaf.distance;
 			leaf.theta = dir_gparams->leaf.theta;
-			glRotated( leaf.theta, 0.0, 0.0, 1.0 );
-			glTranslated( leaf.r, 0.0, 0.0 );
-			glScaled( dir_ndesc->deployment, dir_ndesc->deployment, dir_ndesc->deployment );
-			glTranslated( - leaf.r, 0.0, 0.0 );
-			glRotated( - leaf.theta, 0.0, 0.0, 1.0 );
+			glmath_rotated( leaf.theta, 0.0, 0.0, 1.0 );
+			glmath_translated( leaf.r, 0.0, 0.0 );
+			glmath_scaled( dir_ndesc->deployment, dir_ndesc->deployment, dir_ndesc->deployment );
+			glmath_translated( - leaf.r, 0.0, 0.0 );
+			glmath_rotated( - leaf.theta, 0.0, 0.0, 1.0 );
 		}
 
-		glRotated( dir_gparams->platform.theta, 0.0, 0.0, 1.0 );
+		glmath_rotated( dir_gparams->platform.theta, 0.0, 0.0, 1.0 );
 	}
 
 	if (!dir_collapsed) {
@@ -3705,10 +3618,7 @@ treev_draw_recursive( GNode *dnode, double prev_r0, double r0, double acc_theta 
 	/* Update geometry status */
 	dir_ndesc->geom_expanded = !dir_collapsed;
 
-	if (!dir_collapsed && !dir_expanded)
-		glDisable( GL_NORMALIZE );
-
-	glPopMatrix( );
+	glmath_pop_modelview( );
 }
 
 
@@ -3891,8 +3801,7 @@ static void
 flat_draw_lines( const float *positions, int vertex_count, GLenum mode,
                  float r, float g, float b, float a )
 {
-	float mv[16], proj[16], mvp[16];
-	int i, j, k;
+	mat4 mvp;
 
 	if (vertex_count <= 0)
 		return;
@@ -3909,16 +3818,8 @@ flat_draw_lines( const float *positions, int vertex_count, GLenum mode,
 		glBindVertexArray( 0 );
 	}
 
-	/* Compute MVP from current GL matrices */
-	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
-	glGetFloatv( GL_PROJECTION_MATRIX, proj );
-	for (j = 0; j < 4; j++)
-		for (i = 0; i < 4; i++) {
-			float sum = 0.0f;
-			for (k = 0; k < 4; k++)
-				sum += proj[i + k * 4] * mv[k + j * 4];
-			mvp[i + j * 4] = sum;
-		}
+	/* Compute MVP from glmath matrices */
+	glmath_get_mvp( mvp );
 
 	/* Upload and draw */
 	glBindVertexArray( scratch_line_vao );
@@ -3929,7 +3830,7 @@ flat_draw_lines( const float *positions, int vertex_count, GLenum mode,
 	shader_program_use( &flat_shader );
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &flat_shader, "u_mvp" ),
-		1, GL_FALSE, mvp );
+		1, GL_FALSE, (const float *)mvp );
 	glUniform4f(
 		shader_program_get_uniform( &flat_shader, "u_color" ),
 		r, g, b, a );
@@ -3946,12 +3847,11 @@ static GLuint scratch_lit_vao = 0;
 static GLuint scratch_lit_vbo = 0;
 
 /* Draws triangles using the lit shader with per-vertex position, normal,
- * and color data. Uses the current legacy GL matrices for MVP computation. */
+ * and color data. Uses the glmath matrix stack for MVP computation. */
 static void
 lit_draw_scratch( const VBOVertex *data, int vertex_count )
 {
-	float mv[16], proj[16], mvp[16], norm[9];
-	int i, j, k;
+	float mv[16], mvp[16], norm[9];
 
 	if (vertex_count <= 0)
 		return;
@@ -3980,19 +3880,10 @@ lit_draw_scratch( const VBOVertex *data, int vertex_count )
 		glBindVertexArray( 0 );
 	}
 
-	/* Compute MVP and normal matrix from current GL matrices */
-	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
-	glGetFloatv( GL_PROJECTION_MATRIX, proj );
-	for (j = 0; j < 4; j++)
-		for (i = 0; i < 4; i++) {
-			float sum = 0.0f;
-			for (k = 0; k < 4; k++)
-				sum += proj[i + k * 4] * mv[k + j * 4];
-			mvp[i + j * 4] = sum;
-		}
-	for (i = 0; i < 3; i++)
-		for (j = 0; j < 3; j++)
-			norm[i + j * 3] = mv[i + j * 4];
+	/* Compute MVP and normal matrix from glmath stack */
+	glmath_get_mvp( (vec4 *)mvp );
+	glmath_get_normal_matrix( (vec3 *)norm );
+	memcpy( mv, glmath_get_modelview( ), sizeof(mv) );
 
 	glBindVertexArray( scratch_lit_vao );
 	glBindBuffer( GL_ARRAY_BUFFER, scratch_lit_vbo );
@@ -4230,34 +4121,30 @@ splash_draw( void )
 	/* Draw fsv title */
 
 	/* Set up projection matrix */
-	glMatrixMode( GL_PROJECTION );
-	glPushMatrix( );
-	glLoadIdentity( );
+	glmath_push_projection( );
+	glmath_load_identity_projection( );
 	k = 82.84 / ogl_aspect_ratio( );
-	glFrustum( -70.82, 95.40, - k, k, 200.0, 400.0 );
+	glmath_frustum( -70.82, 95.40, - k, k, 200.0, 400.0 );
 
 	/* Set up modelview matrix */
-	glMatrixMode( GL_MODELVIEW );
-	glPushMatrix( );
-	glLoadIdentity( );
-	glTranslated( 0.0, 0.0, -300.0 );
-	glRotated( 10.5, 1.0, 0.0, 0.0 );
-	glTranslated( 20.0, 20.0, -30.0 );
+	glmath_push_modelview( );
+	glmath_load_identity_modelview( );
+	glmath_translated( 0.0, 0.0, -300.0 );
+	glmath_rotated( 10.5, 1.0, 0.0, 0.0 );
+	glmath_translated( 20.0, 20.0, -30.0 );
 
 	geometry_gldraw_fsv( );
 
 	/* Draw accompanying text */
 
 	/* Set up projection matrix */
-	glMatrixMode( GL_PROJECTION );
-	glLoadIdentity( );
+	glmath_load_identity_projection( );
 	k = 0.5 / ogl_aspect_ratio( );
-	glOrtho( 0.0, 1.0, - k, k, -1.0, 1.0 );
+	glmath_ortho( 0.0, 1.0, - k, k, -1.0, 1.0 );
 	bottom_y = - k;
 
 	/* Set up modelview matrix */
-	glMatrixMode( GL_MODELVIEW );
-	glLoadIdentity( );
+	glmath_load_identity_modelview( );
 
 	text_pre( );
 
@@ -4290,10 +4177,8 @@ splash_draw( void )
 	text_post( );
 
 	/* Restore previous matrices */
-	glMatrixMode( GL_PROJECTION );
-	glPopMatrix( );
-	glMatrixMode( GL_MODELVIEW );
-	glPopMatrix( );
+	glmath_pop_projection( );
+	glmath_pop_modelview( );
 }
 
 
@@ -4466,31 +4351,31 @@ geometry_should_highlight( GNode *node, unsigned int face_id )
 static void
 draw_node( GNode *node, float r, float g, float b )
 {
-	glPushMatrix( );
+	glmath_push_modelview( );
 
 	switch (globals.fsv_mode) {
 		case FSV_DISCV:
 		{
 			XYvec *abs_pos;
 			abs_pos = geometry_discv_node_pos( node );
-			glTranslated( abs_pos->x - DISCV_GEOM_PARAMS(node)->pos.x,
-			              abs_pos->y - DISCV_GEOM_PARAMS(node)->pos.y, 0.0 );
+			glmath_translated( abs_pos->x - DISCV_GEOM_PARAMS(node)->pos.x,
+			                   abs_pos->y - DISCV_GEOM_PARAMS(node)->pos.y, 0.0 );
 			discv_gldraw_node_colored( node, 1.0, r, g, b );
 		}
 		break;
 
 		case FSV_MAPV:
-		glTranslated( 0.0, 0.0, geometry_mapv_node_z0( node ) );
+		glmath_translated( 0.0, 0.0, geometry_mapv_node_z0( node ) );
 		mapv_gldraw_node_colored( node, r, g, b );
 		break;
 
 		case FSV_TREEV:
 		if (geometry_treev_is_leaf( node )) {
-			glRotated( geometry_treev_platform_theta( node->parent ), 0.0, 0.0, 1.0 );
+			glmath_rotated( geometry_treev_platform_theta( node->parent ), 0.0, 0.0, 1.0 );
 			treev_gldraw_leaf_colored( node, geometry_treev_platform_r0( node->parent ), TRUE, r, g, b );
 		}
 		else {
-			glRotated( geometry_treev_platform_theta( node ), 0.0, 0.0, 1.0 );
+			glmath_rotated( geometry_treev_platform_theta( node ), 0.0, 0.0, 1.0 );
 			treev_gldraw_platform_colored( node, geometry_treev_platform_r0( node ), r, g, b );
 		}
 		break;
@@ -4498,7 +4383,7 @@ draw_node( GNode *node, float r, float g, float b )
 		SWITCH_FAIL
 	}
 
-	glPopMatrix( );
+	glmath_pop_modelview( );
 }
 
 

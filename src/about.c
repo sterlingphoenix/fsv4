@@ -30,6 +30,7 @@
 
 #include "animation.h"
 #include "geometry.h"
+#include "glmath.h"
 #include "ogl.h"
 #include "tmaptext.h"
 
@@ -60,48 +61,44 @@ draw_fsv( void )
 	}
 
 	/* Set up projection matrix */
-	glMatrixMode( GL_PROJECTION );
-	glPushMatrix( );
-	glLoadIdentity( );
+	glmath_push_projection( );
+	glmath_load_identity_projection( );
 	dy = 80.0 / ogl_aspect_ratio( );
-	glFrustum( - 80.0, 80.0, - dy, dy, 80.0, 2000.0 );
+	glmath_frustum( - 80.0, 80.0, - dy, dy, 80.0, 2000.0 );
 
 	/* Set up modelview matrix */
-	glMatrixMode( GL_MODELVIEW );
-	glPushMatrix( );
-	glLoadIdentity( );
+	glmath_push_modelview( );
+	glmath_load_identity_modelview( );
 	if (about_part < 0.5) {
 		/* Spinning and approaching fast */
 		p = INTERVAL_PART(about_part, 0.0, 0.5);
 		q = pow( 1.0 - p, 1.5 );
-		glTranslated( 0.0, 0.0, -150.0 - 1800.0 * q );
-		glRotated( 900.0 * q, 0.0, 1.0, 0.0 );
+		glmath_translated( 0.0, 0.0, -150.0 - 1800.0 * q );
+		glmath_rotated( 900.0 * q, 0.0, 1.0, 0.0 );
 	}
 	else if (about_part < 0.625) {
 		/* Holding still for a moment */
-		glTranslated( 0.0, 0.0, -150.0 );
+		glmath_translated( 0.0, 0.0, -150.0 );
 	}
 	else if (about_part < 0.75) {
 		/* Flipping up and back */
 		p = INTERVAL_PART(about_part, 0.625, 0.75);
 		q = 1.0 - SQR(1.0 - p);
-		glTranslated( 0.0, 40.0 * q, -150.0 - 50.0 * q );
-		glRotated( 365.0 * q, 1.0, 0.0, 0.0 );
+		glmath_translated( 0.0, 40.0 * q, -150.0 - 50.0 * q );
+		glmath_rotated( 365.0 * q, 1.0, 0.0, 0.0 );
 	}
 	else {
 		/* Holding still again */
-		glTranslated( 0.0, 40.0, -200.0 );
-		glRotated( 5.0, 1.0, 0.0, 0.0 );
+		glmath_translated( 0.0, 40.0, -200.0 );
+		glmath_rotated( 5.0, 1.0, 0.0, 0.0 );
 	}
 
 	/* Draw "fsv" geometry */
 	geometry_gldraw_fsv( );
 
 	/* Restore previous matrices */
-	glMatrixMode( GL_PROJECTION );
-	glPopMatrix( );
-	glMatrixMode( GL_MODELVIEW );
-	glPopMatrix( );
+	glmath_pop_projection( );
+	glmath_pop_modelview( );
 
 	glDisable( GL_FOG );
 }
@@ -119,16 +116,14 @@ draw_text( void )
 		return;
 
 	/* Set up projection matrix */
-	glMatrixMode( GL_PROJECTION );
-	glPushMatrix( );
-	glLoadIdentity( );
+	glmath_push_projection( );
+	glmath_load_identity_projection( );
 	dy = 1.0 / ogl_aspect_ratio( );
-	glFrustum( - 1.0, 1.0, - dy, dy, 1.0, 205.0 );
+	glmath_frustum( - 1.0, 1.0, - dy, dy, 1.0, 205.0 );
 
 	/* Set up modelview matrix */
-	glMatrixMode( GL_MODELVIEW );
-	glPushMatrix( );
-	glLoadIdentity( );
+	glmath_push_modelview( );
+	glmath_load_identity_modelview( );
 
         if (about_part < 0.75)
 		p = INTERVAL_PART(about_part, 0.625, 0.75);
@@ -153,10 +148,8 @@ draw_text( void )
 	text_post( );
 
 	/* Restore previous matrices */
-	glMatrixMode( GL_PROJECTION );
-	glPopMatrix( );
-	glMatrixMode( GL_MODELVIEW );
-	glPopMatrix( );
+	glmath_pop_projection( );
+	glmath_pop_modelview( );
 }
 
 

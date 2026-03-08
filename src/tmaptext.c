@@ -28,6 +28,7 @@
 #include <epoxy/gl.h>
 #include <string.h>
 
+#include "glmath.h"
 #include "shader.h"
 #include "ogl.h"
 
@@ -218,25 +219,13 @@ text_add_quad( float x0, float y0, float x1, float y1,
 static void
 text_flush( void )
 {
-	float mv[16], proj[16];
-	float mvp[16];
-	int i, j, k;
+	mat4 mvp;
 
 	if (text_count == 0)
 		return;
 
-	/* Read current GL matrices */
-	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
-	glGetFloatv( GL_PROJECTION_MATRIX, proj );
-
-	/* Compute MVP */
-	for (j = 0; j < 4; j++)
-		for (i = 0; i < 4; i++) {
-			float sum = 0.0f;
-			for (k = 0; k < 4; k++)
-				sum += proj[i + k * 4] * mv[k + j * 4];
-			mvp[i + j * 4] = sum;
-		}
+	/* Compute MVP from glmath matrices */
+	glmath_get_mvp( mvp );
 
 	/* Upload text vertices */
 	glBindBuffer( GL_ARRAY_BUFFER, text_vbo );
@@ -248,7 +237,7 @@ text_flush( void )
 	/* Set MVP uniform and draw */
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &text_shader, "u_mvp" ),
-		1, GL_FALSE, mvp );
+		1, GL_FALSE, (const float *)mvp );
 
 	glBindVertexArray( text_vao );
 	glDrawArrays( GL_TRIANGLES, 0, text_count );
