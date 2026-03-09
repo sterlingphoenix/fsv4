@@ -211,43 +211,43 @@ Remove all legacy OpenGL code now that all three modes use the modern
 pipeline.
 
 Step 5.1 - Remove legacy drawing code
-  [ ] Remove all glBegin/glEnd/glVertex/glNormal/glColor immediate-mode
+  [x] Remove all glBegin/glEnd/glVertex/glNormal/glColor immediate-mode
       calls from geometry.c
-  [ ] Remove display list management (glNewList, glEndList, glCallList,
+  [x] Remove display list management (glNewList, glEndList, glCallList,
       glGenLists, glDeleteLists) and the a_dlist/b_dlist/c_dlist fields
-  [ ] Remove the per-directory display list stale flags (replaced by
+  [x] Remove the per-directory display list stale flags (replaced by
       VBO batch dirty flags)
-  [ ] Verify: grep confirms no legacy draw calls remain (comments
+  [x] Verify: grep confirms no legacy draw calls remain (comments
       excluded)
 
 Step 5.2 - Remove legacy matrix stack
-  [ ] Remove all glMatrixMode, glPushMatrix, glPopMatrix, glLoadIdentity,
+  [x] Remove all glMatrixMode, glPushMatrix, glPopMatrix, glLoadIdentity,
       glTranslated, glRotated, glScaled calls
-  [ ] All matrix operations now go through the glmath module
-  [ ] Remove the base modelview matrix setup in ogl.c realize_cb
-  [ ] Verify: grep confirms no legacy matrix calls remain
+  [x] All matrix operations now go through the glmath module
+  [x] Remove the base modelview matrix setup in ogl.c realize_cb
+  [x] Verify: grep confirms no legacy matrix calls remain
 
 Step 5.3 - Remove legacy state management
-  [ ] Remove glEnable/glDisable for fixed-function features that are now
+  [x] Remove glEnable/glDisable for fixed-function features that are now
       handled by shaders (GL_LIGHTING, GL_LIGHT0, GL_COLOR_MATERIAL,
       GL_NORMALIZE)
-  [ ] Remove glShadeModel, glLightfv, glMaterialfv, glColorMaterial
-  [ ] Keep GL state that is still relevant in core profile (GL_DEPTH_TEST,
+  [x] Remove glShadeModel, glLightfv, glMaterialfv, glColorMaterial
+  [x] Keep GL state that is still relevant in core profile (GL_DEPTH_TEST,
       GL_CULL_FACE, GL_BLEND, GL_POLYGON_OFFSET_FILL, glPolygonMode,
       glLineWidth, glViewport, glClear)
-  [ ] Verify: program runs with no GL errors
+  [x] Verify: program runs with no GL errors
 
 Step 5.4 - Switch to core profile
-  [ ] In ogl.c create-context signal handler, request a GL 3.3 core
+  [x] In ogl.c create-context signal handler, request a GL 3.3 core
       profile context instead of compatibility
-  [ ] Remove gdk_gl_context_set_forward_compatible(FALSE)
-  [ ] Verify: program runs in core profile with no GL errors
+  [x] Remove gdk_gl_context_set_forward_compatible(FALSE)
+  [x] Verify: program runs in core profile with no GL errors
 
 Step 5.5 - Clean up
-  [ ] Remove any dead code, unused includes, unused variables left over
+  [x] Remove any dead code, unused includes, unused variables left over
       from the conversion
-  [ ] Update comments that reference display lists or the old pipeline
-  [ ] Verify: clean build with no warnings
+  [x] Update comments that reference display lists or the old pipeline
+  [x] Verify: clean build with no warnings
 
   Checkpoint: User tests all three modes, all interactions, all features.
   Confirm with: grep -rn 'glBegin\|glEnd\|glVertex\|glMatrixMode\|

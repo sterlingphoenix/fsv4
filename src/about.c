@@ -30,6 +30,7 @@
 
 #include "animation.h"
 #include "geometry.h"
+#include "glmath.h"
 #include "ogl.h"
 #include "tmaptext.h"
 
@@ -41,9 +42,6 @@
 /* Normalized time variable (in range [0, 1]) */
 static double about_part;
 
-/* Display list for "fsv" geometry */
-static GLuint fsv_dlist = NULL_DLIST;
-
 /* TRUE while giving About presentation */
 static boolean about_active = FALSE;
 
@@ -54,66 +52,45 @@ draw_fsv( void )
 {
 	double dy, p, q;
 
-	if (about_part < 0.5) {
-		/* Set up a black, all-encompassing fog */
-		glEnable( GL_FOG );
-		glFogi( GL_FOG_MODE, GL_LINEAR );
-		glFogf( GL_FOG_START, 200.0 );
-		glFogf( GL_FOG_END, 1800.0 );
-	}
-
 	/* Set up projection matrix */
-	glMatrixMode( GL_PROJECTION );
-	glPushMatrix( );
-	glLoadIdentity( );
+	glmath_push_projection( );
+	glmath_load_identity_projection( );
 	dy = 80.0 / ogl_aspect_ratio( );
-	glFrustum( - 80.0, 80.0, - dy, dy, 80.0, 2000.0 );
+	glmath_frustum( - 80.0, 80.0, - dy, dy, 80.0, 2000.0 );
 
 	/* Set up modelview matrix */
-	glMatrixMode( GL_MODELVIEW );
-	glPushMatrix( );
-	glLoadIdentity( );
+	glmath_push_modelview( );
+	glmath_load_identity_modelview( );
 	if (about_part < 0.5) {
 		/* Spinning and approaching fast */
 		p = INTERVAL_PART(about_part, 0.0, 0.5);
 		q = pow( 1.0 - p, 1.5 );
-		glTranslated( 0.0, 0.0, -150.0 - 1800.0 * q );
-		glRotated( 900.0 * q, 0.0, 1.0, 0.0 );
+		glmath_translated( 0.0, 0.0, -150.0 - 1800.0 * q );
+		glmath_rotated( 900.0 * q, 0.0, 1.0, 0.0 );
 	}
 	else if (about_part < 0.625) {
 		/* Holding still for a moment */
-		glTranslated( 0.0, 0.0, -150.0 );
+		glmath_translated( 0.0, 0.0, -150.0 );
 	}
 	else if (about_part < 0.75) {
 		/* Flipping up and back */
 		p = INTERVAL_PART(about_part, 0.625, 0.75);
 		q = 1.0 - SQR(1.0 - p);
-		glTranslated( 0.0, 40.0 * q, -150.0 - 50.0 * q );
-		glRotated( 365.0 * q, 1.0, 0.0, 0.0 );
+		glmath_translated( 0.0, 40.0 * q, -150.0 - 50.0 * q );
+		glmath_rotated( 365.0 * q, 1.0, 0.0, 0.0 );
 	}
 	else {
 		/* Holding still again */
-		glTranslated( 0.0, 40.0, -200.0 );
-		glRotated( 5.0, 1.0, 0.0, 0.0 );
+		glmath_translated( 0.0, 40.0, -200.0 );
+		glmath_rotated( 5.0, 1.0, 0.0, 0.0 );
 	}
 
-	/* Draw "fsv" geometry, using a display list if possible */
-	if (fsv_dlist == NULL_DLIST) {
-		fsv_dlist = glGenLists( 1 );
-		glNewList( fsv_dlist, GL_COMPILE_AND_EXECUTE );
-		geometry_gldraw_fsv( );
-		glEndList( );
-	}
-	else
-		glCallList( fsv_dlist );
+	/* Draw "fsv" geometry */
+	geometry_gldraw_fsv( );
 
 	/* Restore previous matrices */
-	glMatrixMode( GL_PROJECTION );
-	glPopMatrix( );
-	glMatrixMode( GL_MODELVIEW );
-	glPopMatrix( );
-
-	glDisable( GL_FOG );
+	glmath_pop_projection( );
+	glmath_pop_modelview( );
 }
 
 
@@ -129,16 +106,14 @@ draw_text( void )
 		return;
 
 	/* Set up projection matrix */
-	glMatrixMode( GL_PROJECTION );
-	glPushMatrix( );
-	glLoadIdentity( );
+	glmath_push_projection( );
+	glmath_load_identity_projection( );
 	dy = 1.0 / ogl_aspect_ratio( );
-	glFrustum( - 1.0, 1.0, - dy, dy, 1.0, 205.0 );
+	glmath_frustum( - 1.0, 1.0, - dy, dy, 1.0, 205.0 );
 
 	/* Set up modelview matrix */
-	glMatrixMode( GL_MODELVIEW );
-	glPushMatrix( );
-	glLoadIdentity( );
+	glmath_push_modelview( );
+	glmath_load_identity_modelview( );
 
         if (about_part < 0.75)
 		p = INTERVAL_PART(about_part, 0.625, 0.75);
@@ -153,7 +128,7 @@ draw_text( void )
 	tpos.x = 0.0;
 	tpos.y = -35.0; /* -35 */
 	tpos.z = -200.0 * q;
-	glColor3f( 1.0, 1.0, 1.0 );
+	text_set_color( 1.0, 1.0, 1.0 );
 	text_draw_straight( "fsv - 3D File System Visualizer", &tpos, &tdims );
 
 	tdims.y = 15.0;
@@ -163,10 +138,8 @@ draw_text( void )
 	text_post( );
 
 	/* Restore previous matrices */
-	glMatrixMode( GL_PROJECTION );
-	glPopMatrix( );
-	glMatrixMode( GL_MODELVIEW );
-	glPopMatrix( );
+	glmath_pop_projection( );
+	glmath_pop_modelview( );
 }
 
 
@@ -196,10 +169,6 @@ about( AboutMesg mesg )
 			return FALSE;
 		/* We now return you to your regularly scheduled program */
 		morph_break( &about_part );
-		if (fsv_dlist != NULL_DLIST) {
-			glDeleteLists( fsv_dlist, 1 );
-			fsv_dlist = NULL_DLIST;
-		}
 		redraw( );
 		about_active = FALSE;
 		return TRUE;

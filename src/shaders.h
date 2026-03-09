@@ -110,4 +110,76 @@ static const char pick_frag_src[] =
 "    frag_color = v_pick_color;\n"
 "}\n";
 
+/*
+ * Text rendering shader.
+ *
+ * Renders textured quads for bitmap font text. The font texture
+ * stores glyph alpha in the red channel. Fragment discards below
+ * a threshold (replacing legacy GL_ALPHA_TEST).
+ */
+
+static const char text_vert_src[] =
+"#version 330 core\n"
+"\n"
+"layout(location = 0) in vec3 a_position;\n"
+"layout(location = 1) in vec2 a_texcoord;\n"
+"layout(location = 2) in vec3 a_color;\n"
+"\n"
+"uniform mat4 u_mvp;\n"
+"\n"
+"out vec2 v_texcoord;\n"
+"flat out vec3 v_color;\n"
+"\n"
+"void main() {\n"
+"    gl_Position = u_mvp * vec4(a_position, 1.0);\n"
+"    v_texcoord = a_texcoord;\n"
+"    v_color = a_color;\n"
+"}\n";
+
+static const char text_frag_src[] =
+"#version 330 core\n"
+"\n"
+"in vec2 v_texcoord;\n"
+"flat in vec3 v_color;\n"
+"\n"
+"uniform sampler2D u_texture;\n"
+"\n"
+"out vec4 frag_color;\n"
+"\n"
+"void main() {\n"
+"    float alpha = texture(u_texture, v_texcoord).r;\n"
+"    if (alpha < 0.0625) discard;\n"
+"    frag_color = vec4(v_color, alpha);\n"
+"}\n";
+
+
+/*
+ * Flat-color shader.
+ *
+ * For cursors, highlights, and other unlit colored geometry.
+ * Color is passed as a uniform.
+ */
+
+static const char flat_vert_src[] =
+"#version 330 core\n"
+"\n"
+"layout(location = 0) in vec3 a_position;\n"
+"\n"
+"uniform mat4 u_mvp;\n"
+"\n"
+"void main() {\n"
+"    gl_Position = u_mvp * vec4(a_position, 1.0);\n"
+"}\n";
+
+static const char flat_frag_src[] =
+"#version 330 core\n"
+"\n"
+"uniform vec4 u_color;\n"
+"\n"
+"out vec4 frag_color;\n"
+"\n"
+"void main() {\n"
+"    frag_color = u_color;\n"
+"}\n";
+
 #endif /* FSV_SHADERS_H */

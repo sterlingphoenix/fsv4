@@ -43,6 +43,8 @@ static GtkWidget *viewport_gl_area_w = NULL;
 /* Shader programs (compiled in ogl_init, used later for modern GL rendering) */
 ShaderProgram lit_shader;
 ShaderProgram pick_shader;
+ShaderProgram text_shader;
+ShaderProgram flat_shader;
 
 /* Private FBO for color picking (keeps pick renders off the display FBO) */
 static GLuint pick_fbo = 0;
@@ -75,40 +77,21 @@ ogl_queue_render( void )
 static void
 ogl_init( void )
 {
-	float light_ambient[] = { 0.2, 0.2, 0.2, 1.0 };
-	float light_diffuse[] = { 0.5, 0.5, 0.5, 1.0 };
-	float light_specular[] = { 0.4, 0.4, 0.4, 1.0 };
-	float light_position[] = { 0.0, 0.0, 0.0, 1.0 };
-
 	/* Set viewport size */
 	ogl_resize( );
 
-	/* Create the initial modelview matrix
+	/* Create the initial modelview matrix via glmath
 	 * (right-handed coordinate system, +z = straight up,
 	 * camera at origin looking in -x direction) */
-	glMatrixMode( GL_MODELVIEW );
-	glLoadIdentity( );
-	glRotated( -90.0, 1.0, 0.0, 0.0 );
-	glRotated( -90.0, 0.0, 0.0, 1.0 );
-	glPushMatrix( ); /* Matrix will stay just below top of MVM stack */
-
-	/* Set up lighting */
-	glEnable( GL_LIGHTING );
-	glEnable( GL_LIGHT0 );
-	glLightfv( GL_LIGHT0, GL_AMBIENT, light_ambient );
-	glLightfv( GL_LIGHT0, GL_DIFFUSE, light_diffuse );
-	glLightfv( GL_LIGHT0, GL_SPECULAR, light_specular );
-	glLightfv( GL_LIGHT0, GL_POSITION, light_position );
-
-	/* Set up materials */
-	glColorMaterial( GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE );
-	glEnable( GL_COLOR_MATERIAL );
+	glmath_init( );
+	glmath_load_identity_modelview( );
+	glmath_rotated( -90.0, 1.0, 0.0, 0.0 );
+	glmath_rotated( -90.0, 0.0, 0.0, 1.0 );
+	glmath_push_modelview( ); /* Base matrix stays just below top of stack */
 
 	/* Miscellaneous */
-	glAlphaFunc( GL_GEQUAL, 0.0625 );
 	glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
 	glEnable( GL_CULL_FACE );
-	glShadeModel( GL_FLAT );
 	glEnable( GL_DEPTH_TEST );
 	glDepthFunc( GL_LEQUAL );
 	glEnable( GL_POLYGON_OFFSET_FILL );
@@ -117,13 +100,6 @@ ogl_init( void )
 
 	/* Initialize texture-mapped text engine */
 	text_init( );
-
-	/* Initialize glmath module with the same base modelview matrix */
-	glmath_init( );
-	glmath_load_identity_modelview( );
-	glmath_rotated( -90.0, 1.0, 0.0, 0.0 );
-	glmath_rotated( -90.0, 0.0, 0.0, 1.0 );
-	glmath_push_modelview( );
 
 	/* Compile shader programs (not yet used for drawing) */
 	if (!shader_program_create( &lit_shader, lit_vert_src, lit_frag_src ))
@@ -139,6 +115,20 @@ ogl_init( void )
 		g_warning( "Failed to compile pick shader" );
 	else {
 		shader_program_add_uniform( &pick_shader, "u_mvp" );
+	}
+
+	if (!shader_program_create( &text_shader, text_vert_src, text_frag_src ))
+		g_warning( "Failed to compile text shader" );
+	else {
+		shader_program_add_uniform( &text_shader, "u_mvp" );
+		shader_program_add_uniform( &text_shader, "u_texture" );
+	}
+
+	if (!shader_program_create( &flat_shader, flat_vert_src, flat_frag_src ))
+		g_warning( "Failed to compile flat shader" );
+	else {
+		shader_program_add_uniform( &flat_shader, "u_mvp" );
+		shader_program_add_uniform( &flat_shader, "u_color" );
 	}
 }
 
@@ -188,10 +178,9 @@ setup_projection_matrix( boolean full_reset )
 
 	dx = camera->near_clip * tan( 0.5 * RAD(camera->fov) );
 	dy = dx / ogl_aspect_ratio( );
-	glMatrixMode( GL_PROJECTION );
 	if (full_reset)
-		glLoadIdentity( );
-	glFrustum( - dx, dx, - dy, dy, camera->near_clip, camera->far_clip );
+		glmath_load_identity_projection( );
+	glmath_frustum( - dx, dx, - dy, dy, camera->near_clip, camera->far_clip );
 }
 
 
@@ -199,35 +188,34 @@ setup_projection_matrix( boolean full_reset )
 static void
 setup_modelview_matrix( void )
 {
-	glMatrixMode( GL_MODELVIEW );
 	/* Remember, base matrix lives just below top of stack */
-	glPopMatrix( );
-	glPushMatrix( );
+	glmath_pop_modelview( );
+	glmath_push_modelview( );
 
 	switch (globals.fsv_mode) {
 		case FSV_SPLASH:
 		break;
 
 		case FSV_DISCV:
-		glTranslated( - camera->distance, 0.0, 0.0 );
-		glRotated( 90.0, 0.0, 1.0, 0.0 );
-		glRotated( 90.0, 0.0, 0.0, 1.0 );
-		glTranslated( - DISCV_CAMERA(camera)->target.x, - DISCV_CAMERA(camera)->target.y, 0.0 );
+		glmath_translated( - camera->distance, 0.0, 0.0 );
+		glmath_rotated( 90.0, 0.0, 1.0, 0.0 );
+		glmath_rotated( 90.0, 0.0, 0.0, 1.0 );
+		glmath_translated( - DISCV_CAMERA(camera)->target.x, - DISCV_CAMERA(camera)->target.y, 0.0 );
 		break;
 
 		case FSV_MAPV:
-		glTranslated( - camera->distance, 0.0, 0.0 );
-		glRotated( camera->phi, 0.0, 1.0, 0.0 );
-		glRotated( - camera->theta, 0.0, 0.0, 1.0 );
-		glTranslated( - MAPV_CAMERA(camera)->target.x, - MAPV_CAMERA(camera)->target.y, - MAPV_CAMERA(camera)->target.z );
+		glmath_translated( - camera->distance, 0.0, 0.0 );
+		glmath_rotated( camera->phi, 0.0, 1.0, 0.0 );
+		glmath_rotated( - camera->theta, 0.0, 0.0, 1.0 );
+		glmath_translated( - MAPV_CAMERA(camera)->target.x, - MAPV_CAMERA(camera)->target.y, - MAPV_CAMERA(camera)->target.z );
 		break;
 
 		case FSV_TREEV:
-		glTranslated( - camera->distance, 0.0, 0.0 );
-		glRotated( camera->phi, 0.0, 1.0, 0.0 );
-		glRotated( - camera->theta, 0.0, 0.0, 1.0 );
-		glTranslated( TREEV_CAMERA(camera)->target.r, 0.0, - TREEV_CAMERA(camera)->target.z );
-		glRotated( 180.0 - TREEV_CAMERA(camera)->target.theta, 0.0, 0.0, 1.0 );
+		glmath_translated( - camera->distance, 0.0, 0.0 );
+		glmath_rotated( camera->phi, 0.0, 1.0, 0.0 );
+		glmath_rotated( - camera->theta, 0.0, 0.0, 1.0 );
+		glmath_translated( TREEV_CAMERA(camera)->target.r, 0.0, - TREEV_CAMERA(camera)->target.z );
+		glmath_rotated( 180.0 - TREEV_CAMERA(camera)->target.theta, 0.0, 0.0, 1.0 );
 		break;
 
 		SWITCH_FAIL
@@ -328,14 +316,8 @@ ogl_color_pick( int x, int y, unsigned int *face_id )
 		glBindFramebuffer( GL_FRAMEBUFFER, pick_fbo );
 		glViewport( 0, 0, viewport[2], viewport[3] );
 
-		/* Set up for flat-color picking (no lighting/texturing) */
-		glDisable( GL_LIGHTING );
-		glDisable( GL_TEXTURE_2D );
+		/* Set up for flat-color picking */
 		glDisable( GL_BLEND );
-		glDisable( GL_DITHER );
-		glDisable( GL_FOG );
-		glDisable( GL_ALPHA_TEST );
-		glShadeModel( GL_FLAT );
 
 		/* Clear to black (node ID 0 = no hit) */
 		glClearColor( 0.0, 0.0, 0.0, 0.0 );
@@ -350,8 +332,6 @@ ogl_color_pick( int x, int y, unsigned int *face_id )
 		gtk_gl_area_attach_buffers( GTK_GL_AREA(viewport_gl_area_w) );
 		glViewport( viewport[0], viewport[1], viewport[2], viewport[3] );
 		glClearColor( 0.0, 0.0, 0.0, 0.0 );
-		glEnable( GL_LIGHTING );
-		glShadeModel( GL_FLAT );
 		glEnable( GL_DEPTH_TEST );
 		glEnable( GL_CULL_FACE );
 		glEnable( GL_POLYGON_OFFSET_FILL );
@@ -427,9 +407,10 @@ ogl_widget_new( void )
 	/* We control when rendering happens (via queue_render from animation loop) */
 	gtk_gl_area_set_auto_render( GTK_GL_AREA(viewport_gl_area_w), FALSE );
 
-	/* Connect signals.
-	 * Note: compatibility profile is requested via GDK_GL=legacy
-	 * environment variable set in main() before gtk_init() */
+	/* Request GL 3.3 core profile (GtkGLArea default) */
+	gtk_gl_area_set_required_version( GTK_GL_AREA(viewport_gl_area_w), 3, 3 );
+
+	/* Connect signals */
 	g_signal_connect( viewport_gl_area_w, "realize", G_CALLBACK(realize_cb), NULL );
 	g_signal_connect( viewport_gl_area_w, "render", G_CALLBACK(render_cb), NULL );
 	g_signal_connect( viewport_gl_area_w, "resize", G_CALLBACK(resize_cb), NULL );

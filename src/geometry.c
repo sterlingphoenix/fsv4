@@ -49,28 +49,6 @@
 /* Color-buffer picking mode flag */
 static boolean picking_mode = FALSE;
 
-/* Use this to set the current GL color for a node.
- * In picking mode, encode the node ID as an RGB color. */
-#define node_glcolor( node ) do { \
-	if (picking_mode) { \
-		unsigned int _nid = NODE_DESC(node)->id; \
-		glColor4ub( (_nid >> 16) & 0xFF, (_nid >> 8) & 0xFF, _nid & 0xFF, 0 ); \
-	} else { \
-		glColor3fv( (const float *)NODE_DESC(node)->color ); \
-	} \
-} while(0)
-
-/* Set the pick color with a face flag (used for top-face detection) */
-#define node_glcolor_face( node, face ) do { \
-	if (picking_mode) { \
-		unsigned int _nid = NODE_DESC(node)->id; \
-		glColor4ub( (_nid >> 16) & 0xFF, (_nid >> 8) & 0xFF, _nid & 0xFF, (face) ); \
-	} else { \
-		glColor3fv( (const float *)NODE_DESC(node)->color ); \
-	} \
-} while(0)
-
-
 /* Frustum culling */
 
 /* Frustum plane: ax + by + cz + d >= 0 is inside */
@@ -91,26 +69,25 @@ static int frustum_viewport_h; /* viewport height in pixels */
  * Below this threshold, labels are too small to read. */
 #define LABEL_SIZE_THRESHOLD 6.0
 
-/* Minimum projected screen size in pixels for outline (wireframe)
- * rendering. Below this, outlines are sub-pixel and not worth drawing. */
-#define OUTLINE_SIZE_THRESHOLD 4.0
-
-/* TRUE during the wireframe outline pass, causes higher cull threshold */
-static boolean drawing_outlines = FALSE;
 
 /* Extracts frustum planes from the current GL matrices.
  * Call once per frame before any recursive draw. */
 static void
 frustum_extract( void )
 {
+	const float *fmv = glmath_get_modelview( );
+	const float *fproj = glmath_get_projection( );
 	double mv[16], proj[16];
 	double *m = frustum_mvp;
 	double len;
 	int i, j;
 	GLint viewport[4];
 
-	glGetDoublev( GL_MODELVIEW_MATRIX, mv );
-	glGetDoublev( GL_PROJECTION_MATRIX, proj );
+	/* Copy float matrices to double for frustum plane extraction */
+	for (i = 0; i < 16; i++) {
+		mv[i] = (double)fmv[i];
+		proj[i] = (double)fproj[i];
+	}
 	glGetIntegerv( GL_VIEWPORT, viewport );
 
 	frustum_proj_scale = proj[5]; /* P[1][1] = cot(fov/2) */
@@ -232,18 +209,13 @@ screen_size_pixels( double cx, double cy, double cz, double radius )
  * cleared after treev_arrange() runs */
 static boolean treev_needs_arrange = FALSE;
 
-/* TRUE during treev_draw() when tree positions are actively changing
- * (colexp animation). Branch display lists are drawn directly instead
- * of compiled, since they'll change again next frame. */
-static boolean treev_animating = FALSE;
 
 
 /* Forward declarations */
-static void outline_pre( void );
-static void outline_post( void );
-static void cursor_pre( void );
-static void cursor_hidden_part( void );
-static void cursor_visible_part( void );
+static void flat_draw_lines( const float *positions, int vertex_count,
+                             GLenum mode, float r, float g, float b, float a );
+static void cursor_draw_hidden( const float *positions, int vertex_count, GLenum mode );
+static void cursor_draw_visible( const float *positions, int vertex_count, GLenum mode );
 static void cursor_post( void );
 static void queue_uncached_draw( void );
 static void discv_draw_cursor( double pos );
@@ -257,11 +229,7 @@ static void discv_draw_cursor( double pos );
 #define DISCV_LEAF_RANGE_ARC_WIDTH	315.0
 #define DISCV_LEAF_STEM_PROPORTION	0.5
 
-/* Messages for discv_draw_recursive( ) */
-enum {
-	DISCV_DRAW_GEOMETRY,
-	DISCV_DRAW_LABELS
-};
+/* (DiscV draw messages enum removed — recursive draw only does labels now) */
 
 
 /* Returns the absolute position of the given node */
@@ -444,96 +412,36 @@ discv_init( void )
 	discv_cursor_prev_pos.y = 0.0;
 	discv_cursor_prev_radius = 2.0 * DISCV_GEOM_PARAMS(root_dnode)->radius;
 
-	/* DiscV mode is entirely 2D */
-	glNormal3d( 0.0, 0.0, 1.0 );
 }
 
 
-/* Draws a DiscV node. dir_deployment is deployment of parent directory */
+/* Draws a DiscV node with specified color via the flat shader.
+ * dir_deployment is deployment of parent directory. */
 static void
-discv_gldraw_node( GNode *node, double dir_deployment )
+discv_gldraw_node_colored( GNode *node, double dir_deployment,
+                            float r, float g, float b )
 {
 	static const int seg_count = (int)(360.0 / DISCV_CURVE_GRANULARITY + 0.999);
 	DiscVGeomParams *gparams;
-	XYvec center, p;
+	float cx, cy;
+	float *verts;
 	double theta;
-	int s;
+	int s, v = 0;
 
 	gparams = DISCV_GEOM_PARAMS(node);
+	cx = (float)(dir_deployment * gparams->pos.x);
+	cy = (float)(dir_deployment * gparams->pos.y);
 
-	center.x = dir_deployment * gparams->pos.x;
-	center.y = dir_deployment * gparams->pos.y;
-
-	/* Draw disc */
-	glBegin( GL_TRIANGLE_FAN );
-	glVertex2d( center.x, center.y );
-	for (s = 0; s <= seg_count; s++) {
+	/* Circle outline: seg_count vertices as GL_LINE_LOOP */
+	verts = g_alloca( seg_count * 3 * sizeof(float) );
+	for (s = 0; s < seg_count; s++) {
 		theta = (double)s / (double)seg_count * 360.0;
-		p.x = center.x + gparams->radius * cos( RAD(theta) );
-		p.y = center.y + gparams->radius * sin( RAD(theta) );
-		glVertex2d( p.x, p.y );
+		verts[v++] = cx + (float)(gparams->radius * cos( RAD(theta) ));
+		verts[v++] = cy + (float)(gparams->radius * sin( RAD(theta) ));
+		verts[v++] = 0.0f;
 	}
-	glEnd( );
-}
 
-
-static void
-discv_gldraw_folder( GNode *node )
-{
-	DiscVGeomParams *gparams;
-	XYvec center;
-	double r, border;
-	XYvec folder_c0, folder_c1, folder_tab;
-
-	gparams = DISCV_GEOM_PARAMS(node);
-
-	center.x = gparams->pos.x;
-	center.y = gparams->pos.y;
-	r = gparams->radius;
-
-	/* Draw a folder icon outline centered on the disc */
-	border = 0.0625 * r;
-	folder_c0.x = center.x - 0.6 * r;
-	folder_c0.y = center.y - 0.4 * r;
-	folder_c1.x = center.x + 0.6 * r;
-	folder_c1.y = center.y + 0.4 * r;
-	/* Coordinates of the concave vertex (folder tab) */
-	folder_tab.x = folder_c1.x - (MAGIC_NUMBER - 1.0) * (folder_c1.x - folder_c0.x);
-	folder_tab.y = folder_c1.y - border;
-
-	node_glcolor( node );
-	glBegin( GL_LINE_STRIP );
-	glVertex2d( folder_c0.x, folder_c0.y );
-	glVertex2d( folder_c0.x, folder_tab.y );
-	glVertex2d( folder_c0.x + border, folder_c1.y );
-	glVertex2d( folder_tab.x - border, folder_c1.y );
-	glVertex2d( folder_tab.x, folder_tab.y );
-	glVertex2d( folder_c1.x, folder_tab.y );
-	glVertex2d( folder_c1.x, folder_c0.y );
-	glVertex2d( folder_c0.x, folder_c0.y );
-	glEnd( );
-}
-
-
-/* Builds the leaf nodes of a directory (but not the directory itself--
- * that geometry belongs to the parent) */
-static void
-discv_build_dir( GNode *dnode )
-{
-	GNode *node;
-	double dpm;
-
-	dpm = DIR_NODE_DESC(dnode)->deployment;
-	/* TODO: Fix this, please */
-	dpm = 1.0;
-
-	node = dnode->children;
-	while (node != NULL) {
-		glLoadName( NODE_DESC(node)->id );
-		node_glcolor( node );
-		discv_gldraw_node( node, dpm );
-		node = node->next;
-	}
+	flat_draw_lines( verts, v / 3, GL_LINE_LOOP, r, g, b, 1.0f );
 }
 
 
@@ -642,39 +550,22 @@ discv_rebuild_batch( void )
 static void
 discv_setup_lit_shader( void )
 {
-	float mv[16], proj[16];
-	float mvp[16];
-	float norm[9];
-	int i, j, k;
+	mat4 mvp;
+	mat3 norm;
 
-	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
-	glGetFloatv( GL_PROJECTION_MATRIX, proj );
-
-	for (j = 0; j < 4; j++) {
-		for (i = 0; i < 4; i++) {
-			float sum = 0.0f;
-			for (k = 0; k < 4; k++)
-				sum += proj[i + k * 4] * mv[k + j * 4];
-			mvp[i + j * 4] = sum;
-		}
-	}
-
-	for (i = 0; i < 3; i++)
-		for (j = 0; j < 3; j++)
-			norm[i + j * 3] = mv[i + j * 4];
-
-	glDisable( GL_LIGHTING );
+	glmath_get_mvp( mvp );
+	glmath_get_normal_matrix( norm );
 
 	shader_program_use( &lit_shader );
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &lit_shader, "u_mvp" ),
-		1, GL_FALSE, mvp );
+		1, GL_FALSE, (const float *)mvp );
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &lit_shader, "u_modelview" ),
-		1, GL_FALSE, mv );
+		1, GL_FALSE, glmath_get_modelview( ) );
 	glUniformMatrix3fv(
 		shader_program_get_uniform( &lit_shader, "u_normal_matrix" ),
-		1, GL_FALSE, norm );
+		1, GL_FALSE, (const float *)norm );
 	glUniform1f(
 		shader_program_get_uniform( &lit_shader, "u_diffuse_scale" ),
 		1.0f );
@@ -685,26 +576,14 @@ discv_setup_lit_shader( void )
 static void
 discv_setup_pick_shader( void )
 {
-	float mv[16], proj[16];
-	float mvp[16];
-	int i, j, k;
+	mat4 mvp;
 
-	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
-	glGetFloatv( GL_PROJECTION_MATRIX, proj );
-
-	for (j = 0; j < 4; j++) {
-		for (i = 0; i < 4; i++) {
-			float sum = 0.0f;
-			for (k = 0; k < 4; k++)
-				sum += proj[i + k * 4] * mv[k + j * 4];
-			mvp[i + j * 4] = sum;
-		}
-	}
+	glmath_get_mvp( mvp );
 
 	shader_program_use( &pick_shader );
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &pick_shader, "u_mvp" ),
-		1, GL_FALSE, mvp );
+		1, GL_FALSE, (const float *)mvp );
 }
 
 
@@ -736,7 +615,7 @@ discv_apply_label( GNode *node )
  * acc_x/acc_y: accumulated world-space position of this node's center.
  * acc_scale: accumulated scale factor (product of ancestor deployments). */
 static void
-discv_draw_recursive( GNode *dnode, int action, double acc_x, double acc_y, double acc_scale )
+discv_draw_recursive( GNode *dnode, double acc_x, double acc_y, double acc_scale )
 {
 	DirNodeDesc *dir_ndesc;
 	DiscVGeomParams *dir_gparams;
@@ -765,57 +644,23 @@ discv_draw_recursive( GNode *dnode, int action, double acc_x, double acc_y, doub
 	visible = world_radius <= 0.0 ||
 	          frustum_test_sphere( world_x, world_y, 0.0, world_radius );
 
-	glPushMatrix( );
+	glmath_push_modelview( );
 
 	dir_collapsed = DIR_COLLAPSED(dnode);
 	dir_expanded = DIR_EXPANDED(dnode);
 
-	glTranslated( dir_gparams->pos.x, dir_gparams->pos.y, 0.0 );
-	glScaled( dir_ndesc->deployment,  dir_ndesc->deployment,  1.0 );
+	glmath_translated( dir_gparams->pos.x, dir_gparams->pos.y, 0.0 );
+	glmath_scaled( dir_ndesc->deployment,  dir_ndesc->deployment,  1.0 );
 
-	if (visible && action == DISCV_DRAW_GEOMETRY) {
-		/* Draw folder or leaf nodes (display list A) */
-		if (picking_mode) {
-			/* Pick mode: draw directly, bypass display lists */
-			if (!dir_collapsed)
-				discv_build_dir( dnode );
-		}
-		else if (dir_ndesc->a_dlist_stale) {
-			/* Rebuild */
-			if (dir_ndesc->a_dlist == NULL_DLIST)
-				dir_ndesc->a_dlist = glGenLists( 1 );
-			glNewList( dir_ndesc->a_dlist, GL_COMPILE_AND_EXECUTE );
-			if (!dir_collapsed)
-				discv_build_dir( dnode );
-			if (!dir_expanded)
-				discv_gldraw_folder( dnode );
-			glEndList( );
-			dir_ndesc->a_dlist_stale = FALSE;
-		}
-		else
-			glCallList( dir_ndesc->a_dlist );
-	}
-
-	if (visible && action == DISCV_DRAW_LABELS &&
+	if (visible &&
 	    !(world_radius > 0.0 &&
 	      screen_size_pixels( world_x, world_y, 0.0, world_radius ) < LABEL_SIZE_THRESHOLD)) {
-		/* Draw name label(s) (display list B) */
-		if (dir_ndesc->b_dlist_stale) {
-			/* Rebuild */
-			if (dir_ndesc->b_dlist == NULL_DLIST)
-				dir_ndesc->b_dlist = glGenLists( 1 );
-			glNewList( dir_ndesc->b_dlist, GL_COMPILE_AND_EXECUTE );
-			/* Label leaf nodes */
-			node = dnode->children;
-			while (node != NULL) {
-				discv_apply_label( node );
-				node = node->next;
-			}
-			glEndList( );
-			dir_ndesc->b_dlist_stale = FALSE;
+		/* Label leaf nodes */
+		node = dnode->children;
+		while (node != NULL) {
+			discv_apply_label( node );
+			node = node->next;
 		}
-		else
-			glCallList( dir_ndesc->b_dlist );
 	}
 
 	/* Update geometry status (always, even if frustum-culled) */
@@ -827,12 +672,12 @@ discv_draw_recursive( GNode *dnode, int action, double acc_x, double acc_y, doub
 		while (node != NULL) {
                         if (!NODE_IS_DIR(node))
 				break;
-			discv_draw_recursive( node, action, world_x, world_y, world_scale );
+			discv_draw_recursive( node, world_x, world_y, world_scale );
 			node = node->next;
 		}
 	}
 
-	glPopMatrix( );
+	glmath_pop_modelview( );
 }
 
 
@@ -856,7 +701,6 @@ discv_draw( boolean high_detail )
 			shader_program_unuse( );
 		else {
 			shader_program_unuse( );
-			glEnable( GL_LIGHTING );
 		}
 	}
 
@@ -865,8 +709,8 @@ discv_draw( boolean high_detail )
 
 		/* Node name labels */
 		text_pre( );
-		glColor3f( 0.0, 0.0, 0.0 );
-		discv_draw_recursive( globals.fstree, DISCV_DRAW_LABELS, 0.0, 0.0, 1.0 );
+		text_set_color( 0.0, 0.0, 0.0 );
+		discv_draw_recursive( globals.fstree, 0.0, 0.0, 1.0 );
 		text_post( );
 
 		/* Node cursor */
@@ -881,24 +725,19 @@ static void
 discv_gldraw_cursor( XYvec pos, double radius )
 {
 	static const int seg_count = (int)(360.0 / DISCV_CURVE_GRANULARITY + 0.999);
+	float verts[seg_count * 3];
 	double theta;
-	int i, s;
+	int s;
 
-	cursor_pre( );
-	for (i = 0; i < 2; i++) {
-		if (i == 0)
-			cursor_hidden_part( );
-		else
-			cursor_visible_part( );
-
-		glBegin( GL_LINE_LOOP );
-		for (s = 0; s < seg_count; s++) {
-			theta = (double)s / (double)seg_count * 360.0;
-			glVertex2d( pos.x + radius * cos( RAD(theta) ),
-			            pos.y + radius * sin( RAD(theta) ) );
-		}
-		glEnd( );
+	for (s = 0; s < seg_count; s++) {
+		theta = (double)s / (double)seg_count * 360.0;
+		verts[s * 3 + 0] = (float)(pos.x + radius * cos( RAD(theta) ));
+		verts[s * 3 + 1] = (float)(pos.y + radius * sin( RAD(theta) ));
+		verts[s * 3 + 2] = 0.0f;
 	}
+
+	cursor_draw_hidden( verts, seg_count, GL_LINE_LOOP );
+	cursor_draw_visible( verts, seg_count, GL_LINE_LOOP );
 	cursor_post( );
 }
 
@@ -948,11 +787,7 @@ discv_camera_pan_finished( void )
 #define MAPV_BORDER_PROPORTION	0.01
 #define MAPV_ROOT_ASPECT_RATIO	1.2
 
-/* Messages for mapv_draw_recursive( ) */
-enum {
-	MAPV_DRAW_GEOMETRY,
-	MAPV_DRAW_LABELS
-};
+/* (Messages enum for mapv_draw_recursive removed - only labels remain) */
 
 
 /* Node side face offset ratios, by node type
@@ -1282,134 +1117,57 @@ mapv_camera_pan_finished( void )
 }
 
 
-/* Draws a MapV node */
+/* Draws a MapV node using the flat shader with the specified color.
+ * Used for highlight wireframe rendering. */
 static void
-mapv_gldraw_node( GNode *node )
+mapv_gldraw_node_colored( GNode *node, float r, float g, float b )
 {
 	MapVGeomParams *gparams;
 	XYZvec dims;
-	XYvec offset, normal;
-	double normal_z_nx, normal_z_ny;
-	double a, b, k;
+	XYvec offset;
+	double k;
+	float verts[24 * 3]; /* 12 edges × 2 verts × 3 floats */
+	int v = 0;
+	float bx0, by0, bx1, by1; /* base corners */
+	float tx0, ty0, tx1, ty1; /* top corners */
+	float h;
 
-	/* Dimensions of node */
 	dims.x = MAPV_NODE_WIDTH(node);
 	dims.y = MAPV_NODE_DEPTH(node);
 	dims.z = MAPV_GEOM_PARAMS(node)->height;
 
-	/* Calculate normals for slanted sides */
 	k = mapv_side_slant_ratios[NODE_DESC(node)->type];
 	offset.x = MIN(dims.z, k * dims.x);
 	offset.y = MIN(dims.z, k * dims.y);
-	a = sqrt( SQR(offset.x) + SQR(dims.z) );
-	b = sqrt( SQR(offset.y) + SQR(dims.z) );
-	normal.x = dims.z / a;
-	normal.y = dims.z / b;
-	normal_z_nx = offset.x / a;
-	normal_z_ny = offset.y / b;
 
 	gparams = MAPV_GEOM_PARAMS(node);
+	bx0 = (float)gparams->c0.x;  by0 = (float)gparams->c0.y;
+	bx1 = (float)gparams->c1.x;  by1 = (float)gparams->c1.y;
+	tx0 = bx0 + (float)offset.x; ty0 = by0 + (float)offset.y;
+	tx1 = bx1 - (float)offset.x; ty1 = by1 - (float)offset.y;
+	h = (float)gparams->height;
 
-	/* Draw sides of node */
-	glBegin( GL_QUAD_STRIP );
-	glNormal3d( 0.0, normal.y, normal_z_ny ); /* Rear face */
-	glVertex3d( gparams->c0.x, gparams->c1.y, 0.0 );
-	glVertex3d( gparams->c0.x + offset.x, gparams->c1.y - offset.y, gparams->height );
-	glNormal3d( normal.x, 0.0, normal_z_nx ); /* Right face */
-	glVertex3d( gparams->c1.x, gparams->c1.y, 0.0 );
-	glVertex3d( gparams->c1.x - offset.x, gparams->c1.y - offset.y, gparams->height );
-	glNormal3d( 0.0, - normal.y, normal_z_ny ); /* Front face */
-	glVertex3d( gparams->c1.x, gparams->c0.y, 0.0 );
-	glVertex3d( gparams->c1.x - offset.x, gparams->c0.y + offset.y, gparams->height );
-	glNormal3d( - normal.x, 0.0, normal_z_nx ); /* Left face */
-	glVertex3d( gparams->c0.x, gparams->c0.y, 0.0 );
-	glVertex3d( gparams->c0.x + offset.x, gparams->c0.y + offset.y, gparams->height );
-	glVertex3d( gparams->c0.x, gparams->c1.y, 0.0 ); /* Close strip */
-	glVertex3d( gparams->c0.x + offset.x, gparams->c1.y - offset.y, gparams->height );
-	glEnd( );
+#define V(x,y,z) do { verts[v++]=(x); verts[v++]=(y); verts[v++]=(z); } while(0)
+#define EDGE(ax,ay,az, bx2,by2,bz) do { V(ax,ay,az); V(bx2,by2,bz); } while(0)
+	/* Base edges */
+	EDGE(bx0,by0,0, bx1,by0,0);
+	EDGE(bx1,by0,0, bx1,by1,0);
+	EDGE(bx1,by1,0, bx0,by1,0);
+	EDGE(bx0,by1,0, bx0,by0,0);
+	/* Top edges */
+	EDGE(tx0,ty0,h, tx1,ty0,h);
+	EDGE(tx1,ty0,h, tx1,ty1,h);
+	EDGE(tx1,ty1,h, tx0,ty1,h);
+	EDGE(tx0,ty1,h, tx0,ty0,h);
+	/* Slanted vertical edges */
+	EDGE(bx0,by0,0, tx0,ty0,h);
+	EDGE(bx1,by0,0, tx1,ty0,h);
+	EDGE(bx1,by1,0, tx1,ty1,h);
+	EDGE(bx0,by1,0, tx0,ty1,h);
+#undef V
+#undef EDGE
 
-	/* Top face has ID of 1 */
-	glPushName( 1 );
-	node_glcolor_face( node, 1 );
-
-	/* Draw top face */
-	glNormal3d( 0.0, 0.0, 1.0 );
-	glBegin( GL_QUADS );
-	glVertex3d( gparams->c0.x + offset.x, gparams->c0.y + offset.y, gparams->height );
-	glVertex3d( gparams->c1.x - offset.x, gparams->c0.y + offset.y, gparams->height );
-	glVertex3d( gparams->c1.x - offset.x, gparams->c1.y - offset.y, gparams->height );
-	glVertex3d( gparams->c0.x + offset.x, gparams->c1.y - offset.y, gparams->height );
-	glEnd( );
-
-	glPopName( );
-}
-
-
-/* Draws a "folder" shape atop a directory */
-static void
-mapv_gldraw_folder( GNode *dnode )
-{
-	XYvec dims, offset;
-	XYvec c0, c1;
-	XYvec folder_c0, folder_c1, folder_tab;
-	double k, border;
-
-	g_assert( NODE_IS_DIR(dnode) );
-
-	/* Obtain corners/dimensions of top face */
-	dims.x = MAPV_NODE_WIDTH(dnode);
-	dims.y = MAPV_NODE_DEPTH(dnode);
-	k = mapv_side_slant_ratios[NODE_DIRECTORY];
-	offset.x = MIN(MAPV_GEOM_PARAMS(dnode)->height, k * dims.x);
-	offset.y = MIN(MAPV_GEOM_PARAMS(dnode)->height, k * dims.y);
-	c0.x = MAPV_GEOM_PARAMS(dnode)->c0.x + offset.x;
-	c0.y = MAPV_GEOM_PARAMS(dnode)->c0.y + offset.y;
-	c1.x = MAPV_GEOM_PARAMS(dnode)->c1.x - offset.x;
-	c1.y = MAPV_GEOM_PARAMS(dnode)->c1.y - offset.y;
-	dims.x -= 2.0 * offset.x;
-	dims.y -= 2.0 * offset.y;
-
-	/* Folder geometry */
-	border = 0.0625 * MIN(dims.x, dims.y);
-	folder_c0.x = c0.x + border;
-	folder_c0.y = c0.y + border;
-	folder_c1.x = c1.x - border;
-	folder_c1.y = c1.y - border;
-	/* Coordinates of the concave vertex */
-	folder_tab.x = folder_c1.x - (MAGIC_NUMBER - 1.0) * (folder_c1.x - folder_c0.x);
-	folder_tab.y = folder_c1.y - border;
-
-	node_glcolor( dnode );
-	glBegin( GL_LINE_STRIP );
-	glVertex2d( folder_c0.x, folder_c0.y );
-	glVertex2d( folder_c0.x, folder_tab.y );
-	glVertex2d( folder_c0.x + border, folder_c1.y );
-	glVertex2d( folder_tab.x - border, folder_c1.y );
-	glVertex2d( folder_tab.x, folder_tab.y );
-	glVertex2d( folder_c1.x, folder_tab.y );
-	glVertex2d( folder_c1.x, folder_c0.y );
-	glVertex2d( folder_c0.x, folder_c0.y );
-	glEnd( );
-}
-
-
-/* Builds the children of a directory (but not the directory itself;
- * that geometry belongs to the parent) */
-static void
-mapv_build_dir( GNode *dnode )
-{
-	GNode *node;
-
-	g_assert( NODE_IS_DIR(dnode) || NODE_IS_METANODE(dnode) );
-
-	node = dnode->children;
-	while (node != NULL) {
-		/* Draw node */
-		glLoadName( NODE_DESC(node)->id );
-		node_glcolor( node );
-		mapv_gldraw_node( node );
-		node = node->next;
-	}
+	flat_draw_lines( verts, v / 3, GL_LINES, r, g, b, 1.0f );
 }
 
 
@@ -1447,7 +1205,7 @@ mapv_apply_label( GNode *node )
 /* MapV mode "full draw".
  * acc_z: accumulated Z offset from parent heights. */
 static void
-mapv_draw_recursive( GNode *dnode, int action, double acc_z )
+mapv_draw_recursive( GNode *dnode, double acc_z )
 {
 	DirNodeDesc *dir_ndesc;
 	MapVGeomParams *gparams;
@@ -1470,14 +1228,10 @@ mapv_draw_recursive( GNode *dnode, int action, double acc_z )
 		double cx = gparams->c0.x + half_w;
 		double cy = gparams->c0.y + half_d;
 
-		/* Screen-size cull: skip entire subtree if too small.
-		 * Use higher threshold for outline pass. */
-		{
-			double threshold = drawing_outlines ? OUTLINE_SIZE_THRESHOLD : CULL_SIZE_THRESHOLD;
-			if (half_size > 0.0 &&
-			    screen_size_pixels( cx, cy, node_z, half_size ) < threshold)
-				return;
-		}
+		/* Screen-size cull: skip entire subtree if too small */
+		if (half_size > 0.0 &&
+		    screen_size_pixels( cx, cy, node_z, half_size ) < CULL_SIZE_THRESHOLD)
+			return;
 
 		/* Frustum cull: test XY footprint with generous Z range */
 		if (!frustum_test_aabb( gparams->c0.x, gparams->c0.y, acc_z - 1.0,
@@ -1485,8 +1239,8 @@ mapv_draw_recursive( GNode *dnode, int action, double acc_z )
 			return;
 	}
 
-	glPushMatrix( );
-	glTranslated( 0.0, 0.0, gparams->height );
+	glmath_push_modelview( );
+	glmath_translated( 0.0, 0.0, gparams->height );
 
 	dir_ndesc = DIR_NODE_DESC(dnode);
 	dir_collapsed = DIR_COLLAPSED(dnode);
@@ -1494,37 +1248,10 @@ mapv_draw_recursive( GNode *dnode, int action, double acc_z )
 
 	if (!dir_collapsed && !dir_expanded) {
 		/* Grow/shrink children heightwise */
-		glEnable( GL_NORMALIZE );
-		glScaled( 1.0, 1.0, dir_ndesc->deployment );
+		glmath_scaled( 1.0, 1.0, dir_ndesc->deployment );
 	}
 
-	if (action == MAPV_DRAW_GEOMETRY) {
-		/* Draw directory face or geometry of children
-		 * (display list A) */
-		if (picking_mode) {
-			/* Pick mode: draw directly, bypass display lists.
-			 * Collapsed dirs are pickable via their parent's
-			 * build_dir, so only expanded dirs need drawing. */
-			if (!dir_collapsed)
-				mapv_build_dir( dnode );
-		}
-		else if (dir_ndesc->a_dlist_stale) {
-			/* Rebuild */
-			if (dir_ndesc->a_dlist == NULL_DLIST)
-				dir_ndesc->a_dlist = glGenLists( 1 );
-			glNewList( dir_ndesc->a_dlist, GL_COMPILE_AND_EXECUTE );
-			if (dir_collapsed)
-				mapv_gldraw_folder( dnode );
-			else
-				mapv_build_dir( dnode );
-			glEndList( );
-			dir_ndesc->a_dlist_stale = FALSE;
-		}
-		else
-			glCallList( dir_ndesc->a_dlist );
-	}
-
-	if (action == MAPV_DRAW_LABELS) {
+	{
 		/* Label distance culling: skip if too small to read */
 		double lhs = 0.5 * MAX(gparams->c1.x - gparams->c0.x,
 		                       gparams->c1.y - gparams->c0.y);
@@ -1532,30 +1259,17 @@ mapv_draw_recursive( GNode *dnode, int action, double acc_z )
 		    screen_size_pixels( 0.5 * (gparams->c0.x + gparams->c1.x),
 		                        0.5 * (gparams->c0.y + gparams->c1.y),
 		                        node_z, lhs ) >= LABEL_SIZE_THRESHOLD) {
-			/* Draw name label(s) (display list B) */
-			if (dir_ndesc->b_dlist_stale) {
-				/* Rebuild */
-				if (dir_ndesc->b_dlist == NULL_DLIST)
-					dir_ndesc->b_dlist = glGenLists( 1 );
-				glNewList( dir_ndesc->b_dlist, GL_COMPILE_AND_EXECUTE );
-				if (dir_collapsed) {
-					/* Label directory */
-					mapv_apply_label( dnode );
-				}
-				else {
-					/* Label non-subdirectory children */
-					node = dnode->children;
-					while (node != NULL) {
-						if (!NODE_IS_DIR(node))
-							mapv_apply_label( node );
-						node = node->next;
-					}
-				}
-				glEndList( );
-				dir_ndesc->b_dlist_stale = FALSE;
+			if (dir_collapsed) {
+				mapv_apply_label( dnode );
 			}
-			else
-				glCallList( dir_ndesc->b_dlist );
+			else {
+				node = dnode->children;
+				while (node != NULL) {
+					if (!NODE_IS_DIR(node))
+						mapv_apply_label( node );
+					node = node->next;
+				}
+			}
 		}
 	}
 
@@ -1568,15 +1282,12 @@ mapv_draw_recursive( GNode *dnode, int action, double acc_z )
 		while (node != NULL) {
 			if (!NODE_IS_DIR(node))
 				break;
-			mapv_draw_recursive( node, action, node_z );
+			mapv_draw_recursive( node, node_z );
 			node = node->next;
 		}
 	}
 
-	if (!dir_collapsed && !dir_expanded)
-		glDisable( GL_NORMALIZE );
-
-	glPopMatrix( );
+	glmath_pop_modelview( );
 }
 
 
@@ -1587,59 +1298,35 @@ mapv_gldraw_cursor( const XYZvec *c0, const XYZvec *c1 )
 	static const double bar_part = SQR(SQR(MAGIC_NUMBER - 1.0));
 	XYZvec corner_dims;
 	XYZvec p, delta;
-	int i, c;
+	/* 8 corners x 3 axes x 2 vertices per line = 48 lines = 96 vertices */
+	float verts[96 * 3];
+	int v = 0, c;
 
 	corner_dims.x = bar_part * (c1->x - c0->x);
 	corner_dims.y = bar_part * (c1->y - c0->y);
 	corner_dims.z = bar_part * (c1->z - c0->z);
 
-	cursor_pre( );
-	for (i = 0; i < 2; i++) {
-		if (i == 0)
-			cursor_hidden_part( );
-		else if (i == 1)
-			cursor_visible_part( );
+	for (c = 0; c < 8; c++) {
+		p.x = (c & 1) ? c1->x : c0->x;
+		delta.x = (c & 1) ? -corner_dims.x : corner_dims.x;
+		p.y = (c & 2) ? c1->y : c0->y;
+		delta.y = (c & 2) ? -corner_dims.y : corner_dims.y;
+		p.z = (c & 4) ? c1->z : c0->z;
+		delta.z = (c & 4) ? -corner_dims.z : corner_dims.z;
 
-		glBegin( GL_LINES );
-		for (c = 0; c < 8; c++) {
-			if (c & 1) {
-				p.x = c1->x;
-				delta.x = - corner_dims.x;
-			}
-			else {
-				p.x = c0->x;
-				delta.x = corner_dims.x;
-			}
-
-			if (c & 2) {
-				p.y = c1->y;
-				delta.y = - corner_dims.y;
-			}
-			else {
-				p.y = c0->y;
-				delta.y = corner_dims.y;
-			}
-
-			if (c & 4) {
-				p.z = c1->z;
-				delta.z = - corner_dims.z;
-			}
-			else {
-				p.z = c0->z;
-				delta.z = corner_dims.z;
-			}
-
-			glVertex3d( p.x, p.y, p.z );
-			glVertex3d( p.x + delta.x, p.y, p.z );
-
-			glVertex3d( p.x, p.y, p.z );
-			glVertex3d( p.x, p.y + delta.y, p.z );
-
-			glVertex3d( p.x, p.y, p.z );
-			glVertex3d( p.x, p.y, p.z + delta.z );
-		}
-		glEnd( );
+		/* X-axis bar */
+		verts[v++] = (float)p.x;  verts[v++] = (float)p.y;  verts[v++] = (float)p.z;
+		verts[v++] = (float)(p.x + delta.x);  verts[v++] = (float)p.y;  verts[v++] = (float)p.z;
+		/* Y-axis bar */
+		verts[v++] = (float)p.x;  verts[v++] = (float)p.y;  verts[v++] = (float)p.z;
+		verts[v++] = (float)p.x;  verts[v++] = (float)(p.y + delta.y);  verts[v++] = (float)p.z;
+		/* Z-axis bar */
+		verts[v++] = (float)p.x;  verts[v++] = (float)p.y;  verts[v++] = (float)p.z;
+		verts[v++] = (float)p.x;  verts[v++] = (float)p.y;  verts[v++] = (float)(p.z + delta.z);
 	}
+
+	cursor_draw_hidden( verts, v / 3, GL_LINES );
+	cursor_draw_visible( verts, v / 3, GL_LINES );
 	cursor_post( );
 }
 
@@ -1924,44 +1611,22 @@ mapv_rebuild_batch( void )
 static void
 mapv_setup_lit_shader( float diffuse_scale )
 {
-	float mv[16], proj[16];
-	float mvp[16];
-	float norm[9];
-	int i, j, k;
+	mat4 mvp;
+	mat3 norm;
 
-	/* Read current GL matrices (set up by ogl.c) */
-	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
-	glGetFloatv( GL_PROJECTION_MATRIX, proj );
-
-	/* Compute MVP = proj * mv (column-major) */
-	for (j = 0; j < 4; j++) {
-		for (i = 0; i < 4; i++) {
-			float sum = 0.0f;
-			for (k = 0; k < 4; k++)
-				sum += proj[i + k * 4] * mv[k + j * 4];
-			mvp[i + j * 4] = sum;
-		}
-	}
-
-	/* Compute normal matrix = transpose(inverse(upper-left 3x3 of mv)).
-	 * For orthogonal modelview (no non-uniform scale), this equals the
-	 * upper-left 3x3 of mv itself. Use that as a simpler, robust path. */
-	for (i = 0; i < 3; i++)
-		for (j = 0; j < 3; j++)
-			norm[i + j * 3] = mv[i + j * 4];
-
-	glDisable( GL_LIGHTING );
+	glmath_get_mvp( mvp );
+	glmath_get_normal_matrix( norm );
 
 	shader_program_use( &lit_shader );
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &lit_shader, "u_mvp" ),
-		1, GL_FALSE, mvp );
+		1, GL_FALSE, (const float *)mvp );
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &lit_shader, "u_modelview" ),
-		1, GL_FALSE, mv );
+		1, GL_FALSE, glmath_get_modelview( ) );
 	glUniformMatrix3fv(
 		shader_program_get_uniform( &lit_shader, "u_normal_matrix" ),
-		1, GL_FALSE, norm );
+		1, GL_FALSE, (const float *)norm );
 	glUniform1f(
 		shader_program_get_uniform( &lit_shader, "u_diffuse_scale" ),
 		diffuse_scale );
@@ -1973,7 +1638,6 @@ static void
 mapv_teardown_lit_shader( void )
 {
 	shader_program_unuse( );
-	glEnable( GL_LIGHTING );
 }
 
 
@@ -1981,27 +1645,14 @@ mapv_teardown_lit_shader( void )
 static void
 mapv_setup_pick_shader( void )
 {
-	float mv[16], proj[16];
-	float mvp[16];
-	int i, j, k;
+	mat4 mvp;
 
-	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
-	glGetFloatv( GL_PROJECTION_MATRIX, proj );
-
-	/* Compute MVP = proj * mv (column-major) */
-	for (j = 0; j < 4; j++) {
-		for (i = 0; i < 4; i++) {
-			float sum = 0.0f;
-			for (k = 0; k < 4; k++)
-				sum += proj[i + k * 4] * mv[k + j * 4];
-			mvp[i + j * 4] = sum;
-		}
-	}
+	glmath_get_mvp( mvp );
 
 	shader_program_use( &pick_shader );
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &pick_shader, "u_mvp" ),
-		1, GL_FALSE, mvp );
+		1, GL_FALSE, (const float *)mvp );
 }
 
 
@@ -2049,8 +1700,8 @@ mapv_draw( boolean high_detail )
 
 		/* Node name labels */
 		text_pre( );
-		glColor3f( 0.0, 0.0, 0.0 );
-		mapv_draw_recursive( globals.fstree, MAPV_DRAW_LABELS, 0.0 );
+		text_set_color( 0.0, 0.0, 0.0 );
+		mapv_draw_recursive( globals.fstree, 0.0 );
 		text_post( );
 
 		/* Node cursor */
@@ -2080,13 +1731,7 @@ enum {
 	TREEV_NEED_REARRANGE	= 1 << 0
 };
 
-/* Messages for treev_draw_recursive( ) */
-enum {
-	/* Note: don't change order of these */
-	TREEV_DRAW_LABELS,
-	TREEV_DRAW_GEOMETRY,
-	TREEV_DRAW_GEOMETRY_WITH_BRANCHES
-};
+/* (TreeV draw messages enum removed — recursive draw only does labels now) */
 
 
 /* Color of interconnecting branches */
@@ -2110,6 +1755,7 @@ static RTZvec treev_cursor_prev_c1;
 /* VBO batches for TreeV */
 static VBOBatch treev_solid_batch;
 static VBOBatch treev_branch_batch;
+static VBOBatch treev_outline_batch;
 static boolean treev_batch_initialized = FALSE;
 
 
@@ -3092,9 +2738,15 @@ treev_batch_outbranch( VBOBatch *batch, double r1,
 
 /* Lays out leaf nodes on a directory and batches them + the platform.
  * Same layout logic as treev_build_dir but outputs to VBO batch. */
+/* Forward declarations for edge batching functions */
+static void treev_batch_platform_edges( VBOBatch *batch, GNode *dnode,
+                                         double r0, double acc_theta );
+static void treev_batch_leaf_edges( VBOBatch *batch, GNode *node, double r0,
+                                     double acc_theta, boolean full_node );
+
 static void
-treev_batch_dir( VBOBatch *batch, GNode *dnode, double r0,
-                 double acc_theta )
+treev_batch_dir( VBOBatch *batch, VBOBatch *outline, GNode *dnode,
+                 double r0, double acc_theta )
 {
 #define edge05 (0.5 * TREEV_LEAF_NODE_EDGE)
 #define edge15 (1.5 * TREEV_LEAF_NODE_EDGE)
@@ -3117,6 +2769,8 @@ treev_batch_dir( VBOBatch *batch, GNode *dnode, double r0,
 			TREEV_GEOM_PARAMS(node)->leaf.distance = pos.r - r0;
 			treev_batch_leaf( batch, node, r0, acc_theta,
 			                  !NODE_IS_DIR(node) );
+			treev_batch_leaf_edges( outline, node, r0, acc_theta,
+			                        !NODE_IS_DIR(node) );
 			pos.theta -= inter_arc_width;
 			node = node->prev;
 		}
@@ -3130,6 +2784,7 @@ treev_batch_dir( VBOBatch *batch, GNode *dnode, double r0,
 
 	/* Batch the platform underneath */
 	treev_batch_platform( batch, dnode, r0, acc_theta );
+	treev_batch_platform_edges( outline, dnode, r0, acc_theta );
 
 #undef edge05
 #undef edge15
@@ -3190,12 +2845,182 @@ treev_apply_deployment( VBOBatch *batch, int start_idx,
 }
 
 
+/* Batch edge lines for a TreeV platform into the outline batch.
+ * Emits edges for inner/outer arcs, vertical corners, and face edges. */
+static void
+treev_batch_platform_edges( VBOBatch *batch, GNode *dnode, double r0,
+                             double acc_theta )
+{
+	XYvec p0, p1, delta;
+	double r1, seg_arc_width, theta, sin_theta, cos_theta, z1;
+	float cr, cg, cb;
+	unsigned int nid;
+	int s, seg_count;
+
+	r1 = r0 + TREEV_GEOM_PARAMS(dnode)->platform.depth;
+	seg_count = (int)ceil( TREEV_GEOM_PARAMS(dnode)->platform.arc_width / TREEV_CURVE_GRANULARITY );
+	seg_arc_width = TREEV_GEOM_PARAMS(dnode)->platform.arc_width / (double)seg_count;
+
+	theta = -0.5 * TREEV_GEOM_PARAMS(dnode)->platform.arc_width;
+	for (s = 0; s <= seg_count; s++) {
+		sin_theta = sin( RAD(theta) );
+		cos_theta = cos( RAD(theta) );
+		p0.x = r0 * cos_theta; p0.y = r0 * sin_theta;
+		p1.x = r1 * cos_theta; p1.y = r1 * sin_theta;
+		if (s == 0) {
+			delta.x = - sin_theta * (0.5 * TREEV_PLATFORM_SPACING_WIDTH);
+			delta.y = cos_theta * (0.5 * TREEV_PLATFORM_SPACING_WIDTH);
+			p0.x += delta.x; p0.y += delta.y;
+			p1.x += delta.x; p1.y += delta.y;
+		}
+		else if (s == seg_count) {
+			delta.x = sin_theta * (0.5 * TREEV_PLATFORM_SPACING_WIDTH);
+			delta.y = - cos_theta * (0.5 * TREEV_PLATFORM_SPACING_WIDTH);
+			p0.x += delta.x; p0.y += delta.y;
+			p1.x += delta.x; p1.y += delta.y;
+		}
+		inner_edge_buf[s].x = p0.x; inner_edge_buf[s].y = p0.y;
+		outer_edge_buf[s].x = p1.x; outer_edge_buf[s].y = p1.y;
+		theta += seg_arc_width;
+	}
+
+	z1 = TREEV_GEOM_PARAMS(dnode)->platform.height;
+	cr = NODE_DESC(dnode)->color->r;
+	cg = NODE_DESC(dnode)->color->g;
+	cb = NODE_DESC(dnode)->color->b;
+	nid = NODE_DESC(dnode)->id;
+
+	#define EDGE_W(lx0,ly0,lz0, lx1,ly1,lz1) do { \
+		double wx0_, wy0_, wx1_, wy1_; \
+		treev_rotate_point(lx0, ly0, acc_theta, &wx0_, &wy0_); \
+		treev_rotate_point(lx1, ly1, acc_theta, &wx1_, &wy1_); \
+		vbo_batch_add_vertex(batch, wx0_,wy0_,lz0, 0,0,1, cr,cg,cb, nid); \
+		vbo_batch_add_vertex(batch, wx1_,wy1_,lz1, 0,0,1, cr,cg,cb, nid); \
+	} while(0)
+
+	/* Inner arc: bottom and top */
+	for (s = 0; s < seg_count; s++) {
+		EDGE_W(inner_edge_buf[s].x, inner_edge_buf[s].y, 0.0,
+		       inner_edge_buf[s+1].x, inner_edge_buf[s+1].y, 0.0);
+		EDGE_W(inner_edge_buf[s].x, inner_edge_buf[s].y, z1,
+		       inner_edge_buf[s+1].x, inner_edge_buf[s+1].y, z1);
+	}
+	/* Outer arc: bottom and top */
+	for (s = 0; s < seg_count; s++) {
+		EDGE_W(outer_edge_buf[s].x, outer_edge_buf[s].y, 0.0,
+		       outer_edge_buf[s+1].x, outer_edge_buf[s+1].y, 0.0);
+		EDGE_W(outer_edge_buf[s].x, outer_edge_buf[s].y, z1,
+		       outer_edge_buf[s+1].x, outer_edge_buf[s+1].y, z1);
+	}
+	/* Vertical edges at corners */
+	EDGE_W(inner_edge_buf[0].x, inner_edge_buf[0].y, 0.0,
+	       inner_edge_buf[0].x, inner_edge_buf[0].y, z1);
+	EDGE_W(inner_edge_buf[seg_count].x, inner_edge_buf[seg_count].y, 0.0,
+	       inner_edge_buf[seg_count].x, inner_edge_buf[seg_count].y, z1);
+	EDGE_W(outer_edge_buf[0].x, outer_edge_buf[0].y, 0.0,
+	       outer_edge_buf[0].x, outer_edge_buf[0].y, z1);
+	EDGE_W(outer_edge_buf[seg_count].x, outer_edge_buf[seg_count].y, 0.0,
+	       outer_edge_buf[seg_count].x, outer_edge_buf[seg_count].y, z1);
+	/* Leading face horizontal edges */
+	EDGE_W(inner_edge_buf[0].x, inner_edge_buf[0].y, 0.0,
+	       outer_edge_buf[0].x, outer_edge_buf[0].y, 0.0);
+	EDGE_W(inner_edge_buf[0].x, inner_edge_buf[0].y, z1,
+	       outer_edge_buf[0].x, outer_edge_buf[0].y, z1);
+	/* Trailing face horizontal edges */
+	EDGE_W(inner_edge_buf[seg_count].x, inner_edge_buf[seg_count].y, 0.0,
+	       outer_edge_buf[seg_count].x, outer_edge_buf[seg_count].y, 0.0);
+	EDGE_W(inner_edge_buf[seg_count].x, inner_edge_buf[seg_count].y, z1,
+	       outer_edge_buf[seg_count].x, outer_edge_buf[seg_count].y, z1);
+
+	#undef EDGE_W
+}
+
+
+/* Batch edge lines for a TreeV leaf node into the outline batch.
+ * Emits edges for bottom, top, and vertical edges of the box. */
+static void
+treev_batch_leaf_edges( VBOBatch *batch, GNode *node, double r0,
+                         double acc_theta, boolean full_node )
+{
+	XYvec corners[4], p;
+	double z0, z1;
+	double edge, height;
+	double sin_theta, cos_theta;
+	float cr, cg, cb;
+	unsigned int nid;
+	int i;
+
+	if (full_node) {
+		edge = TREEV_LEAF_NODE_EDGE;
+		height = TREEV_GEOM_PARAMS(node)->leaf.height;
+		if (NODE_IS_DIR(node))
+			height *= (1.0 - DIR_NODE_DESC(node)->deployment);
+	}
+	else {
+		edge = (0.875 * TREEV_LEAF_NODE_EDGE);
+		height = (TREEV_LEAF_NODE_EDGE / 64.0);
+	}
+
+	corners[0].x = r0 + TREEV_GEOM_PARAMS(node)->leaf.distance - 0.5 * edge;
+	corners[0].y = -0.5 * edge;
+	corners[1].x = corners[0].x + edge;
+	corners[1].y = corners[0].y;
+	corners[2].x = corners[1].x;
+	corners[2].y = corners[0].y + edge;
+	corners[3].x = corners[0].x;
+	corners[3].y = corners[2].y;
+
+	z0 = TREEV_GEOM_PARAMS(node->parent)->platform.height;
+	z1 = z0 + height;
+
+	sin_theta = sin( RAD(TREEV_GEOM_PARAMS(node)->leaf.theta) );
+	cos_theta = cos( RAD(TREEV_GEOM_PARAMS(node)->leaf.theta) );
+
+	for (i = 0; i < 4; i++) {
+		double lx, ly;
+		p.x = corners[i].x;
+		p.y = corners[i].y;
+		lx = p.x * cos_theta - p.y * sin_theta;
+		ly = p.x * sin_theta + p.y * cos_theta;
+		treev_rotate_point( lx, ly, acc_theta,
+		                    &corners[i].x, &corners[i].y );
+	}
+
+	cr = NODE_DESC(node)->color->r;
+	cg = NODE_DESC(node)->color->g;
+	cb = NODE_DESC(node)->color->b;
+	nid = NODE_DESC(node)->id;
+
+	/* Top edges */
+	for (i = 0; i < 4; i++) {
+		int j = (i + 1) % 4;
+		vbo_batch_add_vertex(batch, corners[i].x,corners[i].y,z1, 0,0,1, cr,cg,cb, nid);
+		vbo_batch_add_vertex(batch, corners[j].x,corners[j].y,z1, 0,0,1, cr,cg,cb, nid);
+	}
+
+	if (full_node) {
+		/* Bottom edges */
+		for (i = 0; i < 4; i++) {
+			int j = (i + 1) % 4;
+			vbo_batch_add_vertex(batch, corners[i].x,corners[i].y,z0, 0,0,1, cr,cg,cb, nid);
+			vbo_batch_add_vertex(batch, corners[j].x,corners[j].y,z0, 0,0,1, cr,cg,cb, nid);
+		}
+		/* Vertical edges */
+		for (i = 0; i < 4; i++) {
+			vbo_batch_add_vertex(batch, corners[i].x,corners[i].y,z0, 0,0,1, cr,cg,cb, nid);
+			vbo_batch_add_vertex(batch, corners[i].x,corners[i].y,z1, 0,0,1, cr,cg,cb, nid);
+		}
+	}
+}
+
+
 /* Recursively walks TreeV tree and batches all geometry.
  * acc_theta: accumulated rotation from all ancestors (degrees).
  * Handles deployment animation by applying the deployment transform
  * to vertex positions. */
 static void
 treev_batch_recursive( VBOBatch *solid, VBOBatch *branches,
+                       VBOBatch *outline,
                        GNode *dnode, double prev_r0, double r0,
                        double acc_theta )
 {
@@ -3217,6 +3042,7 @@ treev_batch_recursive( VBOBatch *solid, VBOBatch *branches,
 		if (!dir_expanded) {
 			/* Partially deployed: batch the shrinking/growing leaf */
 			treev_batch_leaf( solid, dnode, prev_r0, acc_theta, TRUE );
+			treev_batch_leaf_edges( outline, dnode, prev_r0, acc_theta, TRUE );
 		}
 
 		new_acc_theta = acc_theta + dir_gparams->platform.theta;
@@ -3224,10 +3050,11 @@ treev_batch_recursive( VBOBatch *solid, VBOBatch *branches,
 		/* Record start indices for deployment transform */
 		int solid_start = solid->build_count;
 		int branch_start = branches->build_count;
+		int outline_start = outline->build_count;
 
 		if (NODE_IS_DIR(dnode)) {
 			/* Batch the directory (leaves + platform) */
-			treev_batch_dir( solid, dnode, r0, new_acc_theta );
+			treev_batch_dir( solid, outline, dnode, r0, new_acc_theta );
 		}
 
 		if (!dir_expanded) {
@@ -3241,7 +3068,7 @@ treev_batch_recursive( VBOBatch *solid, VBOBatch *branches,
 		while (node != NULL) {
 			if (!NODE_IS_DIR(node))
 				break;
-			treev_batch_recursive( solid, branches, node,
+			treev_batch_recursive( solid, branches, outline, node,
 			                       r0, subtree_r0, new_acc_theta );
 			if (DIR_EXPANDED(node)) {
 				if (first_node == NULL)
@@ -3285,12 +3112,18 @@ treev_batch_recursive( VBOBatch *solid, VBOBatch *branches,
 			                        prev_r0 + dir_gparams->leaf.distance,
 			                        dir_gparams->leaf.theta,
 			                        acc_theta );
+			treev_apply_deployment( outline, outline_start,
+			                        deployment,
+			                        prev_r0 + dir_gparams->leaf.distance,
+			                        dir_gparams->leaf.theta,
+			                        acc_theta );
 		}
 	}
 	else {
 		new_acc_theta = acc_theta;
 		/* Collapsed: batch as a leaf */
 		treev_batch_leaf( solid, dnode, prev_r0, acc_theta, TRUE );
+		treev_batch_leaf_edges( outline, dnode, prev_r0, acc_theta, TRUE );
 	}
 
 	/* Update geometry status */
@@ -3305,6 +3138,7 @@ treev_rebuild_batch( void )
 	if (!treev_batch_initialized) {
 		vbo_batch_init( &treev_solid_batch );
 		vbo_batch_init( &treev_branch_batch );
+		vbo_batch_init( &treev_outline_batch );
 		treev_batch_initialized = TRUE;
 	}
 
@@ -3313,53 +3147,45 @@ treev_rebuild_batch( void )
 
 	vbo_batch_begin( &treev_solid_batch );
 	vbo_batch_begin( &treev_branch_batch );
+	vbo_batch_begin( &treev_outline_batch );
 	treev_batch_recursive( &treev_solid_batch, &treev_branch_batch,
+	                       &treev_outline_batch,
 	                       globals.fstree, NIL, treev_core_radius, 0.0 );
 	vbo_batch_upload( &treev_solid_batch );
 	vbo_batch_upload( &treev_branch_batch );
+	vbo_batch_upload( &treev_outline_batch );
 }
 
 
 /* Sets up the lit shader for TreeV */
 static void
-treev_setup_lit_shader( void )
+treev_setup_lit_shader_ex( float diffuse_scale )
 {
-	float mv[16], proj[16];
-	float mvp[16];
-	float norm[9];
-	int i, j, k;
+	mat4 mvp;
+	mat3 norm;
 
-	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
-	glGetFloatv( GL_PROJECTION_MATRIX, proj );
-
-	for (j = 0; j < 4; j++) {
-		for (i = 0; i < 4; i++) {
-			float sum = 0.0f;
-			for (k = 0; k < 4; k++)
-				sum += proj[i + k * 4] * mv[k + j * 4];
-			mvp[i + j * 4] = sum;
-		}
-	}
-
-	for (i = 0; i < 3; i++)
-		for (j = 0; j < 3; j++)
-			norm[i + j * 3] = mv[i + j * 4];
-
-	glDisable( GL_LIGHTING );
+	glmath_get_mvp( mvp );
+	glmath_get_normal_matrix( norm );
 
 	shader_program_use( &lit_shader );
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &lit_shader, "u_mvp" ),
-		1, GL_FALSE, mvp );
+		1, GL_FALSE, (const float *)mvp );
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &lit_shader, "u_modelview" ),
-		1, GL_FALSE, mv );
+		1, GL_FALSE, glmath_get_modelview( ) );
 	glUniformMatrix3fv(
 		shader_program_get_uniform( &lit_shader, "u_normal_matrix" ),
-		1, GL_FALSE, norm );
+		1, GL_FALSE, (const float *)norm );
 	glUniform1f(
 		shader_program_get_uniform( &lit_shader, "u_diffuse_scale" ),
-		1.0f );
+		diffuse_scale );
+}
+
+static void
+treev_setup_lit_shader( void )
+{
+	treev_setup_lit_shader_ex( 1.0f );
 }
 
 
@@ -3367,26 +3193,14 @@ treev_setup_lit_shader( void )
 static void
 treev_setup_pick_shader( void )
 {
-	float mv[16], proj[16];
-	float mvp[16];
-	int i, j, k;
+	mat4 mvp;
 
-	glGetFloatv( GL_MODELVIEW_MATRIX, mv );
-	glGetFloatv( GL_PROJECTION_MATRIX, proj );
-
-	for (j = 0; j < 4; j++) {
-		for (i = 0; i < 4; i++) {
-			float sum = 0.0f;
-			for (k = 0; k < 4; k++)
-				sum += proj[i + k * 4] * mv[k + j * 4];
-			mvp[i + j * 4] = sum;
-		}
-	}
+	glmath_get_mvp( mvp );
 
 	shader_program_use( &pick_shader );
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &pick_shader, "u_mvp" ),
-		1, GL_FALSE, mvp );
+		1, GL_FALSE, (const float *)mvp );
 }
 
 
@@ -3403,10 +3217,6 @@ treev_queue_rearrange( GNode *dnode )
 	up_node = dnode;
 	while (up_node != NULL) {
 		NODE_DESC(up_node)->flags |= TREEV_NEED_REARRANGE;
-
-		/* Branch geometry has to be rebuilt (display list B) */
-		DIR_NODE_DESC(up_node)->b_dlist_stale = TRUE;
-
 		up_node = up_node->parent;
 	}
 
@@ -3414,9 +3224,10 @@ treev_queue_rearrange( GNode *dnode )
 }
 
 
-/* Draws a directory platform, with inner radius of r0 */
+/* Draws a directory platform with specified color, inner radius r0 */
 static void
-treev_gldraw_platform( GNode *dnode, double r0 )
+treev_gldraw_platform_colored( GNode *dnode, double r0,
+                                float r, float g, float b )
 {
 	XYvec p0, p1;
 	XYvec delta;
@@ -3424,6 +3235,9 @@ treev_gldraw_platform( GNode *dnode, double r0 )
 	double theta, sin_theta, cos_theta;
 	double z1;
 	int s, seg_count;
+	float *verts;
+	int v = 0;
+	int max_verts;
 
 	g_assert( NODE_IS_DIR(dnode) );
 
@@ -3471,147 +3285,79 @@ treev_gldraw_platform( GNode *dnode, double r0 )
 	}
 
 	/* Height of top face */
-        z1 = TREEV_GEOM_PARAMS(dnode)->platform.height;
+	z1 = TREEV_GEOM_PARAMS(dnode)->platform.height;
 
-	/* Everything here is done with quads */
-	glBegin( GL_QUADS );
+	/* Edge outline: 4*seg_count arc segments + 8 straight edges.
+	 * Each edge = 2 vertices × 3 floats */
+	max_verts = (4 * seg_count + 8) * 2;
+	verts = g_alloca( max_verts * 3 * sizeof(float) );
 
-	/* Draw inner edge */
+#define EMIT_V(vx, vy, vz) do { \
+	verts[v++] = (float)(vx); verts[v++] = (float)(vy); verts[v++] = (float)(vz); \
+} while(0)
+
+#define EMIT_EDGE(x0,y0,z0, x1,y1,zz1) do { \
+	EMIT_V(x0,y0,z0); EMIT_V(x1,y1,zz1); \
+} while(0)
+
+	/* Inner arc: bottom and top */
 	for (s = 0; s < seg_count; s++) {
-		/* Going up */
-		p0.x = inner_edge_buf[s].x;
-		p0.y = inner_edge_buf[s].y;
-		glNormal3d( - p0.x / r0, - p0.y / r0, 0.0 );
-		if (s > 0) {
-			glEdgeFlag( GL_FALSE );
-			glVertex3d( p0.x, p0.y, 0.0 );
-			glEdgeFlag( GL_TRUE );
-		}
-		else
-			glVertex3d( p0.x, p0.y, 0.0 );
-		glVertex3d( p0.x, p0.y, z1 );
-
-		/* Going down */
-		p0.x = inner_edge_buf[s + 1].x;
-		p0.y = inner_edge_buf[s + 1].y;
-		glNormal3d( - p0.x / r0, - p0.y / r0, 0.0 );
-		if ((s + 1) < seg_count) {
-			glEdgeFlag( GL_FALSE );
-			glVertex3d( p0.x, p0.y, z1 );
-			glEdgeFlag( GL_TRUE );
-		}
-		else
-			glVertex3d( p0.x, p0.y, z1 );
-		glVertex3d( p0.x, p0.y, 0.0 );
+		EMIT_EDGE(inner_edge_buf[s].x, inner_edge_buf[s].y, 0.0,
+		          inner_edge_buf[s+1].x, inner_edge_buf[s+1].y, 0.0);
+		EMIT_EDGE(inner_edge_buf[s].x, inner_edge_buf[s].y, z1,
+		          inner_edge_buf[s+1].x, inner_edge_buf[s+1].y, z1);
 	}
-
-	/* Draw outer edge */
-	for (s = seg_count; s > 0; s--) {
-		/* Going up */
-		p1.x = outer_edge_buf[s].x;
-		p1.y = outer_edge_buf[s].y;
-		glNormal3d( - p1.x / r1, - p1.y / r1, 0.0 );
-		if (s < seg_count) {
-			glEdgeFlag( GL_FALSE );
-			glVertex3d( p1.x, p1.y, 0.0 );
-			glEdgeFlag( GL_TRUE );
-		}
-		else
-			glVertex3d( p1.x, p1.y, 0.0 );
-		glVertex3d( p1.x, p1.y, z1 );
-
-		/* Going down */
-		p1.x = outer_edge_buf[s - 1].x;
-		p1.y = outer_edge_buf[s - 1].y;
-		glNormal3d( - p1.x / r1, - p1.y / r1, 0.0 );
-		if ((s - 1) > 0) {
-			glEdgeFlag( GL_FALSE );
-			glVertex3d( p1.x, p1.y, z1 );
-			glEdgeFlag( GL_TRUE );
-		}
-		else
-			glVertex3d( p1.x, p1.y, z1 );
-		glVertex3d( p1.x, p1.y, 0.0 );
-	}
-
-	/* Draw leading edge face */
-	p0.x = inner_edge_buf[0].x;
-	p0.y = inner_edge_buf[0].y;
-	p1.x = outer_edge_buf[0].x;
-	p1.y = outer_edge_buf[0].y;
-	glNormal3d( p0.y / r0, - p0.x / r0, 0.0 );
-	glVertex3d( p0.x, p0.y, 0.0 );
-	glVertex3d( p1.x, p1.y, 0.0 );
-	glVertex3d( p1.x, p1.y, z1 );
-	glVertex3d( p0.x, p0.y, z1 );
-
-	/* Draw trailing edge face */
-	p0.x = inner_edge_buf[seg_count].x;
-	p0.y = inner_edge_buf[seg_count].y;
-	p1.x = outer_edge_buf[seg_count].x;
-	p1.y = outer_edge_buf[seg_count].y;
-	glNormal3d( - p0.y / r0, p0.x / r0, 0.0 );
-	glVertex3d( p0.x, p0.y, z1 );
-	glVertex3d( p1.x, p1.y, z1 );
-	glVertex3d( p1.x, p1.y, 0.0 );
-	glVertex3d( p0.x, p0.y, 0.0 );
-
-	glEnd( );
-	/* Top face has ID of 1 */
-	glPushName( 1 );
-	node_glcolor_face( dnode, 1 );
-	glBegin( GL_QUADS );
-
-	/* Draw top face */
-	glNormal3d( 0.0, 0.0, 1.0 );
+	/* Outer arc: bottom and top */
 	for (s = 0; s < seg_count; s++) {
-		/* Going out */
-		p0.x = inner_edge_buf[s].x;
-		p0.y = inner_edge_buf[s].y;
-		p1.x = outer_edge_buf[s].x;
-		p1.y = outer_edge_buf[s].y;
-		if (s > 0) {
-			glEdgeFlag( GL_FALSE );
-			glVertex3d( p0.x, p0.y, z1 );
-			glEdgeFlag( GL_TRUE );
-		}
-		else
-			glVertex3d( p0.x, p0.y, z1 );
-		glVertex3d( p1.x, p1.y, z1 );
-
-		/* Going in */
-		p0.x = inner_edge_buf[s + 1].x;
-		p0.y = inner_edge_buf[s + 1].y;
-		p1.x = outer_edge_buf[s + 1].x;
-		p1.y = outer_edge_buf[s + 1].y;
-		if ((s + 1) < seg_count) {
-			glEdgeFlag( GL_FALSE );
-			glVertex3d( p1.x, p1.y, z1 );
-			glEdgeFlag( GL_TRUE );
-		}
-		else
-			glVertex3d( p1.x, p1.y, z1 );
-		glVertex3d( p0.x, p0.y, z1 );
+		EMIT_EDGE(outer_edge_buf[s].x, outer_edge_buf[s].y, 0.0,
+		          outer_edge_buf[s+1].x, outer_edge_buf[s+1].y, 0.0);
+		EMIT_EDGE(outer_edge_buf[s].x, outer_edge_buf[s].y, z1,
+		          outer_edge_buf[s+1].x, outer_edge_buf[s+1].y, z1);
 	}
+	/* Vertical edges at corners */
+	EMIT_EDGE(inner_edge_buf[0].x, inner_edge_buf[0].y, 0.0,
+	          inner_edge_buf[0].x, inner_edge_buf[0].y, z1);
+	EMIT_EDGE(inner_edge_buf[seg_count].x, inner_edge_buf[seg_count].y, 0.0,
+	          inner_edge_buf[seg_count].x, inner_edge_buf[seg_count].y, z1);
+	EMIT_EDGE(outer_edge_buf[0].x, outer_edge_buf[0].y, 0.0,
+	          outer_edge_buf[0].x, outer_edge_buf[0].y, z1);
+	EMIT_EDGE(outer_edge_buf[seg_count].x, outer_edge_buf[seg_count].y, 0.0,
+	          outer_edge_buf[seg_count].x, outer_edge_buf[seg_count].y, z1);
+	/* Leading face horizontal edges */
+	EMIT_EDGE(inner_edge_buf[0].x, inner_edge_buf[0].y, 0.0,
+	          outer_edge_buf[0].x, outer_edge_buf[0].y, 0.0);
+	EMIT_EDGE(inner_edge_buf[0].x, inner_edge_buf[0].y, z1,
+	          outer_edge_buf[0].x, outer_edge_buf[0].y, z1);
+	/* Trailing face horizontal edges */
+	EMIT_EDGE(inner_edge_buf[seg_count].x, inner_edge_buf[seg_count].y, 0.0,
+	          outer_edge_buf[seg_count].x, outer_edge_buf[seg_count].y, 0.0);
+	EMIT_EDGE(inner_edge_buf[seg_count].x, inner_edge_buf[seg_count].y, z1,
+	          outer_edge_buf[seg_count].x, outer_edge_buf[seg_count].y, z1);
 
-	glEnd( );
-	glPopName( );
+#undef EMIT_EDGE
+#undef EMIT_V
+
+	flat_draw_lines( verts, v / 3, GL_LINES, r, g, b, 1.0f );
 }
 
 
-/* Draws a leaf node. r0 is inner radius of parent; full_node flag
- * specifies whether the full leaf body should be drawn (TRUE) or merely
- * its "footprint" (FALSE). Note: Transformation matrix should be the same
- * one used to draw the underlying parent directory */
+
+
+/* Draws a leaf node with specified color. r0 is inner radius of parent;
+ * full_node flag specifies whether the full leaf body should be drawn (TRUE)
+ * or merely its "footprint" (FALSE). Note: Transformation matrix should be
+ * the same one used to draw the underlying parent directory */
 static void
-treev_gldraw_leaf( GNode *node, double r0, boolean full_node )
+treev_gldraw_leaf_colored( GNode *node, double r0, boolean full_node,
+                            float r, float g, float b )
 {
 	static const int x_verts[] = { 0, 2, 1, 3 };
 	XYvec corners[4], p;
 	double z0, z1;
 	double edge, height;
 	double sin_theta, cos_theta;
-	int i;
+	float *verts;
+	int i, v = 0;
 
 	if (full_node) {
 		edge = TREEV_LEAF_NODE_EDGE;
@@ -3658,293 +3404,54 @@ treev_gldraw_leaf( GNode *node, double r0, boolean full_node )
 		corners[i].y = p.x * sin_theta + p.y * cos_theta;
 	}
 
-	/* Draw top face */
-	glNormal3d( 0.0, 0.0, 1.0 );
-	glBegin( GL_QUADS );
-	for (i = 0; i < 4; i++)
-		glVertex3d( corners[i].x, corners[i].y, z1 );
-	glEnd( );
+#define EMIT_V(vx, vy, vz) do { \
+	verts[v++] = (float)(vx); verts[v++] = (float)(vy); verts[v++] = (float)(vz); \
+} while(0)
 
 	if (!full_node) {
-		/* Draw an "X" and we're done */
-		glBegin( GL_LINES );
+		/* Top face outline (4 edges) + X mark (2 lines) = 12 verts */
+		verts = g_alloca( 12 * 3 * sizeof(float) );
+		for (i = 0; i < 4; i++) {
+			int j = (i + 1) % 4;
+			EMIT_V( corners[i].x, corners[i].y, z1 );
+			EMIT_V( corners[j].x, corners[j].y, z1 );
+		}
+		/* X mark */
 		for (i = 0; i < 4; i++)
-			glVertex3d( corners[x_verts[i]].x, corners[x_verts[i]].y, z1 );
-		glEnd( );
+			EMIT_V( corners[x_verts[i]].x, corners[x_verts[i]].y, z1 );
+		flat_draw_lines( verts, v / 3, GL_LINES, r, g, b, 1.0f );
 		return;
 	}
 
-	/* Draw side faces */
-	glBegin( GL_QUAD_STRIP );
+	/* Full leaf: 12 edges = 24 vertices */
+	verts = g_alloca( 24 * 3 * sizeof(float) );
+
+	/* Bottom edges */
 	for (i = 0; i < 4; i++) {
-		switch (i) {
-			case 0:
-			glNormal3d( sin_theta, - cos_theta, 0.0 );
-			break;
-
-			case 1:
-			glNormal3d( cos_theta, sin_theta, 0.0 );
-			break;
-
-			case 2:
-			glNormal3d( - sin_theta, cos_theta, 0.0 );
-			break;
-
-			case 3:
-			glNormal3d( - cos_theta, - sin_theta, 0.0 );
-			break;
-
-			SWITCH_FAIL
-		}
-		glVertex3d( corners[i].x, corners[i].y, z1 );
-		glVertex3d( corners[i].x, corners[i].y, z0 );
+		int j = (i + 1) % 4;
+		EMIT_V( corners[i].x, corners[i].y, z0 );
+		EMIT_V( corners[j].x, corners[j].y, z0 );
 	}
-	/* Close the strip */
-	glVertex3d( corners[0].x, corners[0].y, z1 );
-	glVertex3d( corners[0].x, corners[0].y, z0 );
-	glEnd( );
-}
-
-
-/* Draws a "folder" shape on top of the given directory leaf node */
-static void
-treev_gldraw_folder( GNode *dnode, double r0 )
-{
-#define X1 (-0.4375 * TREEV_LEAF_NODE_EDGE)
-#define X2 (0.375 * TREEV_LEAF_NODE_EDGE)
-#define X3 (0.4375 * TREEV_LEAF_NODE_EDGE)
-#define Y1 (-0.4375 * TREEV_LEAF_NODE_EDGE)
-#define Y2 (Y1 + (2.0 - MAGIC_NUMBER) * TREEV_LEAF_NODE_EDGE)
-#define Y3 (Y2 + 0.0625 * TREEV_LEAF_NODE_EDGE)
-#define Y4 (Y5 - 0.0625 * TREEV_LEAF_NODE_EDGE)
-#define Y5 (0.4375 * TREEV_LEAF_NODE_EDGE)
-	static const XYvec folder_points[] = {
-		{ X1, Y1 },
-		{ X2, Y1 },
-		{ X2, Y2 },
-		{ X3, Y3 },
-		{ X3, Y4 },
-		{ X2, Y5 },
-		{ X1, Y5 }
-	};
-#undef X1
-#undef X2
-#undef X3
-#undef Y1
-#undef Y2
-#undef Y3
-#undef Y4
-#undef Y5
-	XYZvec p_rot;
-	XYvec p;
-	double folder_r;
-	double sin_theta, cos_theta;
-	int i;
-
-	g_assert( NODE_IS_DIR(dnode) );
-
-	folder_r = r0 + TREEV_GEOM_PARAMS(dnode)->leaf.distance;
-	sin_theta = sin( RAD(TREEV_GEOM_PARAMS(dnode)->leaf.theta) );
-	cos_theta = cos( RAD(TREEV_GEOM_PARAMS(dnode)->leaf.theta) );
-	p_rot.z = (1.0 - DIR_NODE_DESC(dnode)->deployment) * TREEV_GEOM_PARAMS(dnode)->leaf.height + TREEV_GEOM_PARAMS(dnode->parent)->platform.height;
-
-	/* Translate, rotate, and draw folder geometry */
-        node_glcolor( dnode );
-	glBegin( GL_LINE_STRIP );
-	for (i = 0; i <= 7; i++) {
-		p.x = folder_r + folder_points[i % 7].x;
-		p.y = folder_points[i % 7].y;
-		p_rot.x = p.x * cos_theta - p.y * sin_theta;
-		p_rot.y = p.x * sin_theta + p.y * cos_theta;
-
-		glVertex3d( p_rot.x, p_rot.y, p_rot.z );
+	/* Top edges */
+	for (i = 0; i < 4; i++) {
+		int j = (i + 1) % 4;
+		EMIT_V( corners[i].x, corners[i].y, z1 );
+		EMIT_V( corners[j].x, corners[j].y, z1 );
 	}
-	glEnd( );
-}
-
-
-/* Draws the loop around the TreeV center, with the given radius */
-static void
-treev_gldraw_loop( double loop_r )
-{
-	static const int seg_count = (int)(360.0 / TREEV_CURVE_GRANULARITY + 0.5);
-	XYvec p0, p1;
-	double loop_r0, loop_r1;
-	double theta, sin_theta, cos_theta;
-	int s;
-
-	/* Inner/outer loop radii */
-	loop_r0 = loop_r - (0.5 * TREEV_BRANCH_WIDTH);
-	loop_r1 = loop_r + (0.5 * TREEV_BRANCH_WIDTH);
-
-	/* Draw loop */
-	glBegin( GL_QUAD_STRIP );
-	for (s = 0; s <= seg_count; s++) {
-		theta = 360.0 * (double)s / (double)seg_count;
-		sin_theta = sin( RAD(theta) );
-		cos_theta = cos( RAD(theta) );
-		/* p0: point on inner edge */
-		p0.x = loop_r0 * cos_theta;
-		p0.y = loop_r0 * sin_theta;
-		/* p1: point on outer edge */
-		p1.x = loop_r1 * cos_theta;
-		p1.y = loop_r1 * sin_theta;
-
-		glVertex2d( p0.x, p0.y );
-		glVertex2d( p1.x, p1.y );
-	}
-	glEnd( );
-}
-
-
-/* Draws part of the branch connecting to the inner edge of a platform.
- * r0 is the platform's inner radius */
-static void
-treev_gldraw_inbranch( double r0 )
-{
-	XYvec c0, c1;
-
-	/* Left/front */
-	c0.x = r0 - (0.5 * TREEV_PLATFORM_SPACING_DEPTH);
-	c0.y = (-0.5 * TREEV_BRANCH_WIDTH);
-
-	/* Right/rear */
-	c1.x = r0;
-	c1.y = (0.5 * TREEV_BRANCH_WIDTH);
-
-	glBegin( GL_QUADS );
-	glVertex2d( c0.x, c0.y );
-	glVertex2d( c1.x, c0.y );
-	glVertex2d( c1.x, c1.y );
-	glVertex2d( c0.x, c1.y );
-	glEnd( );
-}
-
-
-/* Draws part of the branch present on the outer edge of platforms with
- * expanded subdirectories. r1 is the outer radius of the parent directory,
- * and theta0/theta1 are the start/end angles of the arc portion */
-static void
-treev_gldraw_outbranch( double r1, double theta0, double theta1 )
-{
-	XYvec p0, p1;
-	double arc_r, arc_r0, arc_r1;
-	double arc_width, seg_arc_width;
-	double supp_arc_width;
-	double theta, sin_theta, cos_theta;
-	int s, seg_count;
-
-	g_assert( theta1 >= theta0 );
-
-	/* Radii of branch arc (middle, inner, outer) */
-	arc_r = r1 + (0.5 * TREEV_PLATFORM_SPACING_DEPTH);
-	arc_r0 = arc_r - (0.5 * TREEV_BRANCH_WIDTH);
-	arc_r1 = arc_r + (0.5 * TREEV_BRANCH_WIDTH);
-
-	/* Left/front of stem */
-	p0.x = r1;
-	p0.y = (-0.5 * TREEV_BRANCH_WIDTH);
-
-	/* Right/rear of stem */
-	p1.x = arc_r;
-	p1.y = (0.5 * TREEV_BRANCH_WIDTH);
-
-	/* Draw branch stem */
-	glBegin( GL_QUADS );
-	glVertex2d( p0.x, p0.y );
-	glVertex2d( p1.x, p0.y );
-	glVertex2d( p1.x, p1.y );
-	glVertex2d( p0.x, p1.y );
-	glEnd( );
-
-	/* Shortcut: If arc is zero-length, don't bother drawing it */
-	arc_width = theta1 - theta0;
-	if (arc_width < EPSILON)
-		return;
-
-	/* Supplemental arc width, to yield fully square branch corners
-	 * (where directories connect to the ends of the arc) */
-	supp_arc_width = (180.0 * TREEV_BRANCH_WIDTH / PI) / arc_r0;
-
-	seg_count = (int)ceil( (arc_width + supp_arc_width) / TREEV_CURVE_GRANULARITY );
-	seg_arc_width = (arc_width + supp_arc_width) / (double)seg_count;
-
-	/* Draw branch arc */
-	glBegin( GL_QUAD_STRIP );
-	theta = theta0 - 0.5 * supp_arc_width;
-	for (s = 0; s <= seg_count; s++) {
-		sin_theta = sin( RAD(theta) );
-		cos_theta = cos( RAD(theta) );
-		/* p0: point on inner edge */
-		p0.x = arc_r0 * cos_theta;
-		p0.y = arc_r0 * sin_theta;
-		/* p1: point on outer edge */
-		p1.x = arc_r1 * cos_theta;
-		p1.y = arc_r1 * sin_theta;
-
-		glVertex2d( p0.x, p0.y );
-		glVertex2d( p1.x, p1.y );
-
-		theta += seg_arc_width;
-	}
-	glEnd( );
-}
-
-
-/* Arranges/draws leaf nodes on a directory */
-static void
-treev_build_dir( GNode *dnode, double r0 )
-{
-#define edge05 (0.5 * TREEV_LEAF_NODE_EDGE)
-#define edge15 (1.5 * TREEV_LEAF_NODE_EDGE)
-	GNode *node;
-	RTvec pos;
-	double arc_len, inter_arc_width;
-	int n, row_node_count, remaining_node_count;
-
-	g_assert( NODE_IS_DIR(dnode) );
-
-	/* Build rows of leaf nodes, going from the inner edge outward
-	 * (this will require laying down nodes in reverse order) */
-	remaining_node_count = g_list_length( (GList *)dnode->children );
-	pos.r = r0 + TREEV_LEAF_NODE_EDGE;
-	node = (GNode *)g_list_last( (GList *)dnode->children );
-	while (node != NULL) {
-		/* Calculate (available) arc length of row */
-		arc_len = (PI / 180.0) * pos.r * TREEV_GEOM_PARAMS(dnode)->platform.arc_width - TREEV_PLATFORM_SPACING_WIDTH;
-		/* Number of nodes this row can accomodate */
-		row_node_count = (int)floor( (arc_len - edge05) / edge15 );
-		/* Arc width between adjacent leaf nodes */
-		inter_arc_width = (180.0 * edge15 / PI) / pos.r;
-
-		/* Lay out nodes in this row, sweeping clockwise */
-		pos.theta = 0.5 * inter_arc_width * (double)(MIN(row_node_count, remaining_node_count) - 1);
-		for (n = 0; (n < row_node_count) && (node != NULL); n++) {
-			TREEV_GEOM_PARAMS(node)->leaf.theta = pos.theta;
-			TREEV_GEOM_PARAMS(node)->leaf.distance = pos.r - r0;
-			glLoadName( NODE_DESC(node)->id );
-			node_glcolor( node );
-			treev_gldraw_leaf( node, r0, !NODE_IS_DIR(node) );
-			pos.theta -= inter_arc_width;
-			node = node->prev;
-		}
-
-		remaining_node_count -= row_node_count;
-		pos.r += edge15;
+	/* Vertical edges */
+	for (i = 0; i < 4; i++) {
+		EMIT_V( corners[i].x, corners[i].y, z0 );
+		EMIT_V( corners[i].x, corners[i].y, z1 );
 	}
 
-	/* Official directory depth */
-	pos.r -= edge05;
-	TREEV_GEOM_PARAMS(dnode)->platform.depth = pos.r - r0;
+#undef EMIT_V
 
-	/* Draw underlying directory */
-	glLoadName( NODE_DESC(dnode)->id );
-	node_glcolor( dnode );
-	treev_gldraw_platform( dnode, r0 );
-
-#undef edge05
-#undef edge15
+	flat_draw_lines( verts, v / 3, GL_LINES, r, g, b, 1.0f );
 }
+
+
+
+
 
 
 /* Draws a node name label. is_leaf indicates whether the given node should
@@ -3984,18 +3491,17 @@ treev_apply_label( GNode *node, double r0, boolean is_leaf )
 }
 
 
-/* TreeV mode "full draw".
- * acc_theta: accumulated world-space rotation angle from ancestors. */
-static boolean
-treev_draw_recursive( GNode *dnode, double prev_r0, double r0, int action, double acc_theta )
+/* TreeV label drawing (recursive).
+ * Walks tree with GL matrix transforms matching the geometry layout,
+ * drawing text labels at each node. */
+static void
+treev_draw_recursive( GNode *dnode, double prev_r0, double r0, double acc_theta )
 {
 	DirNodeDesc *dir_ndesc;
 	TreeVGeomParams *dir_gparams;
 	GNode *node;
-	GNode *first_node = NULL, *last_node = NULL;
 	RTvec leaf;
 	double subtree_r0;
-	double theta0, theta1;
 	boolean dir_collapsed;
 	boolean dir_expanded;
 
@@ -4004,89 +3510,42 @@ treev_draw_recursive( GNode *dnode, double prev_r0, double r0, int action, doubl
 	dir_gparams = TREEV_GEOM_PARAMS(dnode);
 
 	dir_collapsed = DIR_COLLAPSED(dnode);
-        dir_expanded = DIR_EXPANDED(dnode);
+	dir_expanded = DIR_EXPANDED(dnode);
 
-	/* Size culling for expanded platforms (skip entire subtree).
-	 * Use higher threshold for outline pass. */
+	/* Size culling for expanded platforms (skip entire subtree) */
 	if (!dir_collapsed && NODE_IS_DIR(dnode) &&
 	    dir_gparams->platform.depth > 0.0) {
 		double r_center = r0 + dir_gparams->platform.depth * 0.5;
 		double wt = acc_theta + dir_gparams->platform.theta;
 		double pcx = r_center * cos( RAD(wt) );
 		double pcy = r_center * sin( RAD(wt) );
-		double threshold = drawing_outlines ? OUTLINE_SIZE_THRESHOLD : CULL_SIZE_THRESHOLD;
 
 		if (screen_size_pixels( pcx, pcy, 0.0,
-		    dir_gparams->platform.depth * 0.5 ) < threshold)
-			return FALSE;
+		    dir_gparams->platform.depth * 0.5 ) < CULL_SIZE_THRESHOLD)
+			return;
 	}
 
-	glPushMatrix( );
+	glmath_push_modelview( );
 
 	if (!dir_collapsed) {
 		if (!dir_expanded) {
-			/* Directory is partially deployed, so
-			 * draw/label the shrinking/growing leaf */
-			if (action >= TREEV_DRAW_GEOMETRY) {
-				node_glcolor( dnode );
-				treev_gldraw_leaf( dnode, prev_r0, TRUE );
-				treev_gldraw_folder( dnode, prev_r0 );
-			}
-			else if (action == TREEV_DRAW_LABELS) {
-				glColor3fv( (float *)&treev_leaf_label_color );
-				treev_apply_label( dnode, prev_r0, TRUE );
-			}
+			/* Directory is partially deployed —
+			 * label the shrinking/growing leaf */
+			text_set_color( treev_leaf_label_color.r, treev_leaf_label_color.g, treev_leaf_label_color.b );
+			treev_apply_label( dnode, prev_r0, TRUE );
 
 			/* Platform should shrink to / grow from
 			 * corresponding leaf position */
-			glEnable( GL_NORMALIZE );
 			leaf.r = prev_r0 + dir_gparams->leaf.distance;
 			leaf.theta = dir_gparams->leaf.theta;
-			glRotated( leaf.theta, 0.0, 0.0, 1.0 );
-			glTranslated( leaf.r, 0.0, 0.0 );
-			glScaled( dir_ndesc->deployment, dir_ndesc->deployment, dir_ndesc->deployment );
-			glTranslated( - leaf.r, 0.0, 0.0 );
-			glRotated( - leaf.theta, 0.0, 0.0, 1.0 );
+			glmath_rotated( leaf.theta, 0.0, 0.0, 1.0 );
+			glmath_translated( leaf.r, 0.0, 0.0 );
+			glmath_scaled( dir_ndesc->deployment, dir_ndesc->deployment, dir_ndesc->deployment );
+			glmath_translated( - leaf.r, 0.0, 0.0 );
+			glmath_rotated( - leaf.theta, 0.0, 0.0, 1.0 );
 		}
 
-		glRotated( dir_gparams->platform.theta, 0.0, 0.0, 1.0 );
-	}
-
-	if (action >= TREEV_DRAW_GEOMETRY) {
-		/* Draw directory, in either leaf or platform form
-		 * (display list A) */
-		if (picking_mode) {
-			/* Pick mode: draw directly, bypass display lists */
-			if (dir_collapsed) {
-				glLoadName( NODE_DESC(dnode)->id );
-				node_glcolor( dnode );
-				treev_gldraw_leaf( dnode, prev_r0, TRUE );
-			}
-			else if (NODE_IS_DIR(dnode)) {
-				treev_build_dir( dnode, r0 );
-			}
-		}
-		else if (dir_ndesc->a_dlist_stale) {
-			/* Rebuild */
-			if (dir_ndesc->a_dlist == NULL_DLIST)
-				dir_ndesc->a_dlist = glGenLists( 1 );
-			glNewList( dir_ndesc->a_dlist, GL_COMPILE_AND_EXECUTE );
-			if (dir_collapsed) {
-				/* Leaf form */
-				glLoadName( NODE_DESC(dnode)->id );
-				node_glcolor( dnode );
-				treev_gldraw_leaf( dnode, prev_r0, TRUE );
-				treev_gldraw_folder( dnode, prev_r0 );
-			}
-			else if (NODE_IS_DIR(dnode)) {
-				/* Platform form (with leaf children) */
-				treev_build_dir( dnode, r0 );
-			}
-			glEndList( );
-			dir_ndesc->a_dlist_stale = FALSE;
-		}
-		else
-			glCallList( dir_ndesc->a_dlist );
+		glmath_rotated( dir_gparams->platform.theta, 0.0, 0.0, 1.0 );
 	}
 
 	if (!dir_collapsed) {
@@ -4097,54 +3556,13 @@ treev_draw_recursive( GNode *dnode, double prev_r0, double r0, int action, doubl
 		while (node != NULL) {
 			if (!NODE_IS_DIR(node))
 				break;
-			if (treev_draw_recursive( node, r0, subtree_r0, action, new_acc_theta )) {
-				/* This subdirectory is expanded.
-				 * Save first/last node information for
-				 * drawing interconnecting branches */
-				if (first_node == NULL)
-					first_node = node;
-				last_node = node;
-			}
+			treev_draw_recursive( node, r0, subtree_r0, new_acc_theta );
 			node = node->next;
 		}
 	}
 
-	if (dir_expanded && (action == TREEV_DRAW_GEOMETRY_WITH_BRANCHES) && !picking_mode) {
-		/* Draw interconnecting branches (display list B).
-		 * During animation, draw directly to avoid compiling
-		 * display lists that will be stale next frame. */
-		if (dir_ndesc->b_dlist_stale) {
-			if (!treev_animating) {
-				if (dir_ndesc->b_dlist == NULL_DLIST)
-					dir_ndesc->b_dlist = glGenLists( 1 );
-				glNewList( dir_ndesc->b_dlist, GL_COMPILE_AND_EXECUTE );
-			}
-			glLoadName( NODE_DESC(dnode)->id );
-			glColor3fv( (float *)&branch_color );
-			glNormal3d( 0.0, 0.0, 1.0 );
-			if (NODE_IS_METANODE(dnode)) {
-				treev_gldraw_loop( r0 );
-				treev_gldraw_outbranch( r0, 0.0, 0.0 );
-			}
-			else {
-				treev_gldraw_inbranch( r0 );
-				if (first_node != NULL) {
-					theta0 = MIN(0.0, TREEV_GEOM_PARAMS(first_node)->platform.theta);
-					theta1 = MAX(0.0, TREEV_GEOM_PARAMS(last_node)->platform.theta);
-					treev_gldraw_outbranch( r0 + dir_gparams->platform.depth, theta0, theta1 );
-				}
-			}
-			if (!treev_animating) {
-				glEndList( );
-				dir_ndesc->b_dlist_stale = FALSE;
-			}
-		}
-		else
-			glCallList( dir_ndesc->b_dlist );
-	}
-
-	if (action == TREEV_DRAW_LABELS) {
-		/* Label distance culling */
+	/* Label distance culling */
+	{
 		boolean label_vis = TRUE;
 		if (NODE_IS_DIR(dnode) && !dir_collapsed && dir_gparams->platform.depth > 0.0) {
 			double pr = r0 + dir_gparams->platform.depth * 0.5;
@@ -4161,47 +3579,31 @@ treev_draw_recursive( GNode *dnode, double prev_r0, double r0, int action, doubl
 				label_vis = FALSE;
 		}
 		if (label_vis) {
-			/* Draw name label(s) (display list C) */
-			if (dir_ndesc->c_dlist_stale) {
-				/* Rebuild */
-				if (dir_ndesc->c_dlist == NULL_DLIST)
-					dir_ndesc->c_dlist = glGenLists( 1 );
-				glNewList( dir_ndesc->c_dlist, GL_COMPILE_AND_EXECUTE );
-				if (dir_collapsed) {
-					/* Label directory leaf */
-					glColor3fv( (float *)&treev_leaf_label_color );
-					treev_apply_label( dnode, prev_r0, TRUE );
-				}
-				else if (NODE_IS_DIR(dnode)) {
-					/* Label directory platform */
-					glColor3fv( (float *)&treev_platform_label_color );
-					treev_apply_label( dnode, r0, FALSE );
-					/* Label leaf nodes that aren't directories */
-					glColor3fv( (float *)&treev_leaf_label_color );
-					node = dnode->children;
-					while (node != NULL) {
-						if (!NODE_IS_DIR(node))
-							treev_apply_label( node, r0, TRUE );
-						node = node->next;
-					}
-				}
-				glEndList( );
-				dir_ndesc->c_dlist_stale = FALSE;
+			if (dir_collapsed) {
+				/* Label directory leaf */
+				text_set_color( treev_leaf_label_color.r, treev_leaf_label_color.g, treev_leaf_label_color.b );
+				treev_apply_label( dnode, prev_r0, TRUE );
 			}
-			else
-				glCallList( dir_ndesc->c_dlist );
+			else if (NODE_IS_DIR(dnode)) {
+				/* Label directory platform */
+				text_set_color( treev_platform_label_color.r, treev_platform_label_color.g, treev_platform_label_color.b );
+				treev_apply_label( dnode, r0, FALSE );
+				/* Label leaf nodes that aren't directories */
+				text_set_color( treev_leaf_label_color.r, treev_leaf_label_color.g, treev_leaf_label_color.b );
+				node = dnode->children;
+				while (node != NULL) {
+					if (!NODE_IS_DIR(node))
+						treev_apply_label( node, r0, TRUE );
+					node = node->next;
+				}
+			}
 		}
 	}
 
 	/* Update geometry status */
 	dir_ndesc->geom_expanded = !dir_collapsed;
 
-	if (!dir_collapsed && !dir_expanded)
-		glDisable( GL_NORMALIZE );
-
-	glPopMatrix( );
-
-	return dir_expanded;
+	glmath_pop_modelview( );
 }
 
 
@@ -4213,10 +3615,12 @@ treev_gldraw_cursor( RTZvec *c0, RTZvec *c1 )
 	RTZvec corner_dims;
 	RTZvec p, delta;
 	XYvec cp0, cp1;
-	double theta;
 	double sin_theta, cos_theta;
 	int seg_count;
-	int i, c, s;
+	int c, s;
+	/* Max vertices: 8 corners x (2 radial + 2 vertical + 2*seg_count arc) */
+	float *verts;
+	int v, max_verts;
 
 	g_assert( c1->r > c0->r );
 	g_assert( c1->theta > c0->theta );
@@ -4227,68 +3631,50 @@ treev_gldraw_cursor( RTZvec *c0, RTZvec *c1 )
 	corner_dims.z = bar_part * (c1->z - c0->z);
 
 	seg_count = (int)ceil( corner_dims.theta / TREEV_CURVE_GRANULARITY );
+	if (seg_count < 1) seg_count = 1;
 
-	cursor_pre( );
-	for (i = 0; i <= 1; i++) {
-		if (i == 0)
-			cursor_hidden_part( );
-		if (i == 1)
-			cursor_visible_part( );
+	/* Build all line segments as GL_LINES pairs:
+	 * 8 corners x (2 radial + 2 vertical + 2*seg_count arc segments) */
+	max_verts = 8 * (4 + 2 * seg_count);
+	verts = g_alloca( max_verts * 3 * sizeof(float) );
+	v = 0;
 
-		for (c = 0; c < 8; c++) {
-			if (c & 1) {
-				p.r = c1->r;
-				delta.r = - corner_dims.r;
-			}
-			else {
-				p.r = c0->r;
-				delta.r = corner_dims.r;
-			}
+	for (c = 0; c < 8; c++) {
+		p.r     = (c & 1) ? c1->r     : c0->r;
+		delta.r = (c & 1) ? -corner_dims.r : corner_dims.r;
+		p.theta     = (c & 2) ? c1->theta     : c0->theta;
+		delta.theta = (c & 2) ? -corner_dims.theta : corner_dims.theta;
+		p.z     = (c & 4) ? c1->z     : c0->z;
+		delta.z = (c & 4) ? -corner_dims.z : corner_dims.z;
 
-			if (c & 2) {
-				p.theta = c1->theta;
-				delta.theta = - corner_dims.theta;
-			}
-			else {
-				p.theta = c0->theta;
-				delta.theta = corner_dims.theta;
-			}
+		sin_theta = sin( RAD(p.theta) );
+		cos_theta = cos( RAD(p.theta) );
+		cp0.x = p.r * cos_theta;
+		cp0.y = p.r * sin_theta;
+		cp1.x = (p.r + delta.r) * cos_theta;
+		cp1.y = (p.r + delta.r) * sin_theta;
 
-			if (c & 4) {
-				p.z = c1->z;
-				delta.z = - corner_dims.z;
-			}
-			else {
-				p.z = c0->z;
-				delta.z = corner_dims.z;
-			}
-
-			sin_theta = sin( RAD(p.theta) );
-			cos_theta = cos( RAD(p.theta) );
-			cp0.x = p.r * cos_theta;
-			cp0.y = p.r * sin_theta;
-			cp1.x = (p.r + delta.r) * cos_theta;
-			cp1.y = (p.r + delta.r) * sin_theta;
-			glBegin( GL_LINES );
-			/* Radial axis */
-			glVertex3d( cp0.x, cp0.y, p.z );
-			glVertex3d( cp1.x, cp1.y, p.z );
-			/* Vertical axis */
-			glVertex3d( cp0.x, cp0.y, p.z );
-			glVertex3d( cp0.x, cp0.y, p.z + delta.z );
-			glEnd( );
-
-			/* Tangent axis (curved part) */
-			glBegin( GL_LINE_STRIP );
-			for (s = 0; s <= seg_count; s++) {
-				theta = p.theta + delta.theta * (double)s / (double)seg_count;
-				cp0.x = p.r * cos( RAD(theta) );
-				cp0.y = p.r * sin( RAD(theta) );
-				glVertex3d( cp0.x, cp0.y, p.z );
-			}
-			glEnd( );
+		/* Radial axis */
+		verts[v++] = (float)cp0.x;  verts[v++] = (float)cp0.y;  verts[v++] = (float)p.z;
+		verts[v++] = (float)cp1.x;  verts[v++] = (float)cp1.y;  verts[v++] = (float)p.z;
+		/* Vertical axis */
+		verts[v++] = (float)cp0.x;  verts[v++] = (float)cp0.y;  verts[v++] = (float)p.z;
+		verts[v++] = (float)cp0.x;  verts[v++] = (float)cp0.y;  verts[v++] = (float)(p.z + delta.z);
+		/* Tangent axis (arc, converted to line segments) */
+		for (s = 0; s < seg_count; s++) {
+			double t0 = p.theta + delta.theta * (double)s / (double)seg_count;
+			double t1 = p.theta + delta.theta * (double)(s + 1) / (double)seg_count;
+			verts[v++] = (float)(p.r * cos( RAD(t0) ));
+			verts[v++] = (float)(p.r * sin( RAD(t0) ));
+			verts[v++] = (float)p.z;
+			verts[v++] = (float)(p.r * cos( RAD(t1) ));
+			verts[v++] = (float)(p.r * sin( RAD(t1) ));
+			verts[v++] = (float)p.z;
 		}
 	}
+
+	cursor_draw_hidden( verts, v / 3, GL_LINES );
+	cursor_draw_visible( verts, v / 3, GL_LINES );
 	cursor_post( );
 }
 
@@ -4320,7 +3706,6 @@ treev_draw_cursor( double pos )
 static void
 treev_draw( boolean high_detail )
 {
-	treev_animating = treev_needs_arrange;
 	if (treev_needs_arrange) {
 		treev_arrange( FALSE );
 		treev_needs_arrange = FALSE;
@@ -4345,7 +3730,6 @@ treev_draw( boolean high_detail )
 			shader_program_unuse( );
 		else {
 			shader_program_unuse( );
-			glEnable( GL_LIGHTING );
 		}
 		glEnable( GL_POLYGON_OFFSET_FILL );
 	}
@@ -4356,22 +3740,23 @@ treev_draw( boolean high_detail )
 		treev_setup_lit_shader( );
 		vbo_batch_draw( &treev_branch_batch );
 		shader_program_unuse( );
-		glEnable( GL_LIGHTING );
 		glEnable( GL_POLYGON_OFFSET_FILL );
 	}
 
 	if (high_detail) {
-		/* "Cel lines" — outline pass uses polygon offset to push
-		 * outlines behind the solid, preventing Z-fighting */
-		outline_pre( );
-		drawing_outlines = TRUE;
-		treev_draw_recursive( globals.fstree, NIL, treev_core_radius, TREEV_DRAW_GEOMETRY, 0.0 );
-		drawing_outlines = FALSE;
-		outline_post( );
+		/* "Cel lines" — draw outline edge batch with
+		 * ambient-only lighting for dark outlines */
+		if (!picking_mode && treev_outline_batch.vertex_count > 0) {
+			glDisable( GL_CULL_FACE );
+			treev_setup_lit_shader_ex( 0.0f );
+			vbo_batch_draw_lines( &treev_outline_batch );
+			shader_program_unuse( );
+			glEnable( GL_CULL_FACE );
+		}
 
 		/* Node name labels */
 		text_pre( );
-		treev_draw_recursive( globals.fstree, NIL, treev_core_radius, TREEV_DRAW_LABELS, 0.0 );
+		treev_draw_recursive( globals.fstree, NIL, treev_core_radius, 0.0 );
 		text_post( );
 
 		/* Node cursor */
@@ -4383,56 +3768,148 @@ treev_draw( boolean high_detail )
 /**** COMMON ROUTINES *****************************************/
 
 
-/* Call before drawing geometry "cel lines" */
+/* Scratch VBO/VAO for cursor and highlight line drawing */
+static GLuint scratch_line_vao = 0;
+static GLuint scratch_line_vbo = 0;
+
+/* Uploads position data and draws lines using the flat shader.
+ * positions: array of floats (x,y,z per vertex).
+ * vertex_count: number of vertices.
+ * mode: GL_LINES, GL_LINE_LOOP, or GL_LINE_STRIP.
+ * r,g,b,a: line color. */
 static void
-outline_pre( void )
+flat_draw_lines( const float *positions, int vertex_count, GLenum mode,
+                 float r, float g, float b, float a )
 {
-	glDisable( GL_CULL_FACE );
-	glDisable( GL_LIGHT0 );
-	glPolygonMode( GL_FRONT_AND_BACK, GL_LINE );
+	mat4 mvp;
+
+	if (vertex_count <= 0)
+		return;
+
+	/* Create scratch VAO/VBO on first use */
+	if (scratch_line_vao == 0) {
+		glGenVertexArrays( 1, &scratch_line_vao );
+		glGenBuffers( 1, &scratch_line_vbo );
+		glBindVertexArray( scratch_line_vao );
+		glBindBuffer( GL_ARRAY_BUFFER, scratch_line_vbo );
+		/* Position attribute (location 0): vec3 */
+		glVertexAttribPointer( 0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void *)0 );
+		glEnableVertexAttribArray( 0 );
+		glBindVertexArray( 0 );
+	}
+
+	/* Compute MVP from glmath matrices */
+	glmath_get_mvp( mvp );
+
+	/* Upload and draw */
+	glBindVertexArray( scratch_line_vao );
+	glBindBuffer( GL_ARRAY_BUFFER, scratch_line_vbo );
+	glBufferData( GL_ARRAY_BUFFER, vertex_count * 3 * sizeof(float),
+	              positions, GL_STREAM_DRAW );
+
+	shader_program_use( &flat_shader );
+	glUniformMatrix4fv(
+		shader_program_get_uniform( &flat_shader, "u_mvp" ),
+		1, GL_FALSE, (const float *)mvp );
+	glUniform4f(
+		shader_program_get_uniform( &flat_shader, "u_color" ),
+		r, g, b, a );
+
+	glDrawArrays( mode, 0, vertex_count );
+
+	shader_program_unuse( );
+	glBindVertexArray( 0 );
 }
 
 
-/* Call after drawing "cel lines" */
+/* Scratch VAO/VBO for lit triangle drawing (FSV letters etc.) */
+static GLuint scratch_lit_vao = 0;
+static GLuint scratch_lit_vbo = 0;
+
+/* Draws triangles using the lit shader with per-vertex position, normal,
+ * and color data. Uses the glmath matrix stack for MVP computation. */
 static void
-outline_post( void )
+lit_draw_scratch( const VBOVertex *data, int vertex_count )
 {
-	glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
-	glEnable( GL_LIGHT0 );
-	glEnable( GL_CULL_FACE );
+	float mv[16], mvp[16], norm[9];
+
+	if (vertex_count <= 0)
+		return;
+
+	if (scratch_lit_vao == 0) {
+		glGenVertexArrays( 1, &scratch_lit_vao );
+		glGenBuffers( 1, &scratch_lit_vbo );
+		glBindVertexArray( scratch_lit_vao );
+		glBindBuffer( GL_ARRAY_BUFFER, scratch_lit_vbo );
+		/* Position (location 0) */
+		glVertexAttribPointer( 0, 3, GL_FLOAT, GL_FALSE, sizeof(VBOVertex),
+		                       (void *)offsetof(VBOVertex, position) );
+		glEnableVertexAttribArray( 0 );
+		/* Normal (location 1) */
+		glVertexAttribPointer( 1, 3, GL_FLOAT, GL_FALSE, sizeof(VBOVertex),
+		                       (void *)offsetof(VBOVertex, normal) );
+		glEnableVertexAttribArray( 1 );
+		/* Color (location 2) */
+		glVertexAttribPointer( 2, 3, GL_FLOAT, GL_FALSE, sizeof(VBOVertex),
+		                       (void *)offsetof(VBOVertex, color) );
+		glEnableVertexAttribArray( 2 );
+		/* Node ID (location 3) */
+		glVertexAttribIPointer( 3, 1, GL_UNSIGNED_INT, sizeof(VBOVertex),
+		                        (void *)offsetof(VBOVertex, node_id) );
+		glEnableVertexAttribArray( 3 );
+		glBindVertexArray( 0 );
+	}
+
+	/* Compute MVP and normal matrix from glmath stack */
+	glmath_get_mvp( (vec4 *)mvp );
+	glmath_get_normal_matrix( (vec3 *)norm );
+	memcpy( mv, glmath_get_modelview( ), sizeof(mv) );
+
+	glBindVertexArray( scratch_lit_vao );
+	glBindBuffer( GL_ARRAY_BUFFER, scratch_lit_vbo );
+	glBufferData( GL_ARRAY_BUFFER, vertex_count * sizeof(VBOVertex),
+	              data, GL_STREAM_DRAW );
+
+	shader_program_use( &lit_shader );
+	glUniformMatrix4fv(
+		shader_program_get_uniform( &lit_shader, "u_mvp" ),
+		1, GL_FALSE, mvp );
+	glUniformMatrix4fv(
+		shader_program_get_uniform( &lit_shader, "u_modelview" ),
+		1, GL_FALSE, mv );
+	glUniformMatrix3fv(
+		shader_program_get_uniform( &lit_shader, "u_normal_matrix" ),
+		1, GL_FALSE, norm );
+	glUniform1f(
+		shader_program_get_uniform( &lit_shader, "u_diffuse_scale" ),
+		1.0f );
+
+	glDrawArrays( GL_TRIANGLES, 0, vertex_count );
+
+	shader_program_unuse( );
+	glBindVertexArray( 0 );
 }
 
 
-/* Call before drawing the cursor */
+/* Call to draw the "hidden" part of the cursor using the given vertices.
+ * positions: float array of x,y,z per vertex.
+ * mode: GL_LINES, GL_LINE_LOOP, or GL_LINE_STRIP. */
 static void
-cursor_pre( void )
+cursor_draw_hidden( const float *positions, int vertex_count, GLenum mode )
 {
-	glDisable( GL_LIGHTING );
-}
-
-
-/* Call to draw the "hidden" part of the cursor */
-static void
-cursor_hidden_part( void )
-{
-	/* Hidden part is drawn with a thin dashed line */
 	glDepthFunc( GL_GREATER );
-	glEnable( GL_LINE_STIPPLE );
-	glLineStipple( 3, 0x3333 );
 	glLineWidth( 3.0 );
-	glColor3f( 0.75, 0.75, 0.75 );
+	flat_draw_lines( positions, vertex_count, mode, 0.75f, 0.75f, 0.75f, 1.0f );
 }
 
 
-/* Call to draw the visible part of the cursor */
+/* Call to draw the visible part of the cursor using the given vertices */
 static void
-cursor_visible_part( void )
+cursor_draw_visible( const float *positions, int vertex_count, GLenum mode )
 {
-	/* Visible part is drawn with a thick solid line */
 	glDepthFunc( GL_LEQUAL );
-	glDisable( GL_LINE_STIPPLE );
 	glLineWidth( 5.0 );
-	glColor3f( 1.0, 1.0, 1.0 );
+	flat_draw_lines( positions, vertex_count, mode, 1.0f, 1.0f, 1.0f, 1.0f );
 }
 
 
@@ -4441,13 +3918,11 @@ static void
 cursor_post( void )
 {
 	glLineWidth( 1.0 );
-	glEnable( GL_LIGHTING );
 }
 
 
 /* Invalidates cached rendering state. Called when geometry or
- * scene state changes. Per-directory display lists handle their
- * own stale flags; this just invalidates the pick FBO cache and
+ * scene state changes. Invalidates the pick FBO cache and
  * flags TreeV for rearrangement. */
 static void
 queue_uncached_draw( void )
@@ -4459,12 +3934,8 @@ queue_uncached_draw( void )
 
 /* Flags a directory's geometry for rebuilding */
 void
-geometry_queue_rebuild( GNode *dnode )
+geometry_queue_rebuild( G_GNUC_UNUSED GNode *dnode )
 {
-	DIR_NODE_DESC(dnode)->a_dlist_stale = TRUE;
-	DIR_NODE_DESC(dnode)->b_dlist_stale = TRUE;
-	DIR_NODE_DESC(dnode)->c_dlist_stale = TRUE;
-
 	/* Invalidate VBO batches */
 	if (globals.fsv_mode == FSV_MAPV && mapv_batch_initialized) {
 		vbo_batch_invalidate( &mapv_solid_batch );
@@ -4476,6 +3947,7 @@ geometry_queue_rebuild( GNode *dnode )
 	if (globals.fsv_mode == FSV_TREEV && treev_batch_initialized) {
 		vbo_batch_invalidate( &treev_solid_batch );
 		vbo_batch_invalidate( &treev_branch_batch );
+		vbo_batch_invalidate( &treev_outline_batch );
 	}
 
 	queue_uncached_draw( );
@@ -4509,63 +3981,98 @@ geometry_init( FsvMode mode )
 }
 
 
-/* Draws "fsv" in 3D */
+/* Draws "fsv" in 3D using the lit shader with proper normals */
 void
 geometry_gldraw_fsv( void )
 {
-	XYvec p, n;
 	const float *vertices = NULL;
 	const int *triangles = NULL, *edges = NULL;
-	int c, v, e, i;
+	int c, e, i, tri_count, edge_count;
+	VBOVertex *vdata;
+	int v;
 
-	glEnable( GL_NORMALIZE );
 	for (c = 0; c < 3; c++) {
-		glColor3fv( (float *)&fsv_colors[c] );
+		float cr = fsv_colors[c].r;
+		float cg = fsv_colors[c].g;
+		float cb = fsv_colors[c].b;
+
 		vertices = fsv_vertices[c];
 		triangles = fsv_triangles[c];
 		edges = fsv_edges[c];
 
-		/* Side faces */
-		glBegin( GL_QUAD_STRIP );
-		for (e = 0; edges[e] >= 0; e++) {
+		/* Count edges and triangles */
+		for (edge_count = 0; edges[edge_count] >= 0; edge_count++)
+			;
+		for (tri_count = 0; triangles[tri_count] >= 0; tri_count++)
+			;
+
+		/* Side faces: (edge_count-1) quads = 2*(edge_count-1) triangles
+		 * Front faces: tri_count/3 triangles
+		 * Back faces: tri_count/3 triangles */
+		int side_tris = (edge_count - 1) * 2;
+		int face_tris = (tri_count / 3) * 2;
+		int total_verts = (side_tris + face_tris) * 3;
+		vdata = g_alloca( total_verts * sizeof(VBOVertex) );
+		v = 0;
+
+		/* Side faces: convert quad strip to triangles with normals */
+		for (e = 0; e < edge_count - 1; e++) {
+			float ax, ay, bx, by;
+			float dx, dy, len, nx, ny;
 			i = edges[e];
-			p.x = vertices[2 * i];
-			p.y = vertices[2 * i + 1];
+			ax = vertices[2 * i];  ay = vertices[2 * i + 1];
 			i = edges[e + 1];
-			if (i >= 0) {
-				n.x = vertices[2 * i + 1] - p.y;
-				n.y = p.x - vertices[2 * i];
-				glNormal3d( n.x, n.y, 0.0 );
-			}
-			glVertex3d( p.x, p.y, 30.0 );
-			glVertex3d( p.x, p.y, -30.0 );
+			bx = vertices[2 * i];  by = vertices[2 * i + 1];
 
-		}
-		glEnd( );
+			/* Edge direction and outward normal */
+			dx = bx - ax;  dy = by - ay;
+			len = sqrtf( dx * dx + dy * dy );
+			if (len > 0.0f) { nx = -dy / len;  ny = dx / len; }
+			else { nx = 0.0f;  ny = 1.0f; }
 
-		/* Front faces */
-		glNormal3d( 0.0, 0.0, 1.0 );
-		glBegin( GL_TRIANGLES );
-		for (v = 0; triangles[v] >= 0; v++) {
-                        i = triangles[v];
-			p.x = vertices[2 * i];
-			p.y = vertices[2 * i + 1];
-			glVertex3d( p.x, p.y, 30.0 );
+#define SV(px,py,pz) do { \
+	vdata[v].position[0] = (px); vdata[v].position[1] = (py); vdata[v].position[2] = (pz); \
+	vdata[v].normal[0] = nx; vdata[v].normal[1] = ny; vdata[v].normal[2] = 0.0f; \
+	vdata[v].color[0] = cr; vdata[v].color[1] = cg; vdata[v].color[2] = cb; \
+	vdata[v].node_id = 0; v++; \
+} while(0)
+			/* Triangle 1 */
+			SV(ax, ay, 30.0f);
+			SV(ax, ay, -30.0f);
+			SV(bx, by, 30.0f);
+			/* Triangle 2 */
+			SV(bx, by, 30.0f);
+			SV(ax, ay, -30.0f);
+			SV(bx, by, -30.0f);
+#undef SV
 		}
-		glEnd( );
 
-		/* Back faces */
-		glNormal3d( 0.0, 0.0, -1.0 );
-		glBegin( GL_TRIANGLES );
-		for (--v; v >= 0; v--) {
-                        i = triangles[v];
-			p.x = vertices[2 * i];
-			p.y = vertices[2 * i + 1];
-			glVertex3d( p.x, p.y, -30.0 );
+		/* Front faces: normal = (0, 0, 1) */
+		for (e = 0; e < tri_count; e++) {
+			i = triangles[e];
+			vdata[v].position[0] = vertices[2 * i];
+			vdata[v].position[1] = vertices[2 * i + 1];
+			vdata[v].position[2] = 30.0f;
+			vdata[v].normal[0] = 0.0f; vdata[v].normal[1] = 0.0f; vdata[v].normal[2] = 1.0f;
+			vdata[v].color[0] = cr; vdata[v].color[1] = cg; vdata[v].color[2] = cb;
+			vdata[v].node_id = 0;
+			v++;
 		}
-		glEnd( );
+
+		/* Back faces (reversed winding): normal = (0, 0, -1) */
+		for (e = tri_count - 1; e >= 0; e--) {
+			i = triangles[e];
+			vdata[v].position[0] = vertices[2 * i];
+			vdata[v].position[1] = vertices[2 * i + 1];
+			vdata[v].position[2] = -30.0f;
+			vdata[v].normal[0] = 0.0f; vdata[v].normal[1] = 0.0f; vdata[v].normal[2] = -1.0f;
+			vdata[v].color[0] = cr; vdata[v].color[1] = cg; vdata[v].color[2] = cb;
+			vdata[v].node_id = 0;
+			v++;
+		}
+
+		lit_draw_scratch( vdata, v );
 	}
-	glDisable( GL_NORMALIZE );
 }
 
 
@@ -4581,39 +4088,35 @@ splash_draw( void )
 	/* Draw fsv title */
 
 	/* Set up projection matrix */
-	glMatrixMode( GL_PROJECTION );
-	glPushMatrix( );
-	glLoadIdentity( );
+	glmath_push_projection( );
+	glmath_load_identity_projection( );
 	k = 82.84 / ogl_aspect_ratio( );
-	glFrustum( -70.82, 95.40, - k, k, 200.0, 400.0 );
+	glmath_frustum( -70.82, 95.40, - k, k, 200.0, 400.0 );
 
 	/* Set up modelview matrix */
-	glMatrixMode( GL_MODELVIEW );
-	glPushMatrix( );
-	glLoadIdentity( );
-	glTranslated( 0.0, 0.0, -300.0 );
-	glRotated( 10.5, 1.0, 0.0, 0.0 );
-	glTranslated( 20.0, 20.0, -30.0 );
+	glmath_push_modelview( );
+	glmath_load_identity_modelview( );
+	glmath_translated( 0.0, 0.0, -300.0 );
+	glmath_rotated( 10.5, 1.0, 0.0, 0.0 );
+	glmath_translated( 20.0, 20.0, -30.0 );
 
 	geometry_gldraw_fsv( );
 
 	/* Draw accompanying text */
 
 	/* Set up projection matrix */
-	glMatrixMode( GL_PROJECTION );
-	glLoadIdentity( );
+	glmath_load_identity_projection( );
 	k = 0.5 / ogl_aspect_ratio( );
-	glOrtho( 0.0, 1.0, - k, k, -1.0, 1.0 );
+	glmath_ortho( 0.0, 1.0, - k, k, -1.0, 1.0 );
 	bottom_y = - k;
 
 	/* Set up modelview matrix */
-	glMatrixMode( GL_MODELVIEW );
-	glLoadIdentity( );
+	glmath_load_identity_modelview( );
 
 	text_pre( );
 
 	/* Title */
-	glColor3f( 1.0, 1.0, 1.0 );
+	text_set_color( 1.0, 1.0, 1.0 );
 	text_pos.x = 0.2059;
 	text_pos.y = -0.1700;
 	text_pos.z = 0.0;
@@ -4626,14 +4129,14 @@ splash_draw( void )
 	text_draw_straight( "Visualizer", &text_pos, &text_dims );
 
 	/* Version */
-	glColor3f( 0.75, 0.75, 0.75 );
+	text_set_color( 0.75, 0.75, 0.75 );
 	text_pos.x = 0.5000;
 	text_pos.y = (2.0 - MAGIC_NUMBER) * (0.2247 + bottom_y) - 0.2013;
 	text_dims.y = 0.0386;
 	text_draw_straight( "Version " VERSION, &text_pos, &text_dims );
 
 	/* Copyright/author info */
-	glColor3f( 0.5, 0.5, 0.5 );
+	text_set_color( 0.5, 0.5, 0.5 );
 	text_pos.y = bottom_y + 0.0117;
 	text_dims.y = 0.0234;
 	/*text_draw_straight( "Copyright (C)1999 Daniel Richard G. <skunk@mit.edu>, udates (c) 2026 sterlingphoenix <fsv@freakzilla.com>", &text_pos, &text_dims );*/
@@ -4641,23 +4144,16 @@ splash_draw( void )
 	text_post( );
 
 	/* Restore previous matrices */
-	glMatrixMode( GL_PROJECTION );
-	glPopMatrix( );
-	glMatrixMode( GL_MODELVIEW );
-	glPopMatrix( );
+	glmath_pop_projection( );
+	glmath_pop_modelview( );
 }
 
 
-/* Draw geometry in color-picking mode (node IDs encoded as colors).
- * Per-directory display list caching is bypassed since pick colors
- * differ from normal colors. */
+/* Draw geometry in color-picking mode (node IDs encoded as colors). */
 void
 geometry_draw_for_pick( void )
 {
 	picking_mode = TRUE;
-
-	glInitNames( );
-	glPushName( 0 );
 
 	switch (globals.fsv_mode) {
 		case FSV_DISCV:
@@ -4686,10 +4182,6 @@ static void geometry_draw_highlight( void );
 void
 geometry_draw( boolean high_detail )
 {
-	/* Initialize name stack */
-	glInitNames( );
-	glPushName( 0 );
-
 	if (about( ABOUT_CHECK )) {
 		/* Currently giving About presentation */
 		if (high_detail)
@@ -4783,6 +4275,7 @@ geometry_colexp_in_progress( GNode *dnode )
 	if (globals.fsv_mode == FSV_TREEV && treev_batch_initialized) {
 		vbo_batch_invalidate( &treev_solid_batch );
 		vbo_batch_invalidate( &treev_branch_batch );
+		vbo_batch_invalidate( &treev_outline_batch );
 	}
 
 	if (globals.fsv_mode == FSV_TREEV) {
@@ -4817,44 +4310,45 @@ geometry_should_highlight( GNode *node, unsigned int face_id )
 }
 
 
-/* Draws a single node, in its absolute position */
+/* Draws a single node in its absolute position, using the flat shader
+ * with the specified color. The glPolygonMode should be set by the caller
+ * (GL_LINE for wireframe highlight, GL_FILL for solid). */
 static void
-draw_node( GNode *node )
+draw_node( GNode *node, float r, float g, float b )
 {
-	glPushMatrix( );
+	glmath_push_modelview( );
 
 	switch (globals.fsv_mode) {
 		case FSV_DISCV:
 		{
 			XYvec *abs_pos;
 			abs_pos = geometry_discv_node_pos( node );
-			/* Translate to absolute position, draw disc at origin */
-			glTranslated( abs_pos->x - DISCV_GEOM_PARAMS(node)->pos.x,
-			              abs_pos->y - DISCV_GEOM_PARAMS(node)->pos.y, 0.0 );
-			discv_gldraw_node( node, 1.0 );
+			glmath_translated( abs_pos->x - DISCV_GEOM_PARAMS(node)->pos.x,
+			                   abs_pos->y - DISCV_GEOM_PARAMS(node)->pos.y, 0.0 );
+			discv_gldraw_node_colored( node, 1.0, r, g, b );
 		}
 		break;
 
 		case FSV_MAPV:
-		glTranslated( 0.0, 0.0, geometry_mapv_node_z0( node ) );
-		mapv_gldraw_node( node );
+		glmath_translated( 0.0, 0.0, geometry_mapv_node_z0( node ) );
+		mapv_gldraw_node_colored( node, r, g, b );
 		break;
 
 		case FSV_TREEV:
 		if (geometry_treev_is_leaf( node )) {
-			glRotated( geometry_treev_platform_theta( node->parent ), 0.0, 0.0, 1.0 );
-			treev_gldraw_leaf( node, geometry_treev_platform_r0( node->parent ), TRUE );
+			glmath_rotated( geometry_treev_platform_theta( node->parent ), 0.0, 0.0, 1.0 );
+			treev_gldraw_leaf_colored( node, geometry_treev_platform_r0( node->parent ), TRUE, r, g, b );
 		}
 		else {
-			glRotated( geometry_treev_platform_theta( node ), 0.0, 0.0, 1.0 );
-			treev_gldraw_platform( node, geometry_treev_platform_r0( node ) );
+			glmath_rotated( geometry_treev_platform_theta( node ), 0.0, 0.0, 1.0 );
+			treev_gldraw_platform_colored( node, geometry_treev_platform_r0( node ), r, g, b );
 		}
 		break;
 
 		SWITCH_FAIL
 	}
 
-	glPopMatrix( );
+	glmath_pop_modelview( );
 }
 
 
@@ -4873,23 +4367,18 @@ geometry_draw_highlight( void )
 		return;
 
 	glDisable( GL_DEPTH_TEST );
-	glDisable( GL_LIGHTING );
-	glPolygonMode( GL_FRONT_AND_BACK, GL_LINE );
 
 	if (cur_highlight_strong) {
 		glLineWidth( 7.0 );
-		glColor3f( 1.0, 0.75, 0.0 );
-		draw_node( cur_highlight_node );
-		glColor3f( 1.0, 0.5, 0.0 );
+		draw_node( cur_highlight_node, 1.0f, 0.75f, 0.0f );
 	}
-	else
-		glColor3f( 1.0, 1.0, 1.0 );
 	glLineWidth( 3.0 );
-	draw_node( cur_highlight_node );
+	if (cur_highlight_strong)
+		draw_node( cur_highlight_node, 1.0f, 0.5f, 0.0f );
+	else
+		draw_node( cur_highlight_node, 1.0f, 1.0f, 1.0f );
 	glLineWidth( 1.0 );
 
-	glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
-	glEnable( GL_LIGHTING );
 	glEnable( GL_DEPTH_TEST );
 }
 
@@ -4926,40 +4415,14 @@ geometry_highlight_node( GNode *node, boolean strong )
 }
 
 
-/* Frees all allocated display lists in the subtree rooted at the
- * specified directory node */
+/* Frees geometry resources in the subtree rooted at the given node.
+ * Invalidates VBO batches so they are rebuilt on next draw. */
 void
-geometry_free_recursive( GNode *dnode )
+geometry_free_recursive( G_GNUC_UNUSED GNode *dnode )
 {
-	DirNodeDesc *dir_ndesc;
-	GNode *node;
-
-	g_assert( NODE_IS_DIR(dnode) || NODE_IS_METANODE(dnode) );
-
-	dir_ndesc = DIR_NODE_DESC(dnode);
-
-	if (dir_ndesc->a_dlist != NULL_DLIST) {
-		glDeleteLists( dir_ndesc->a_dlist, 1 );
-		dir_ndesc->a_dlist = NULL_DLIST;
-	}
-	if (dir_ndesc->b_dlist != NULL_DLIST) {
-		glDeleteLists( dir_ndesc->b_dlist, 1 );
-		dir_ndesc->b_dlist = NULL_DLIST;
-	}
-	if (dir_ndesc->c_dlist != NULL_DLIST) {
-		glDeleteLists( dir_ndesc->c_dlist, 1 );
-		dir_ndesc->c_dlist = NULL_DLIST;
-	}
-
-	/* Recurse into subdirectories */
-	node = dnode->children;
-	while (node != NULL) {
-		if (NODE_IS_DIR(node))
-			geometry_free_recursive( node );
-		else
-			break;
-		node = node->next;
-	}
+	/* VBO batches are invalidated via geometry_highlight_node /
+	 * geometry_color_changed / colexp, so nothing to do here.
+	 * The function is kept for API compatibility with scanfs.c. */
 }
 
 

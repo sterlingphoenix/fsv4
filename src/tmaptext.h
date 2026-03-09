@@ -30,7 +30,9 @@
 
 void text_init( void );
 void text_pre( void );
+void text_pre_matrix_change( void );
 void text_post( void );
+void text_set_color( float r, float g, float b );
 void text_draw_straight( const char *text, const XYZvec *text_pos, const XYvec *text_max_dims );
 void text_draw_straight_rotated( const char *text, const RTZvec *text_pos, const XYvec *text_max_dims );
 void text_draw_curved( const char *text, const RTZvec *text_pos, const RTvec *text_max_dims );
