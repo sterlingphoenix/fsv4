@@ -209,16 +209,11 @@ screen_size_pixels( double cx, double cy, double cz, double radius )
  * cleared after treev_arrange() runs */
 static boolean treev_needs_arrange = FALSE;
 
-/* TRUE during treev_draw() when tree positions are actively changing
- * (colexp animation). Branch display lists are drawn directly instead
- * of compiled, since they'll change again next frame. */
-static boolean treev_animating = FALSE;
 
 
 /* Forward declarations */
 static void flat_draw_lines( const float *positions, int vertex_count,
                              GLenum mode, float r, float g, float b, float a );
-static void cursor_pre( void );
 static void cursor_draw_hidden( const float *positions, int vertex_count, GLenum mode );
 static void cursor_draw_visible( const float *positions, int vertex_count, GLenum mode );
 static void cursor_post( void );
@@ -741,7 +736,6 @@ discv_gldraw_cursor( XYvec pos, double radius )
 		verts[s * 3 + 2] = 0.0f;
 	}
 
-	cursor_pre( );
 	cursor_draw_hidden( verts, seg_count, GL_LINE_LOOP );
 	cursor_draw_visible( verts, seg_count, GL_LINE_LOOP );
 	cursor_post( );
@@ -1331,7 +1325,6 @@ mapv_gldraw_cursor( const XYZvec *c0, const XYZvec *c1 )
 		verts[v++] = (float)p.x;  verts[v++] = (float)p.y;  verts[v++] = (float)(p.z + delta.z);
 	}
 
-	cursor_pre( );
 	cursor_draw_hidden( verts, v / 3, GL_LINES );
 	cursor_draw_visible( verts, v / 3, GL_LINES );
 	cursor_post( );
@@ -3680,7 +3673,6 @@ treev_gldraw_cursor( RTZvec *c0, RTZvec *c1 )
 		}
 	}
 
-	cursor_pre( );
 	cursor_draw_hidden( verts, v / 3, GL_LINES );
 	cursor_draw_visible( verts, v / 3, GL_LINES );
 	cursor_post( );
@@ -3714,7 +3706,6 @@ treev_draw_cursor( double pos )
 static void
 treev_draw( boolean high_detail )
 {
-	treev_animating = treev_needs_arrange;
 	if (treev_needs_arrange) {
 		treev_arrange( FALSE );
 		treev_needs_arrange = FALSE;
@@ -3900,13 +3891,6 @@ lit_draw_scratch( const VBOVertex *data, int vertex_count )
 }
 
 
-/* Call before drawing the cursor */
-static void
-cursor_pre( void )
-{
-}
-
-
 /* Call to draw the "hidden" part of the cursor using the given vertices.
  * positions: float array of x,y,z per vertex.
  * mode: GL_LINES, GL_LINE_LOOP, or GL_LINE_STRIP. */
@@ -3938,8 +3922,7 @@ cursor_post( void )
 
 
 /* Invalidates cached rendering state. Called when geometry or
- * scene state changes. Per-directory display lists handle their
- * own stale flags; this just invalidates the pick FBO cache and
+ * scene state changes. Invalidates the pick FBO cache and
  * flags TreeV for rearrangement. */
 static void
 queue_uncached_draw( void )
@@ -4166,9 +4149,7 @@ splash_draw( void )
 }
 
 
-/* Draw geometry in color-picking mode (node IDs encoded as colors).
- * Per-directory display list caching is bypassed since pick colors
- * differ from normal colors. */
+/* Draw geometry in color-picking mode (node IDs encoded as colors). */
 void
 geometry_draw_for_pick( void )
 {

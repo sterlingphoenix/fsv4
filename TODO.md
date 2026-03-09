@@ -244,10 +244,10 @@ Step 5.4 - Switch to core profile
   [x] Verify: program runs in core profile with no GL errors
 
 Step 5.5 - Clean up
-  [ ] Remove any dead code, unused includes, unused variables left over
+  [x] Remove any dead code, unused includes, unused variables left over
       from the conversion
-  [ ] Update comments that reference display lists or the old pipeline
-  [ ] Verify: clean build with no warnings
+  [x] Update comments that reference display lists or the old pipeline
+  [x] Verify: clean build with no warnings
 
   Checkpoint: User tests all three modes, all interactions, all features.
   Confirm with: grep -rn 'glBegin\|glEnd\|glVertex\|glMatrixMode\|
