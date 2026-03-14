@@ -34,7 +34,9 @@ typedef enum {
 } StatusBarID;
 
 
-void window_init( FsvMode fsv_mode );
+#ifdef GTK_WIDGET
+void window_init( GtkApplication *app, FsvMode fsv_mode );
+#endif
 void window_set_access( boolean enabled );
 #ifdef FSV_COLOR_H
 void window_set_color_mode( ColorMode mode );

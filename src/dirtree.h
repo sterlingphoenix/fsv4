@@ -28,7 +28,7 @@
 #define FSV_DIRTREE_H
 
 
-#ifdef __GTK_H__
+#ifdef GTK_WIDGET
 void dirtree_pass_widget( GtkWidget *ctree_w );
 #endif
 void dirtree_clear( void );

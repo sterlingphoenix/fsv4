@@ -73,6 +73,9 @@ static boolean pan_key_down = FALSE;
 static guint pan_idle_id = 0;
 static double pan_last_time = 0.0;
 
+/* Saved reference to the GL area widget */
+static GtkWidget *viewport_gl_area = NULL;
+
 
 /* Receives a newly created node table from scanfs( ) */
 void
@@ -87,10 +90,7 @@ viewport_pass_node_table( GNode **new_node_table, unsigned int table_size )
 
 
 /* This returns the node (if any) that is visible at viewport location
- * (x,y) (where (0,0) indicates the upper-left corner). The ID number of
- * the particular face being pointed at is stored in face_id.
- * Uses color-buffer picking: renders scene with node IDs as colors,
- * reads back the pixel to determine the node. */
+ * (x,y). Uses color-buffer picking. */
 static GNode *
 node_at_location( int x, int y, unsigned int *face_id )
 {
@@ -104,9 +104,7 @@ node_at_location( int x, int y, unsigned int *face_id )
 }
 
 
-/* Per-frame keyboard pan callback. Runs as a GLib idle while any
- * pan key is held, giving smooth frame-rate-coupled movement.
- * Movement is scaled by elapsed time for consistent speed. */
+/* Per-frame keyboard pan callback */
 static gboolean
 keyboard_pan_tick( G_GNUC_UNUSED gpointer user_data )
 {
@@ -127,7 +125,6 @@ keyboard_pan_tick( G_GNUC_UNUSED gpointer user_data )
 	dt = t_now - pan_last_time;
 	pan_last_time = t_now;
 
-	/* Clamp to avoid jumps from long stalls or first-frame spike */
 	if (dt > 0.1)
 		dt = 0.1;
 
@@ -161,57 +158,42 @@ keyboard_pan_reset( void )
 }
 
 
-/* This callback catches all events for the viewport */
-int
-viewport_cb( GtkWidget *gl_area_w, GdkEvent *event )
+/* GtkGestureClick "pressed" callback — handles button press and double-click */
+static void
+viewport_click_pressed_cb( GtkGestureClick *gesture, int n_press, double x, double y, G_GNUC_UNUSED gpointer user_data )
 {
-	GdkEventButton *ev_button;
-	GdkEventMotion *ev_motion;
-	double dx, dy;
 	unsigned int face_id;
-	int x, y;
-	boolean btn1, btn2, btn3;
+	int button;
+	int ix = (int)x, iy = (int)y;
 
-	/* GtkGLArea handles expose/configure via its own signals */
-	if (event->type == GDK_CONFIGURE)
-		return FALSE;
+	button = gtk_gesture_single_get_current_button( GTK_GESTURE_SINGLE(gesture) );
 
-	if (event->type == GDK_BUTTON_PRESS) {
+	if (n_press == 1) {
 		/* Exit the About presentation if it is up */
 		if (about( ABOUT_END )) {
 			indicated_node = NULL;
-			return FALSE;
+			return;
 		}
 	}
 
-	/* If we're in splash screen mode, proceed no further */
 	if (globals.fsv_mode == FSV_SPLASH)
-		return FALSE;
+		return;
 
-	/* Mouse-related events */
-	switch (event->type) {
-		case GDK_BUTTON_PRESS:
-		/* Grab focus so the GL area receives key events */
-		if (!gtk_widget_has_focus( gl_area_w ))
-			gtk_widget_grab_focus( gl_area_w );
-		ev_button = (GdkEventButton *)event;
-		btn1 = ev_button->button == 1;
-		btn2 = ev_button->button == 2;
-		btn3 = ev_button->button == 3;
-		x = (int)ev_button->x;
-		y = (int)ev_button->y;
+	/* Grab focus so the GL area receives key events */
+	if (viewport_gl_area != NULL && !gtk_widget_has_focus( viewport_gl_area ))
+		gtk_widget_grab_focus( viewport_gl_area );
+
+	if (n_press == 1) {
 		if (camera_moving( )) {
 			camera_pan_finish( );
 			indicated_node = NULL;
 		}
-		else if (btn1) {
-			/* Record press position for drag detection */
+		else if (button == 1) {
 			btn1_pressed = TRUE;
 			btn1_is_dragging = FALSE;
-			btn1_press_x = x;
-			btn1_press_y = y;
-			/* Identify and highlight node under cursor */
-			indicated_node = node_at_location( x, y, &face_id );
+			btn1_press_x = ix;
+			btn1_press_y = iy;
+			indicated_node = node_at_location( ix, iy, &face_id );
 			if (indicated_node == NULL) {
 				geometry_highlight_node( NULL, FALSE );
 				window_statusbar( SB_RIGHT, "" );
@@ -221,191 +203,248 @@ viewport_cb( GtkWidget *gl_area_w, GdkEvent *event )
 				window_statusbar( SB_RIGHT, node_absname( indicated_node ) );
 			}
 		}
-		else if (btn2) {
+		else if (button == 2) {
 			indicated_node = NULL;
 			geometry_highlight_node( NULL, FALSE );
 			window_statusbar( SB_RIGHT, "" );
 		}
-		else if (btn3) {
-			/* Right-click: context menu */
-			GNode *menu_node = node_at_location( x, y, &face_id );
+		else if (button == 3) {
+			GNode *menu_node = node_at_location( ix, iy, &face_id );
 			indicated_node = menu_node;
 			if (menu_node != NULL) {
 				geometry_highlight_node( menu_node, FALSE );
 				window_statusbar( SB_RIGHT, node_absname( menu_node ) );
-				/* Note: context_menu() may trigger re-entrant events
-				 * (e.g. leave-notify from pointer grab) that clear
-				 * indicated_node, so use the local copy after this */
-				context_menu( menu_node, ev_button );
+				context_menu( menu_node, viewport_gl_area, x, y );
 				filelist_show_entry( menu_node );
 			}
 		}
-		prev_x = x;
-		prev_y = y;
-		break;
-
-		case GDK_2BUTTON_PRESS:
-		/* Double-click: navigate to node */
-		ev_button = (GdkEventButton *)event;
-		if (ev_button->button == 1 && !camera_moving( ) && indicated_node != NULL) {
+		prev_x = ix;
+		prev_y = iy;
+	}
+	else if (n_press == 2) {
+		if (button == 1 && !camera_moving( ) && indicated_node != NULL) {
 			camera_look_at( indicated_node );
 			btn1_pressed = FALSE;
 			btn1_is_dragging = FALSE;
 		}
-		break;
+	}
+}
 
-		case GDK_BUTTON_RELEASE:
-		ev_button = (GdkEventButton *)event;
-		if (ev_button->button == 1) {
-			btn1_pressed = FALSE;
-			btn1_is_dragging = FALSE;
-		}
-		gui_cursor( gl_area_w, NULL );
-		break;
 
-		case GDK_MOTION_NOTIFY:
-		ev_motion = (GdkEventMotion *)event;
-		btn1 = ev_motion->state & GDK_BUTTON1_MASK;
-		btn2 = ev_motion->state & GDK_BUTTON2_MASK;
-		x = (int)ev_motion->x;
-		y = (int)ev_motion->y;
-		if (!camera_moving( )) {
-			if (btn2) {
-				/* Dolly the camera */
-				gui_cursor( gl_area_w, "ns-resize" );
-				dy = MOUSE_SENSITIVITY * (y - prev_y);
-				camera_dolly( - dy );
-				indicated_node = NULL;
-			}
-			else if (btn1) {
-				/* Check if drag threshold exceeded */
-				if (!btn1_is_dragging) {
-					int total_dx = x - btn1_press_x;
-					int total_dy = y - btn1_press_y;
-					if (abs( total_dx ) > DRAG_THRESHOLD || abs( total_dy ) > DRAG_THRESHOLD) {
-						btn1_is_dragging = TRUE;
-						indicated_node = NULL;
-						geometry_highlight_node( NULL, FALSE );
-						window_statusbar( SB_RIGHT, "" );
-					}
-				}
-				if (btn1_is_dragging) {
-					/* Orbit the camera */
-					gui_cursor( gl_area_w, "move" );
-					dx = MOUSE_SENSITIVITY * (x - prev_x);
-					dy = MOUSE_SENSITIVITY * (y - prev_y);
-					camera_revolve( dx, dy );
-				}
-			}
-			else {
-				/* No button: hover highlight (throttled) */
-				double t_now = xgettime( );
-				if (t_now - last_pick_time >= PICK_MIN_INTERVAL) {
-					last_pick_time = t_now;
-					indicated_node = node_at_location( x, y, &face_id );
-					if (indicated_node == NULL) {
-						geometry_highlight_node( NULL, FALSE );
-						window_statusbar( SB_RIGHT, "" );
-					}
-					else {
-						if (geometry_should_highlight( indicated_node, face_id ))
-							geometry_highlight_node( indicated_node, FALSE );
-						else
-							geometry_highlight_node( NULL, FALSE );
-						window_statusbar( SB_RIGHT, node_absname( indicated_node ) );
-					}
-				}
-			}
-			prev_x = x;
-			prev_y = y;
-		}
-		break;
+/* GtkGestureClick "released" callback */
+static void
+viewport_click_released_cb( G_GNUC_UNUSED GtkGestureClick *gesture, G_GNUC_UNUSED int n_press,
+                            G_GNUC_UNUSED double x, G_GNUC_UNUSED double y, G_GNUC_UNUSED gpointer user_data )
+{
+	int button = gtk_gesture_single_get_current_button( GTK_GESTURE_SINGLE(gesture) );
 
-		case GDK_SCROLL:
-		/* Scroll wheel zoom */
-		if (!camera_moving( )) {
-			GdkEventScroll *ev_scroll = (GdkEventScroll *)event;
-			double delta = 0.0;
-			if (ev_scroll->direction == GDK_SCROLL_UP)
-				delta = -1.0;
-			else if (ev_scroll->direction == GDK_SCROLL_DOWN)
-				delta = 1.0;
-			else if (ev_scroll->direction == GDK_SCROLL_SMOOTH)
-				delta = ev_scroll->delta_y;
-			if (delta != 0.0)
-				camera_dolly( delta * 16.0 );
-			indicated_node = NULL;
-		}
-		break;
-
-		case GDK_LEAVE_NOTIFY:
-		/* The mouse has left the viewport */
-		geometry_highlight_node( NULL, FALSE );
-		window_statusbar( SB_RIGHT, "" );
-		gui_cursor( gl_area_w, NULL );
-		indicated_node = NULL;
+	if (button == 1) {
 		btn1_pressed = FALSE;
 		btn1_is_dragging = FALSE;
-		break;
+	}
+	if (viewport_gl_area != NULL)
+		gui_cursor( viewport_gl_area, NULL );
+}
 
-		case GDK_KEY_PRESS:
-		/* Arrow keys and WASD: mark key as held and start
-		 * frame-driven pan. Auto-repeat events are harmless
-		 * since setting an already-TRUE flag is a no-op. */
-		{
-			GdkEventKey *ev_key = (GdkEventKey *)event;
-			boolean consumed = TRUE;
-			switch (ev_key->keyval) {
-				case GDK_KEY_Left:  case GDK_KEY_a: case GDK_KEY_A:
-				pan_key_left = TRUE;  break;
-				case GDK_KEY_Right: case GDK_KEY_d: case GDK_KEY_D:
-				pan_key_right = TRUE; break;
-				case GDK_KEY_Up:    case GDK_KEY_w: case GDK_KEY_W:
-				pan_key_up = TRUE;    break;
-				case GDK_KEY_Down:  case GDK_KEY_s: case GDK_KEY_S:
-				pan_key_down = TRUE;  break;
-				default:
-				consumed = FALSE;     break;
+
+/* GtkEventControllerMotion "motion" callback */
+static void
+viewport_motion_cb( G_GNUC_UNUSED GtkEventControllerMotion *controller,
+                    double x, double y, G_GNUC_UNUSED gpointer user_data )
+{
+	GdkModifierType state;
+	double dx, dy;
+	unsigned int face_id;
+	int ix = (int)x, iy = (int)y;
+	boolean btn1, btn2;
+
+	if (globals.fsv_mode == FSV_SPLASH)
+		return;
+
+	/* Get current modifier state for button detection during drag */
+	state = gtk_event_controller_get_current_event_state( GTK_EVENT_CONTROLLER(controller) );
+	btn1 = (state & GDK_BUTTON1_MASK) != 0;
+	btn2 = (state & GDK_BUTTON2_MASK) != 0;
+
+	if (!camera_moving( )) {
+		if (btn2) {
+			gui_cursor( viewport_gl_area, "ns-resize" );
+			dy = MOUSE_SENSITIVITY * (iy - prev_y);
+			camera_dolly( - dy );
+			indicated_node = NULL;
+		}
+		else if (btn1) {
+			if (!btn1_is_dragging) {
+				int total_dx = ix - btn1_press_x;
+				int total_dy = iy - btn1_press_y;
+				if (abs( total_dx ) > DRAG_THRESHOLD || abs( total_dy ) > DRAG_THRESHOLD) {
+					btn1_is_dragging = TRUE;
+					indicated_node = NULL;
+					geometry_highlight_node( NULL, FALSE );
+					window_statusbar( SB_RIGHT, "" );
+				}
 			}
-			if (consumed) {
-				indicated_node = NULL;
-				keyboard_pan_ensure_running( );
-				return TRUE;
+			if (btn1_is_dragging) {
+				gui_cursor( viewport_gl_area, "move" );
+				dx = MOUSE_SENSITIVITY * (ix - prev_x);
+				dy = MOUSE_SENSITIVITY * (iy - prev_y);
+				camera_revolve( dx, dy );
 			}
 		}
-		break;
-
-		case GDK_KEY_RELEASE:
-		/* Clear held state for released key */
-		{
-			GdkEventKey *ev_key = (GdkEventKey *)event;
-			switch (ev_key->keyval) {
-				case GDK_KEY_Left:  case GDK_KEY_a: case GDK_KEY_A:
-				pan_key_left = FALSE;  break;
-				case GDK_KEY_Right: case GDK_KEY_d: case GDK_KEY_D:
-				pan_key_right = FALSE; break;
-				case GDK_KEY_Up:    case GDK_KEY_w: case GDK_KEY_W:
-				pan_key_up = FALSE;    break;
-				case GDK_KEY_Down:  case GDK_KEY_s: case GDK_KEY_S:
-				pan_key_down = FALSE;  break;
-				default:
-				break;
+		else {
+			/* No button: hover highlight (throttled) */
+			double t_now = xgettime( );
+			if (t_now - last_pick_time >= PICK_MIN_INTERVAL) {
+				last_pick_time = t_now;
+				indicated_node = node_at_location( ix, iy, &face_id );
+				if (indicated_node == NULL) {
+					geometry_highlight_node( NULL, FALSE );
+					window_statusbar( SB_RIGHT, "" );
+				}
+				else {
+					if (geometry_should_highlight( indicated_node, face_id ))
+						geometry_highlight_node( indicated_node, FALSE );
+					else
+						geometry_highlight_node( NULL, FALSE );
+					window_statusbar( SB_RIGHT, node_absname( indicated_node ) );
+				}
 			}
 		}
-		break;
+		prev_x = ix;
+		prev_y = iy;
+	}
+}
 
-		case GDK_FOCUS_CHANGE:
-		/* Clear all held keys when focus is lost */
-		if (!((GdkEventFocus *)event)->in)
-			keyboard_pan_reset( );
-		break;
 
-		default:
-		/* Ignore event */
-		break;
+/* GtkEventControllerMotion "leave" callback */
+static void
+viewport_leave_cb( G_GNUC_UNUSED GtkEventControllerMotion *controller, G_GNUC_UNUSED gpointer user_data )
+{
+	geometry_highlight_node( NULL, FALSE );
+	window_statusbar( SB_RIGHT, "" );
+	if (viewport_gl_area != NULL)
+		gui_cursor( viewport_gl_area, NULL );
+	indicated_node = NULL;
+	btn1_pressed = FALSE;
+	btn1_is_dragging = FALSE;
+}
+
+
+/* GtkEventControllerScroll "scroll" callback */
+static gboolean
+viewport_scroll_cb( G_GNUC_UNUSED GtkEventControllerScroll *controller,
+                    G_GNUC_UNUSED double dx, double dy, G_GNUC_UNUSED gpointer user_data )
+{
+	if (globals.fsv_mode == FSV_SPLASH)
+		return FALSE;
+
+	if (!camera_moving( )) {
+		if (dy != 0.0)
+			camera_dolly( dy * 16.0 );
+		indicated_node = NULL;
+		return TRUE;
 	}
 
 	return FALSE;
+}
+
+
+/* GtkEventControllerKey "key-pressed" callback */
+static gboolean
+viewport_key_pressed_cb( G_GNUC_UNUSED GtkEventControllerKey *controller,
+                         guint keyval, G_GNUC_UNUSED guint keycode,
+                         G_GNUC_UNUSED GdkModifierType state, G_GNUC_UNUSED gpointer user_data )
+{
+	if (globals.fsv_mode == FSV_SPLASH)
+		return FALSE;
+
+	switch (keyval) {
+		case GDK_KEY_Left:  case GDK_KEY_a: case GDK_KEY_A:
+		pan_key_left = TRUE;  break;
+		case GDK_KEY_Right: case GDK_KEY_d: case GDK_KEY_D:
+		pan_key_right = TRUE; break;
+		case GDK_KEY_Up:    case GDK_KEY_w: case GDK_KEY_W:
+		pan_key_up = TRUE;    break;
+		case GDK_KEY_Down:  case GDK_KEY_s: case GDK_KEY_S:
+		pan_key_down = TRUE;  break;
+		default:
+		return FALSE;
+	}
+
+	indicated_node = NULL;
+	keyboard_pan_ensure_running( );
+	return TRUE;
+}
+
+
+/* GtkEventControllerKey "key-released" callback */
+static void
+viewport_key_released_cb( G_GNUC_UNUSED GtkEventControllerKey *controller,
+                          guint keyval, G_GNUC_UNUSED guint keycode,
+                          G_GNUC_UNUSED GdkModifierType state, G_GNUC_UNUSED gpointer user_data )
+{
+	switch (keyval) {
+		case GDK_KEY_Left:  case GDK_KEY_a: case GDK_KEY_A:
+		pan_key_left = FALSE;  break;
+		case GDK_KEY_Right: case GDK_KEY_d: case GDK_KEY_D:
+		pan_key_right = FALSE; break;
+		case GDK_KEY_Up:    case GDK_KEY_w: case GDK_KEY_W:
+		pan_key_up = FALSE;    break;
+		case GDK_KEY_Down:  case GDK_KEY_s: case GDK_KEY_S:
+		pan_key_down = FALSE;  break;
+		default:
+		break;
+	}
+}
+
+
+/* GtkEventControllerFocus "leave" callback */
+static void
+viewport_focus_leave_cb( G_GNUC_UNUSED GtkEventControllerFocus *controller, G_GNUC_UNUSED gpointer user_data )
+{
+	keyboard_pan_reset( );
+}
+
+
+/* Sets up GTK4 event controllers on the GL area widget.
+ * Called from window_init( ) instead of the old g_signal_connect("event",...) */
+void
+viewport_setup_controllers( GtkWidget *gl_area_w )
+{
+	GtkGesture *click;
+	GtkEventController *motion, *scroll, *key, *focus;
+
+	viewport_gl_area = gl_area_w;
+
+	/* Click gesture (handles press, release, double-click for all buttons) */
+	click = gtk_gesture_click_new( );
+	gtk_gesture_single_set_button( GTK_GESTURE_SINGLE(click), 0 ); /* all buttons */
+	g_signal_connect( click, "pressed", G_CALLBACK(viewport_click_pressed_cb), NULL );
+	g_signal_connect( click, "released", G_CALLBACK(viewport_click_released_cb), NULL );
+	gtk_widget_add_controller( gl_area_w, GTK_EVENT_CONTROLLER(click) );
+
+	/* Motion controller */
+	motion = gtk_event_controller_motion_new( );
+	g_signal_connect( motion, "motion", G_CALLBACK(viewport_motion_cb), NULL );
+	g_signal_connect( motion, "leave", G_CALLBACK(viewport_leave_cb), NULL );
+	gtk_widget_add_controller( gl_area_w, motion );
+
+	/* Scroll controller */
+	scroll = gtk_event_controller_scroll_new( GTK_EVENT_CONTROLLER_SCROLL_VERTICAL |
+	                                          GTK_EVENT_CONTROLLER_SCROLL_DISCRETE );
+	g_signal_connect( scroll, "scroll", G_CALLBACK(viewport_scroll_cb), NULL );
+	gtk_widget_add_controller( gl_area_w, scroll );
+
+	/* Key controller */
+	key = gtk_event_controller_key_new( );
+	g_signal_connect( key, "key-pressed", G_CALLBACK(viewport_key_pressed_cb), NULL );
+	g_signal_connect( key, "key-released", G_CALLBACK(viewport_key_released_cb), NULL );
+	gtk_widget_add_controller( gl_area_w, key );
+
+	/* Focus controller */
+	focus = gtk_event_controller_focus_new( );
+	g_signal_connect( focus, "leave", G_CALLBACK(viewport_focus_leave_cb), NULL );
+	gtk_widget_add_controller( gl_area_w, focus );
 }
 
 

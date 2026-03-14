@@ -1,50 +1,45 @@
 #include <gtk/gtk.h>
 
 
+/* Menu action callbacks (GAction "activate" handlers) */
 void
-on_file_change_root_activate           (GtkMenuItem     *menuitem,
+on_file_change_root_activate           (GSimpleAction   *action,
+                                        GVariant        *parameter,
                                         gpointer         user_data);
 
 void
-on_file_save_settings_activate         (GtkMenuItem     *menuitem,
+on_file_save_settings_activate         (GSimpleAction   *action,
+                                        GVariant        *parameter,
                                         gpointer         user_data);
 
 void
-on_file_exit_activate                  (GtkMenuItem     *menuitem,
+on_file_exit_activate                  (GSimpleAction   *action,
+                                        GVariant        *parameter,
+                                        gpointer         user_data);
+
+/* Vis mode radio action: "change-state" handler */
+void
+on_vis_mode_change                     (GSimpleAction   *action,
+                                        GVariant        *value,
+                                        gpointer         user_data);
+
+/* Color mode radio action: "change-state" handler */
+void
+on_color_mode_change                   (GSimpleAction   *action,
+                                        GVariant        *value,
                                         gpointer         user_data);
 
 void
-on_vis_discv_activate                  (GtkMenuItem     *menuitem,
+on_color_setup_activate                (GSimpleAction   *action,
+                                        GVariant        *parameter,
                                         gpointer         user_data);
 
 void
-on_vis_mapv_activate                   (GtkMenuItem     *menuitem,
+on_help_about_fsv_activate             (GSimpleAction   *action,
+                                        GVariant        *parameter,
                                         gpointer         user_data);
 
-void
-on_vis_treev_activate                  (GtkMenuItem     *menuitem,
-                                        gpointer         user_data);
-
-void
-on_color_by_nodetype_activate         (GtkMenuItem     *menuitem,
-                                        gpointer         user_data);
-
-void
-on_color_by_timestamp_activate         (GtkMenuItem     *menuitem,
-                                        gpointer         user_data);
-
-void
-on_color_by_wildcards_activate         (GtkMenuItem     *menuitem,
-                                        gpointer         user_data);
-
-void
-on_color_setup_activate                (GtkMenuItem     *menuitem,
-                                        gpointer         user_data);
-
-void
-on_help_about_fsv_activate             (GtkMenuItem     *menuitem,
-                                        gpointer         user_data);
-
+/* Toolbar button callbacks (unchanged — buttons still exist in GTK4) */
 void
 on_back_button_clicked                 (GtkButton       *button,
                                         gpointer         user_data);

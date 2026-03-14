@@ -29,8 +29,8 @@
 
 
 void viewport_pass_node_table( GNode **new_node_table, unsigned int table_size );
-#ifdef __GTK_H__
-int viewport_cb( GtkWidget *gl_area_w, GdkEvent *event );
+#ifdef GTK_WIDGET
+void viewport_setup_controllers( GtkWidget *gl_area_w );
 #endif
 
 

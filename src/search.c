@@ -163,7 +163,7 @@ search_execute_cb( G_GNUC_UNUSED GtkWidget *widget, G_GNUC_UNUSED gpointer data 
 	if (globals.fsv_mode == FSV_SPLASH || globals.fsv_mode == FSV_NONE)
 		return;
 
-	pattern = gtk_entry_get_text( GTK_ENTRY(search_entry_w) );
+	pattern = gtk_editable_get_text( GTK_EDITABLE(search_entry_w) );
 	if (pattern == NULL || strlen( pattern ) == 0)
 		return;
 

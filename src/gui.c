@@ -1,6 +1,6 @@
 /* gui.c */
 
-/* Higher-level GTK+ interface */
+/* Higher-level GTK interface */
 
 /* fsv - 3D File System Visualizer
  * Copyright (C)1999 Daniel Richard G. <skunk@mit.edu>
@@ -30,27 +30,24 @@
 #include "ogl.h" /* ogl_widget_new( ) */
 
 
-/* Box packing flags */
+/* Box packing flags (stored via g_object_set_data on box widgets) */
 enum {
 	GUI_PACK_EXPAND	= 1 << 0,
-	GUI_PACK_FILL	= 1 << 1,
-	GUI_PACK_START	= 1 << 2
+	GUI_PACK_FILL	= 1 << 1
 };
 
 
-/* For whenever gtk_main( ) is far away */
+/* Process pending GTK events */
 void
 gui_update( void )
 {
-	while (gtk_events_pending( ) > 0)
-		gtk_main_iteration( );
+	while (g_main_context_pending( NULL ))
+		g_main_context_iteration( NULL, FALSE );
 }
 
 
 /* This checks if the widget associated with the given adjustment is
- * currently busy redrawing/reconfiguring itself, or is in steady state
- * (this is used when animating widgets to avoid changing the adjustment
- * too often, otherwise the widget can't keep up and things slow down) */
+ * currently busy redrawing/reconfiguring itself, or is in steady state */
 boolean
 gui_adjustment_widget_busy( GtkAdjustment *adj )
 {
@@ -58,13 +55,6 @@ gui_adjustment_widget_busy( GtkAdjustment *adj )
 	double t_prev;
 	double t_now;
 	double *tp;
-
-	/* ---- HACK ALERT ----
-	 * This doesn't actually check GTK+ internals-- I'm not sure which
-	 * ones are relevant here. This just checks the amount of time that
-	 * has passed since the last time the function was called with the
-	 * same adjustment and returned FALSE, and if it's below a certain
-	 * threshold, the object is considered "busy" (returning TRUE) */
 
 	t_now = xgettime( );
 
@@ -110,32 +100,61 @@ gui_int_adjustment( int value, int lower, int upper )
 }
 
 
-/* This places child_w into parent_w intelligently. expand and fill
- * flags are applicable only if parent_w is a box widget */
+/* This places child_w into parent_w intelligently. In GTK4, box packing
+ * is done with gtk_box_append. Expand/fill behavior is set via widget
+ * properties (hexpand/vexpand/halign/valign). */
 static void
 parent_child_full( GtkWidget *parent_w, GtkWidget *child_w, boolean expand, boolean fill )
 {
 	bitfield *packing_flags;
-	boolean start = TRUE;
 
-	if (parent_w != NULL) {
-		if (GTK_IS_BOX(parent_w)) {
-			packing_flags = g_object_get_data( G_OBJECT(parent_w), "packing_flags" );
-			if (packing_flags != NULL) {
-                                /* Get (non-default) box-packing flags */
-				expand = *packing_flags & GUI_PACK_EXPAND;
-				fill = *packing_flags & GUI_PACK_FILL;
-				start = *packing_flags & GUI_PACK_START;
-			}
-                        if (start)
-				gtk_box_pack_start( GTK_BOX(parent_w), child_w, expand, fill, 0 );
-                        else
-				gtk_box_pack_end( GTK_BOX(parent_w), child_w, expand, fill, 0 );
+	if (parent_w == NULL)
+		return;
+
+	if (GTK_IS_BOX(parent_w)) {
+		packing_flags = g_object_get_data( G_OBJECT(parent_w), "packing_flags" );
+		if (packing_flags != NULL) {
+			expand = *packing_flags & GUI_PACK_EXPAND;
+			fill = *packing_flags & GUI_PACK_FILL;
 		}
-		else
-			gtk_container_add( GTK_CONTAINER(parent_w), child_w );
-		gtk_widget_show( child_w );
+		/* Set expand/fill via widget properties */
+		if (GTK_IS_ORIENTABLE(parent_w)) {
+			GtkOrientation orient = gtk_orientable_get_orientation( GTK_ORIENTABLE(parent_w) );
+			if (orient == GTK_ORIENTATION_HORIZONTAL) {
+				gtk_widget_set_hexpand( child_w, expand );
+				if (expand && fill)
+					gtk_widget_set_halign( child_w, GTK_ALIGN_FILL );
+				else if (expand)
+					gtk_widget_set_halign( child_w, GTK_ALIGN_CENTER );
+			}
+			else {
+				gtk_widget_set_vexpand( child_w, expand );
+				if (expand && fill)
+					gtk_widget_set_valign( child_w, GTK_ALIGN_FILL );
+				else if (expand)
+					gtk_widget_set_valign( child_w, GTK_ALIGN_CENTER );
+			}
+		}
+		gtk_box_append( GTK_BOX(parent_w), child_w );
 	}
+	else if (GTK_IS_FRAME(parent_w))
+		gtk_frame_set_child( GTK_FRAME(parent_w), child_w );
+	else if (GTK_IS_SCROLLED_WINDOW(parent_w))
+		gtk_scrolled_window_set_child( GTK_SCROLLED_WINDOW(parent_w), child_w );
+	else if (GTK_IS_WINDOW(parent_w))
+		gtk_window_set_child( GTK_WINDOW(parent_w), child_w );
+	else if (GTK_IS_BUTTON(parent_w))
+		gtk_button_set_child( GTK_BUTTON(parent_w), child_w );
+	else if (GTK_IS_PANED(parent_w)) {
+		/* For paned widgets, append to the first empty slot */
+		if (gtk_paned_get_start_child( GTK_PANED(parent_w) ) == NULL)
+			gtk_paned_set_start_child( GTK_PANED(parent_w), child_w );
+		else
+			gtk_paned_set_end_child( GTK_PANED(parent_w), child_w );
+	}
+	else if (GTK_IS_NOTEBOOK(parent_w))
+		gtk_notebook_append_page( GTK_NOTEBOOK(parent_w), child_w, NULL );
+	/* No gtk_widget_show needed in GTK4 */
 }
 
 
@@ -154,7 +173,12 @@ gui_hbox_add( GtkWidget *parent_w, int spacing )
 	GtkWidget *hbox_w;
 
 	hbox_w = gtk_box_new( GTK_ORIENTATION_HORIZONTAL, spacing );
-	gtk_container_set_border_width( GTK_CONTAINER(hbox_w), spacing );
+	if (spacing > 0) {
+		gtk_widget_set_margin_start( hbox_w, spacing );
+		gtk_widget_set_margin_end( hbox_w, spacing );
+		gtk_widget_set_margin_top( hbox_w, spacing );
+		gtk_widget_set_margin_bottom( hbox_w, spacing );
+	}
 	parent_child( parent_w, hbox_w );
 
 	return hbox_w;
@@ -168,38 +192,38 @@ gui_vbox_add( GtkWidget *parent_w, int spacing )
 	GtkWidget *vbox_w;
 
 	vbox_w = gtk_box_new( GTK_ORIENTATION_VERTICAL, spacing );
-	gtk_container_set_border_width( GTK_CONTAINER(vbox_w), spacing );
+	if (spacing > 0) {
+		gtk_widget_set_margin_start( vbox_w, spacing );
+		gtk_widget_set_margin_end( vbox_w, spacing );
+		gtk_widget_set_margin_top( vbox_w, spacing );
+		gtk_widget_set_margin_bottom( vbox_w, spacing );
+	}
 	parent_child( parent_w, vbox_w );
 
 	return vbox_w;
 }
 
 
-/* Changes a box widget's default packing flags (i.e. the flags that will
- * be used to pack subsequent children) */
+/* Changes a box widget's default packing flags */
 void
-gui_box_set_packing( GtkWidget *box_w, boolean expand, boolean fill, boolean start )
+gui_box_set_packing( GtkWidget *box_w, boolean expand, boolean fill, G_GNUC_UNUSED boolean start )
 {
 	static const char data_key[] = "packing_flags";
 	bitfield *packing_flags;
 
-	/* Make sure box_w is a box widget */
 	g_assert( GTK_IS_BOX(box_w) );
-	/* If expand is FALSE, then fill should not be TRUE */
 	g_assert( expand || !fill );
 
 	packing_flags = g_object_get_data( G_OBJECT(box_w), data_key );
 	if (packing_flags == NULL) {
-		/* Allocate new packing-flags variable for box */
 		packing_flags = NEW(bitfield);
 		g_object_set_data_full( G_OBJECT(box_w), data_key, packing_flags, _xfree );
 	}
 
-        /* Set flags appropriately */
 	*packing_flags = 0;
 	*packing_flags |= (expand ? GUI_PACK_EXPAND : 0);
 	*packing_flags |= (fill ? GUI_PACK_FILL : 0);
-	*packing_flags |= (start ? GUI_PACK_START : 0);
+	/* start/end distinction removed in GTK4 — always appends */
 }
 
 
@@ -263,7 +287,8 @@ gui_toggle_button_add( GtkWidget *parent_w, const char *label, boolean active, G
 /* The [multi-column] list widget (fitted into a scrolled window).
  * Returns a GtkTreeView backed by a GtkListStore.
  * Model columns: pixbuf (0), text[0..num_cols-1] (1..num_cols), pointer (num_cols+1).
- * First visible column shows pixbuf + text; remaining columns show text only. */
+ * First visible column shows pixbuf + text; remaining columns show text only.
+ * Note: GtkTreeView is deprecated in GTK4 but still functional. */
 GtkWidget *
 gui_clist_add( GtkWidget *parent_w, int num_cols, char *col_titles[] )
 {
@@ -278,8 +303,7 @@ gui_clist_add( GtkWidget *parent_w, int num_cols, char *col_titles[] )
 	int i;
 	int *num_cols_p;
 
-	/* Make the scrolled window widget */
-	scrollwin_w = gtk_scrolled_window_new( NULL, NULL );
+	scrollwin_w = gtk_scrolled_window_new( );
 	gtk_scrolled_window_set_policy( GTK_SCROLLED_WINDOW(scrollwin_w), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC );
 	parent_child_full( parent_w, scrollwin_w, EXPAND, FILL );
 
@@ -330,18 +354,13 @@ gui_clist_add( GtkWidget *parent_w, int num_cols, char *col_titles[] )
 	*num_cols_p = num_cols;
 	g_object_set_data_full( G_OBJECT(tree_view_w), "num_cols", num_cols_p, g_free );
 
-	gtk_container_add( GTK_CONTAINER(scrollwin_w), tree_view_w );
-	gtk_widget_show( tree_view_w );
+	gtk_scrolled_window_set_child( GTK_SCROLLED_WINDOW(scrollwin_w), tree_view_w );
 
 	return tree_view_w;
 }
 
 
-/* Scrolls a tree view to a given row (-1 indicates last row).
- * For instant scroll (moveto_time <= 0), uses gtk_tree_view_scroll_to_cell.
- * For animated scroll, morphs the scrolled window's vadjustment.
- * WARNING: This implementation does not gracefully handle multiple
- * animated scrolls on the same tree view! */
+/* Scrolls a tree view to a given row (-1 indicates last row). */
 void
 gui_clist_moveto_row( GtkWidget *tree_view_w, int row, double moveto_time )
 {
@@ -364,14 +383,12 @@ gui_clist_moveto_row( GtkWidget *tree_view_w, int row, double moveto_time )
 		row = n_rows - 1;
 
 	if (moveto_time <= 0.0) {
-		/* Instant scroll */
 		path = gtk_tree_path_new_from_indices( row, -1 );
 		gtk_tree_view_scroll_to_cell( GTK_TREE_VIEW(tree_view_w), path, NULL, TRUE, 0.5, 0.0 );
 		gtk_tree_path_free( path );
 		return;
 	}
 
-	/* Animated scroll using vadjustment */
 	scrollwin_w = gtk_widget_get_parent( tree_view_w );
 	if (!GTK_IS_SCROLLED_WINDOW(scrollwin_w))
 		return;
@@ -381,25 +398,19 @@ gui_clist_moveto_row( GtkWidget *tree_view_w, int row, double moveto_time )
 	k = k * gtk_adjustment_get_upper( vadj ) - 0.5 * gtk_adjustment_get_page_size( vadj );
 	new_value = CLAMP(k, 0.0, gtk_adjustment_get_upper( vadj ) - gtk_adjustment_get_page_size( vadj ));
 
-	/* Allocate an external value variable if adjustment doesn't
-	 * already have one */
 	anim_value_var = g_object_get_data( G_OBJECT(vadj), "anim_value_var" );
 	if (anim_value_var == NULL) {
 		anim_value_var = NEW(double);
 		g_object_set_data_full( G_OBJECT(vadj), "anim_value_var", anim_value_var, _xfree );
 	}
 
-	/* If already scrolling, stop it */
 	morph_break( anim_value_var );
-
-	/* Begin animation */
 	*anim_value_var = gtk_adjustment_get_value( vadj );
 	morph_full( anim_value_var, MORPH_SIGMOID, new_value, moveto_time, adjustment_step_cb, adjustment_step_cb, vadj );
 }
 
 
-/* Internal callback for the color picker widget.
- * GtkColorChooser "color-set" signal passes (widget, user_data) only. */
+/* Internal callback for the color picker widget */
 static void
 color_picker_cb( GtkColorButton *colorbutton, gpointer data )
 {
@@ -412,16 +423,12 @@ color_picker_cb( GtkColorButton *colorbutton, gpointer data )
 	color.g = (float)rgba.green;
 	color.b = (float)rgba.blue;
 
-	/* Call user callback */
 	user_callback = (void (*)( RGBcolor *, void * ))g_object_get_data( G_OBJECT(colorbutton), "user_callback" );
 	(user_callback)( &color, data );
 }
 
 
-/* The color picker widget. Color is initialized to the one given, and the
- * color selection dialog will have the specified title when brought up.
- * Changing the color (i.e. pressing OK in the color selection dialog)
- * activates the given callback */
+/* The color picker widget */
 GtkWidget *
 gui_colorpicker_add( GtkWidget *parent_w, RGBcolor *init_color, const char *title, GCallback callback, void *callback_data )
 {
@@ -455,9 +462,9 @@ gui_colorpicker_set_color( GtkWidget *colorbutton_w, RGBcolor *color )
 
 /* Column indices for the tree (ctree replacement) model */
 enum {
-	CTREE_COL_PIXBUF,	/* GdkPixbuf - node icon */
-	CTREE_COL_NAME,		/* gchararray - display name */
-	CTREE_COL_DATA,		/* gpointer - user data (GNode *) */
+	CTREE_COL_PIXBUF,
+	CTREE_COL_NAME,
+	CTREE_COL_DATA,
 	CTREE_NUM_COLS
 };
 
@@ -474,17 +481,14 @@ gui_ctree_add( GtkWidget *parent_w )
 	GtkTreeViewColumn *column;
 	GtkTreeSelection *selection;
 
-	/* Make the scrolled window widget */
-	scrollwin_w = gtk_scrolled_window_new( NULL, NULL );
+	scrollwin_w = gtk_scrolled_window_new( );
 	gtk_scrolled_window_set_policy( GTK_SCROLLED_WINDOW(scrollwin_w), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC );
 	parent_child_full( parent_w, scrollwin_w, EXPAND, FILL );
 
-	/* Make the tree store and tree view */
 	store = gtk_tree_store_new( CTREE_NUM_COLS, GDK_TYPE_PIXBUF, G_TYPE_STRING, G_TYPE_POINTER );
 	tree_view_w = gtk_tree_view_new_with_model( GTK_TREE_MODEL(store) );
 	g_object_unref( store );
 
-	/* Single column: icon + name */
 	column = gtk_tree_view_column_new( );
 	renderer = gtk_cell_renderer_pixbuf_new( );
 	gtk_tree_view_column_pack_start( column, renderer, FALSE );
@@ -494,26 +498,19 @@ gui_ctree_add( GtkWidget *parent_w )
 	gtk_tree_view_column_add_attribute( column, renderer, "text", CTREE_COL_NAME );
 	gtk_tree_view_append_column( GTK_TREE_VIEW(tree_view_w), column );
 
-	/* Tree appearance */
 	gtk_tree_view_set_headers_visible( GTK_TREE_VIEW(tree_view_w), FALSE );
 	gtk_tree_view_set_enable_tree_lines( GTK_TREE_VIEW(tree_view_w), TRUE );
 
-	/* Browse selection mode */
 	selection = gtk_tree_view_get_selection( GTK_TREE_VIEW(tree_view_w) );
 	gtk_tree_selection_set_mode( selection, GTK_SELECTION_BROWSE );
 
-	gtk_container_add( GTK_CONTAINER(scrollwin_w), tree_view_w );
-	gtk_widget_show( tree_view_w );
+	gtk_scrolled_window_set_child( GTK_SCROLLED_WINDOW(scrollwin_w), tree_view_w );
 
 	return tree_view_w;
 }
 
 
-/* Adds a new node to a tree view backed by a GtkTreeStore.
- * Returns a heap-allocated GtkTreeIter (caller stores in ctnode field).
- * icon_pair[0] = collapsed icon, icon_pair[1] = expanded icon.
- * The collapsed icon is displayed initially; expand/collapse callbacks
- * swap icons as needed. */
+/* Adds a new node to a tree view backed by a GtkTreeStore */
 GtkTreeIter *
 gui_ctree_node_add( GtkWidget *tree_w, GtkTreeIter *parent, Icon icon_pair[2], const char *text, boolean expanded, void *data )
 {
@@ -525,7 +522,6 @@ gui_ctree_node_add( GtkWidget *tree_w, GtkTreeIter *parent, Icon icon_pair[2], c
 	iter = g_new( GtkTreeIter, 1 );
 	gtk_tree_store_append( store, iter, parent );
 
-	/* Use collapsed or expanded icon based on initial state */
 	icon = expanded ? icon_pair[1].pixbuf : icon_pair[0].pixbuf;
 	gtk_tree_store_set( store, iter,
 		CTREE_COL_PIXBUF, icon,
@@ -533,7 +529,6 @@ gui_ctree_node_add( GtkWidget *tree_w, GtkTreeIter *parent, Icon icon_pair[2], c
 		CTREE_COL_DATA, data,
 		-1 );
 
-	/* Expand the row if requested */
 	if (expanded) {
 		GtkTreePath *path = gtk_tree_model_get_path( GTK_TREE_MODEL(store), iter );
 		gtk_tree_view_expand_row( GTK_TREE_VIEW(tree_w), path, FALSE );
@@ -545,92 +540,28 @@ gui_ctree_node_add( GtkWidget *tree_w, GtkTreeIter *parent, Icon icon_pair[2], c
 
 
 /* Changes the mouse cursor associated with the given widget.
- * A name of NULL indicates the default cursor.
- * Uses CSS cursor names: "wait", "move", "ns-resize", "not-allowed", etc.
- * Falls back to X cursor font glyphs if the cursor theme lacks the name. */
+ * In GTK4, uses gtk_widget_set_cursor with gdk_cursor_new_from_name. */
 void
 gui_cursor( GtkWidget *widget, const char *name )
 {
-	GdkCursor *prev_cursor, *cursor;
-	const char *prev_name;
-
-	/* Get cursor information from widget */
-	prev_cursor = g_object_get_data( G_OBJECT(widget), "gui_cursor" );
-	prev_name = g_object_get_data( G_OBJECT(widget), "gui_cursor_name" );
-
-	if (prev_name == NULL && name == NULL)
-		return; /* default cursor is already set */
-	if (prev_name != NULL && name != NULL && strcmp( prev_name, name ) == 0)
-		return; /* same cursor already set */
-
-	/* Create new cursor and make it active */
 	if (name != NULL) {
-		GdkDisplay *display = gtk_widget_get_display( widget );
-		cursor = gdk_cursor_new_from_name( display, name );
-		if (cursor == NULL) {
-			/* Cursor theme lacks this name; try traditional
-			 * X cursor names, then X cursor font glyphs */
-			static const struct {
-				const char *css;
-				const char *fallbacks[3];
-				GdkCursorType type;
-			} map[] = {
-				{ "wait",        { "watch" },              GDK_WATCH },
-				{ "not-allowed", { "X_cursor", "pirate" }, GDK_PIRATE },
-				{ "ns-resize",   { "sb_v_double_arrow" },  GDK_SB_V_DOUBLE_ARROW },
-				{ "move",        { "fleur" },              GDK_FLEUR },
-			};
-			unsigned int m;
-			for (m = 0; m < G_N_ELEMENTS( map ); m++) {
-				if (strcmp( name, map[m].css ) != 0)
-					continue;
-				/* Try name-based fallbacks first */
-				for (int f = 0; f < 3 && map[m].fallbacks[f] != NULL; f++) {
-					cursor = gdk_cursor_new_from_name( display, map[m].fallbacks[f] );
-					if (cursor != NULL)
-						break;
-				}
-				/* Last resort: X cursor font glyph */
-				if (cursor == NULL) {
-G_GNUC_BEGIN_IGNORE_DEPRECATIONS
-					cursor = gdk_cursor_new_for_display( display, map[m].type );
-G_GNUC_END_IGNORE_DEPRECATIONS
-				}
-				break;
-			}
-		}
-	}
-	else
-		cursor = NULL;
-	gdk_window_set_cursor( gtk_widget_get_window( widget ), cursor );
-
-	/* Don't need the old cursor anymore */
-	if (prev_cursor != NULL)
-		g_object_unref( prev_cursor );
-
-	if (name != NULL) {
-		/* Save new cursor information */
-		g_object_set_data( G_OBJECT(widget), "gui_cursor", cursor );
-		g_object_set_data_full( G_OBJECT(widget), "gui_cursor_name",
-			g_strdup( name ), g_free );
+		GdkCursor *cursor = gdk_cursor_new_from_name( name, NULL );
+		gtk_widget_set_cursor( widget, cursor );
+		if (cursor != NULL)
+			g_object_unref( cursor );
 	}
 	else {
-		/* Clean up after ourselves */
-		g_object_set_data( G_OBJECT(widget), "gui_cursor", NULL );
-		g_object_set_data( G_OBJECT(widget), "gui_cursor_name", NULL );
+		gtk_widget_set_cursor( widget, NULL );
 	}
 }
 
 
-/* The date edit widget (imported from Gnomeland). The given callback is
- * called whenever the date/time is changed */
+/* The date edit widget (placeholder) */
 GtkWidget *
 gui_dateedit_add( GtkWidget *parent_w, G_GNUC_UNUSED time_t the_time, G_GNUC_UNUSED GCallback callback, G_GNUC_UNUSED void *callback_data )
 {
 	GtkWidget *dateedit_w;
 
-	/* Date edit was a GNOME widget, not available in plain GTK+.
-	 * Return a placeholder label instead */
 	dateedit_w = gtk_label_new( "N/A" );
 	parent_child( parent_w, dateedit_w );
 
@@ -642,7 +573,6 @@ gui_dateedit_add( GtkWidget *parent_w, G_GNUC_UNUSED time_t the_time, G_GNUC_UNU
 time_t
 gui_dateedit_get_time( G_GNUC_UNUSED GtkWidget *dateedit_w )
 {
-	//return gnome_date_edit_get_date( GNOME_DATE_EDIT(dateedit_w) );
 	return 0;
 }
 
@@ -651,7 +581,6 @@ gui_dateedit_get_time( G_GNUC_UNUSED GtkWidget *dateedit_w )
 void
 gui_dateedit_set_time( G_GNUC_UNUSED GtkWidget *dateedit_w, G_GNUC_UNUSED time_t the_time )
 {
-	//gnome_date_edit_set_time( GNOME_DATE_EDIT(dateedit_w), the_time );
 }
 
 
@@ -662,8 +591,8 @@ gui_entry_add( GtkWidget *parent_w, const char *init_text, GCallback callback, v
 	GtkWidget *entry_w;
 
 	entry_w = gtk_entry_new( );
-        if (init_text != NULL)
-		gtk_entry_set_text( GTK_ENTRY(entry_w), init_text );
+	if (init_text != NULL)
+		gtk_editable_set_text( GTK_EDITABLE(entry_w), init_text );
 	if (callback != NULL )
 		g_signal_connect( G_OBJECT(entry_w), "activate", G_CALLBACK(callback), callback_data );
 	parent_child_full( parent_w, entry_w, EXPAND, FILL );
@@ -672,11 +601,11 @@ gui_entry_add( GtkWidget *parent_w, const char *init_text, GCallback callback, v
 }
 
 
-/* Sets the text in an entry to the specified string */
+/* Sets the text in an entry */
 void
 gui_entry_set_text( GtkWidget *entry_w, const char *entry_text )
 {
-	gtk_entry_set_text( GTK_ENTRY(entry_w), entry_text );
+	gtk_editable_set_text( GTK_EDITABLE(entry_w), entry_text );
 }
 
 
@@ -684,7 +613,7 @@ gui_entry_set_text( GtkWidget *entry_w, const char *entry_text )
 char *
 gui_entry_get_text( GtkWidget *entry_w )
 {
-	return (char *)gtk_entry_get_text( GTK_ENTRY(entry_w) );
+	return (char *)gtk_editable_get_text( GTK_EDITABLE(entry_w) );
 }
 
 
@@ -714,76 +643,14 @@ GtkWidget *
 gui_gl_area_add( GtkWidget *parent_w )
 {
 	GtkWidget *gl_area_w;
-	int bitmask = 0;
 
 	gl_area_w = ogl_widget_new( );
-	bitmask |= GDK_POINTER_MOTION_MASK;
-	bitmask |= GDK_BUTTON_MOTION_MASK;
-	bitmask |= GDK_BUTTON1_MOTION_MASK;
-	bitmask |= GDK_BUTTON2_MOTION_MASK;
-	bitmask |= GDK_BUTTON3_MOTION_MASK;
-	bitmask |= GDK_BUTTON_PRESS_MASK;
-	bitmask |= GDK_BUTTON_RELEASE_MASK;
-	bitmask |= GDK_LEAVE_NOTIFY_MASK;
-	bitmask |= GDK_SCROLL_MASK;
-	bitmask |= GDK_SMOOTH_SCROLL_MASK;
-	bitmask |= GDK_KEY_PRESS_MASK;
-	bitmask |= GDK_KEY_RELEASE_MASK;
-	gtk_widget_set_events( GTK_WIDGET(gl_area_w), bitmask );
+	/* In GTK4, event handling is via controllers, not event masks */
 	gtk_widget_set_can_focus( GTK_WIDGET(gl_area_w), TRUE );
+	gtk_widget_set_focusable( GTK_WIDGET(gl_area_w), TRUE );
 	parent_child_full( parent_w, gl_area_w, EXPAND, FILL );
 
 	return gl_area_w;
-}
-
-
-/* Sets up keybindings (accelerators). Call this any number of times with
- * widget/keystroke pairs, and when all have been specified, call with the
- * parent window widget (and no keystroke) to attach the keybindings.
- * Keystroke syntax: "K" == K keypress, "^K" == Ctrl-K */
-void
-gui_keybind( GtkWidget *widget, char *keystroke )
-{
-	static GtkAccelGroup *accel_group = NULL;
-	int mods;
-	char key;
-
-	if (accel_group == NULL)
-		accel_group = gtk_accel_group_new( );
-
-	if (GTK_IS_WINDOW(widget)) {
-		/* Attach keybindings */
-		gtk_window_add_accel_group(GTK_WINDOW(widget), accel_group);
-		accel_group = NULL;
-		return;
-	}
-
-	/* Parse keystroke string */
-	switch (keystroke[0]) {
-		case '^':
-		/* Ctrl-something keystroke specified */
-		mods = GDK_CONTROL_MASK;
-		key = keystroke[1];
-		break;
-
-		default:
-		/* Simple keypress */
-		mods = 0;
-		key = keystroke[0];
-		break;
-	}
-
-	if (GTK_IS_MENU_ITEM(widget)) {
-		gtk_widget_add_accelerator( widget, "activate", accel_group, key, mods, GTK_ACCEL_VISIBLE );
-		return;
-	}
-	if (GTK_IS_BUTTON(widget)) {
-		gtk_widget_add_accelerator( widget, "clicked", accel_group, key, mods, GTK_ACCEL_VISIBLE );
-		return;
-	}
-
-	/* Make widget grab focus when its key is pressed */
-	gtk_widget_add_accelerator( widget, "grab_focus", accel_group, key, mods, GTK_ACCEL_VISIBLE );
 }
 
 
@@ -799,94 +666,16 @@ gui_label_add( GtkWidget *parent_w, const char *label_text )
 		if (GTK_IS_BUTTON(parent_w)) {
 			/* Labels are often too snug inside buttons */
 			hbox_w = gui_hbox_add( parent_w, 0 );
-			gtk_box_pack_start( GTK_BOX(hbox_w), label_w, TRUE, FALSE, 5 );
-			gtk_widget_show( label_w );
+			gtk_widget_set_hexpand( label_w, TRUE );
+			gtk_widget_set_margin_start( label_w, 5 );
+			gtk_widget_set_margin_end( label_w, 5 );
+			gtk_box_append( GTK_BOX(hbox_w), label_w );
 		}
 		else
 			parent_child( parent_w, label_w );
 	}
 
 	return label_w;
-}
-
-
-/* Adds a menu to a menu bar, or a submenu to a menu */
-GtkWidget *
-gui_menu_add( GtkWidget *parent_menu_w, const char *label )
-{
-	GtkWidget *menu_item_w;
-	GtkWidget *menu_w;
-
-	menu_item_w = gtk_menu_item_new_with_label( label );
-	/* parent_menu can be a menu bar or a regular menu */
-	if (GTK_IS_MENU_BAR(parent_menu_w))
-		gtk_menu_shell_append( GTK_MENU_SHELL(parent_menu_w), menu_item_w );
-	else
-		gtk_menu_shell_append( GTK_MENU_SHELL(parent_menu_w), menu_item_w );
-	gtk_widget_show( menu_item_w );
-	menu_w = gtk_menu_new( );
-	gtk_menu_item_set_submenu( GTK_MENU_ITEM(menu_item_w), menu_w );
-
-	return menu_w;
-}
-
-
-/* Adds a menu item to a menu */
-GtkWidget *
-gui_menu_item_add( GtkWidget *menu_w, const char *label, GCallback callback, void *callback_data )
-{
-	GtkWidget *menu_item_w;
-	menu_item_w = gtk_menu_item_new_with_label( label );
-	gtk_menu_shell_append( GTK_MENU_SHELL(menu_w), menu_item_w );
-	if (callback != NULL)
-		g_signal_connect( G_OBJECT(menu_item_w), "activate", G_CALLBACK(callback), callback_data );
-	gtk_widget_show( menu_item_w );
-
-	return menu_item_w;
-}
-
-
-/* This initiates the definition of a radio menu item group. The item in
- * the specified position will be the one that is initially selected
- * (0 == first, 1 == second, and so on) */
-void
-gui_radio_menu_begin( int init_selected )
-{
-	gui_radio_menu_item_add( NULL, NULL, NULL, &init_selected );
-}
-
-
-/* Adds a radio menu item to a menu. Don't forget to call
- * gui_radio_menu_begin( ) first.
- * WARNING: When the initially selected menu item is set, the first item
- * in the group will be "toggled" off. The callback should either watch
- * for this, or do nothing if the widget's "active" flag is FALSE */
-GtkWidget *
-gui_radio_menu_item_add( GtkWidget *menu_w, const char *label, GCallback callback, void *callback_data )
-{
-	static GSList *radio_group;
-	static int init_selected;
-	static int radmenu_item_num;
-	GtkWidget *radmenu_item_w = NULL;
-
-	if (menu_w == NULL) {
-		/* We're being called from begin_radio_menu_group( ) */
-		radio_group = NULL;
-		radmenu_item_num = 0;
-		init_selected = *((int *)callback_data);
-	}
-	else {
-		radmenu_item_w = gtk_radio_menu_item_new_with_label( radio_group, label );
-		radio_group = gtk_radio_menu_item_get_group( GTK_RADIO_MENU_ITEM(radmenu_item_w) );
-		gtk_menu_shell_append( GTK_MENU_SHELL(menu_w), radmenu_item_w );
-		if (radmenu_item_num == init_selected)
-			gtk_check_menu_item_set_active( GTK_CHECK_MENU_ITEM(radmenu_item_w), TRUE );
-		g_signal_connect( G_OBJECT(radmenu_item_w), "toggled", G_CALLBACK(callback), callback_data );
-		gtk_widget_show( radmenu_item_w );
-		++radmenu_item_num;
-	}
-
-	return radmenu_item_w;
 }
 
 
@@ -918,8 +707,7 @@ option_menu_changed_cb( GtkComboBox *combo, G_GNUC_UNUSED gpointer data )
 }
 
 
-/* The combo box widget. Options must have already been defined using
- * gui_option_menu_item( ) */
+/* The combo box widget */
 GtkWidget *
 gui_option_menu_add( GtkWidget *parent_w, int init_selected )
 {
@@ -931,7 +719,6 @@ gui_option_menu_add( GtkWidget *parent_w, int init_selected )
 	for (i = 0; i < optmenu_item_count; i++)
 		gtk_combo_box_text_append_text( GTK_COMBO_BOX_TEXT(combo_w), optmenu_items[i].label );
 
-	/* Store item data on the combo box for the callback dispatcher */
 	items_copy = g_new( struct OptionMenuItem, optmenu_item_count );
 	memcpy( items_copy, optmenu_items, optmenu_item_count * sizeof(struct OptionMenuItem) );
 	g_object_set_data_full( G_OBJECT(combo_w), "optmenu_items", items_copy, g_free );
@@ -947,8 +734,7 @@ gui_option_menu_add( GtkWidget *parent_w, int init_selected )
 }
 
 
-/* Combo box item definition. Call this once for each menu item, and then call
- * gui_option_menu_add( ) to produce the finished widget */
+/* Combo box item definition */
 GtkWidget *
 gui_option_menu_item( const char *label, GCallback callback, void *callback_data )
 {
@@ -958,7 +744,6 @@ gui_option_menu_item( const char *label, GCallback callback, void *callback_data
 	optmenu_items[optmenu_item_count].callback_data = callback_data;
 	optmenu_item_count++;
 
-	/* Return value is no longer meaningful (was GtkMenuItem*) */
 	return NULL;
 }
 
@@ -976,8 +761,7 @@ gui_notebook_add( GtkWidget *parent_w )
 }
 
 
-/* Adds a new page to a notebook, with the given tab label, and whose
- * content is defined by the given widget */
+/* Adds a new page to a notebook */
 void
 gui_notebook_page_add( GtkWidget *notebook_w, const char *tab_label, GtkWidget *content_w )
 {
@@ -985,8 +769,6 @@ gui_notebook_page_add( GtkWidget *notebook_w, const char *tab_label, GtkWidget *
 
 	tab_label_w = gtk_label_new( tab_label );
 	gtk_notebook_append_page( GTK_NOTEBOOK(notebook_w), content_w, tab_label_w );
-	gtk_widget_show( tab_label_w );
-	gtk_widget_show( content_w );
 }
 
 
@@ -1026,7 +808,9 @@ gui_pixmap_xpm_add( GtkWidget *parent_w, char **xpm_data )
 	GdkPixbuf *pixbuf;
 
 	pixbuf = gdk_pixbuf_new_from_xpm_data( (const char **)xpm_data );
+G_GNUC_BEGIN_IGNORE_DEPRECATIONS
 	image_w = gtk_image_new_from_pixbuf( pixbuf );
+G_GNUC_END_IGNORE_DEPRECATIONS
 	g_object_unref( pixbuf );
 	parent_child( parent_w, image_w );
 
@@ -1048,60 +832,46 @@ gui_preview_add( GtkWidget *parent_w )
 }
 
 
-/* Draw callback for the spectrum drawing area */
-static gboolean
-preview_spectrum_draw_cb( GtkWidget *drawing_w, cairo_t *cr, G_GNUC_UNUSED gpointer data )
+/* Draw function for the spectrum drawing area (GTK4 style) */
+static void
+preview_spectrum_draw_func( GtkDrawingArea *drawing_w, cairo_t *cr, int width, int height, G_GNUC_UNUSED gpointer data )
 {
 	RGBcolor (*spectrum_func)( double x );
 	RGBcolor color;
-	int width, height;
 	int i;
 
 	spectrum_func = (RGBcolor (*)( double x ))g_object_get_data( G_OBJECT(drawing_w), "spectrum_func" );
 	if (spectrum_func == NULL)
-		return FALSE;
+		return;
 
-	{
-		GtkAllocation alloc;
-		gtk_widget_get_allocation( drawing_w, &alloc );
-		width = alloc.width;
-		height = alloc.height;
-	}
 	if (width <= 0 || height <= 0)
-		return FALSE;
+		return;
 
-	/* Draw spectrum as vertical 1-pixel-wide stripes */
 	for (i = 0; i < width; i++) {
 		color = (spectrum_func)( (double)i / (double)(width - 1) );
 		cairo_set_source_rgb( cr, color.r, color.g, color.b );
 		cairo_rectangle( cr, i, 0, 1, height );
 		cairo_fill( cr );
 	}
-
-	return FALSE;
 }
 
 
-/* Fills a preview widget with an arbitrary spectrum. Second argument
- * should be a function returning the appropriate color at a specified
- * fractional position in the spectrum */
+/* Fills a preview widget with an arbitrary spectrum */
 void
 gui_preview_spectrum( GtkWidget *preview_w, RGBcolor (*spectrum_func)( double x ) )
 {
 	static const char data_key[] = "spectrum_func";
 	boolean first_time;
 
-	/* Check if this is first-time initialization */
 	first_time = g_object_get_data( G_OBJECT(preview_w), data_key ) == NULL;
 
-	/* Attach spectrum function to drawing area widget */
 	g_object_set_data( G_OBJECT(preview_w), data_key, (void *)spectrum_func );
 
 	if (first_time) {
-		g_signal_connect( G_OBJECT(preview_w), "draw", G_CALLBACK(preview_spectrum_draw_cb), NULL );
+		gtk_drawing_area_set_draw_func( GTK_DRAWING_AREA(preview_w),
+			preview_spectrum_draw_func, NULL, NULL );
 	}
 
-	/* Trigger redraw */
 	gtk_widget_queue_draw( preview_w );
 }
 
@@ -1113,13 +883,11 @@ gui_hscrollbar_add( GtkWidget *parent_w, GtkAdjustment *adjustment )
 	GtkWidget *frame_w;
 	GtkWidget *hscrollbar_w;
 
-	/* Make a nice-looking frame to put the scrollbar in */
 	frame_w = gui_frame_add( NULL, NULL );
 	parent_child( parent_w, frame_w );
 
 	hscrollbar_w = gtk_scrollbar_new( GTK_ORIENTATION_HORIZONTAL, adjustment );
-	gtk_container_add( GTK_CONTAINER(frame_w), hscrollbar_w );
-	gtk_widget_show( hscrollbar_w );
+	gtk_frame_set_child( GTK_FRAME(frame_w), hscrollbar_w );
 
 	return hscrollbar_w;
 }
@@ -1132,71 +900,61 @@ gui_vscrollbar_add( GtkWidget *parent_w, GtkAdjustment *adjustment )
 	GtkWidget *frame_w;
 	GtkWidget *vscrollbar_w;
 
-	/* Make a nice-looking frame to put the scrollbar in */
 	frame_w = gui_frame_add( NULL, NULL );
 	parent_child( parent_w, frame_w );
 
 	vscrollbar_w = gtk_scrollbar_new( GTK_ORIENTATION_VERTICAL, adjustment );
-	gtk_container_add( GTK_CONTAINER(frame_w), vscrollbar_w );
-	gtk_widget_show( vscrollbar_w );
+	gtk_frame_set_child( GTK_FRAME(frame_w), vscrollbar_w );
 
 	return vscrollbar_w;
 }
 
 
-/* The (ever-ubiquitous) separator widget */
+/* The separator widget */
 GtkWidget *
 gui_separator_add( GtkWidget *parent_w )
 {
 	GtkWidget *separator_w;
 
+	separator_w = gtk_separator_new( GTK_ORIENTATION_HORIZONTAL );
 	if (parent_w != NULL) {
-		if (GTK_IS_MENU(parent_w)) {
-			separator_w = gtk_menu_item_new( );
-			gtk_menu_shell_append( GTK_MENU_SHELL(parent_w), separator_w );
-		}
-		else {
-			separator_w = gtk_separator_new( GTK_ORIENTATION_HORIZONTAL );
-			gtk_box_pack_start( GTK_BOX(parent_w), separator_w, FALSE, FALSE, 10 );
-		}
-		gtk_widget_show( separator_w );
+		gtk_widget_set_margin_top( separator_w, 10 );
+		gtk_widget_set_margin_bottom( separator_w, 10 );
+		parent_child( parent_w, separator_w );
 	}
-	else
-		separator_w = gtk_separator_new( GTK_ORIENTATION_HORIZONTAL );
 
 	return separator_w;
 }
 
 
-/* The statusbar widget */
+/* The statusbar widget (implemented as a GtkLabel in GTK4,
+ * since GtkStatusbar was removed) */
 GtkWidget *
 gui_statusbar_add( GtkWidget *parent_w )
 {
-	GtkWidget *statusbar_w;
+	GtkWidget *label_w;
 
-	statusbar_w = gtk_statusbar_new( );
-	parent_child( parent_w, statusbar_w );
+	label_w = gtk_label_new( "" );
+	gtk_label_set_xalign( GTK_LABEL(label_w), 0.0 );
+	gtk_widget_set_margin_start( label_w, 4 );
+	parent_child( parent_w, label_w );
 
-	return statusbar_w;
+	return label_w;
 }
 
 
-/* Displays the given message in the given statusbar widget */
+/* Displays the given message in a statusbar (GtkLabel) */
 void
 gui_statusbar_message( GtkWidget *statusbar_w, const char *message )
 {
 	char strbuf[1024];
-	guint context_id;
 
-	context_id = gtk_statusbar_get_context_id( GTK_STATUSBAR(statusbar_w), "main" );
-	gtk_statusbar_pop( GTK_STATUSBAR(statusbar_w), context_id );
-	/* Prefix a space so that text doesn't touch left edge */
 	snprintf( strbuf, sizeof(strbuf), " %s", message );
-	gtk_statusbar_push( GTK_STATUSBAR(statusbar_w), context_id, strbuf );
+	gtk_label_set_text( GTK_LABEL(statusbar_w), strbuf );
 }
 
 
-/* The grid (layout) widget (replaces GtkTable) */
+/* The grid (layout) widget */
 GtkWidget *
 gui_table_add( GtkWidget *parent_w, G_GNUC_UNUSED int num_rows, G_GNUC_UNUSED int num_cols, boolean homog, int cell_padding )
 {
@@ -1213,22 +971,20 @@ gui_table_add( GtkWidget *parent_w, G_GNUC_UNUSED int num_rows, G_GNUC_UNUSED in
 }
 
 
-/* Attaches a widget to a grid (GtkTable replacement) */
+/* Attaches a widget to a grid */
 void
 gui_table_attach( GtkWidget *grid_w, GtkWidget *widget, int left, int right, int top, int bottom )
 {
 	gtk_grid_attach( GTK_GRID(grid_w), widget, left, top, right - left, bottom - top );
-	gtk_widget_show( widget );
 }
 
 
-/* The text (area) widget, optionally initialized with text */
+/* The text (area) widget */
 GtkWidget *
 gui_text_area_add( GtkWidget *parent_w, const char *init_text )
 {
 	GtkWidget *text_area_w;
 
-	/* Text (area) widget */
 	text_area_w = gtk_text_view_new();
 	gtk_text_view_set_editable(GTK_TEXT_VIEW(text_area_w), FALSE);
 	gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(text_area_w), GTK_WRAP_WORD);
@@ -1242,18 +998,32 @@ gui_text_area_add( GtkWidget *parent_w, const char *init_text )
 }
 
 
-/* This changes the packing flags of a widget inside a box widget. This
- * allows finer control than gtk_box_set_packing( ) (as this only affects
- * a single widget) */
+/* This changes the packing properties of a widget inside a box.
+ * In GTK4, expand/fill are set via hexpand/vexpand/halign/valign. */
 void
-gui_widget_packing( GtkWidget *widget, boolean expand, boolean fill, boolean start )
+gui_widget_packing( GtkWidget *widget, boolean expand, boolean fill, G_GNUC_UNUSED boolean start )
 {
 	GtkWidget *parent_box_w;
+	GtkOrientation orient;
 
 	parent_box_w = gtk_widget_get_parent( widget );
 	g_assert( GTK_IS_BOX(parent_box_w) );
 
-	gtk_box_set_child_packing( GTK_BOX(parent_box_w), widget, expand, fill, 0, start ? GTK_PACK_START : GTK_PACK_END );
+	orient = gtk_orientable_get_orientation( GTK_ORIENTABLE(parent_box_w) );
+	if (orient == GTK_ORIENTATION_HORIZONTAL) {
+		gtk_widget_set_hexpand( widget, expand );
+		if (expand && fill)
+			gtk_widget_set_halign( widget, GTK_ALIGN_FILL );
+		else if (expand)
+			gtk_widget_set_halign( widget, GTK_ALIGN_CENTER );
+	}
+	else {
+		gtk_widget_set_vexpand( widget, expand );
+		if (expand && fill)
+			gtk_widget_set_valign( widget, GTK_ALIGN_FILL );
+		else if (expand)
+			gtk_widget_set_valign( widget, GTK_ALIGN_CENTER );
+	}
 }
 
 
@@ -1274,16 +1044,16 @@ colorsel_window_response_cb( GtkDialog *dialog, gint response_id, G_GNUC_UNUSED 
 		color.r = (float)rgba.red;
 		color.g = (float)rgba.green;
 		color.b = (float)rgba.blue;
-		gtk_widget_destroy( GTK_WIDGET(dialog) );
+		gtk_window_destroy( GTK_WINDOW(dialog) );
 		(user_callback)( &color, user_callback_data );
 	}
 	else {
-		gtk_widget_destroy( GTK_WIDGET(dialog) );
+		gtk_window_destroy( GTK_WINDOW(dialog) );
 	}
 }
 
 
-/* Creates a color chooser window. OK button activates ok_callback */
+/* Creates a color chooser window */
 GtkWidget *
 gui_colorsel_window( const char *title, RGBcolor *init_color, GCallback ok_callback, void *ok_callback_data )
 {
@@ -1299,37 +1069,30 @@ gui_colorsel_window( const char *title, RGBcolor *init_color, GCallback ok_callb
 	g_object_set_data( G_OBJECT(colorsel_window_w), "user_callback", (void *)ok_callback );
 	g_object_set_data( G_OBJECT(colorsel_window_w), "user_callback_data", ok_callback_data );
 	g_signal_connect( G_OBJECT(colorsel_window_w), "response", G_CALLBACK(colorsel_window_response_cb), NULL );
-	gtk_widget_show( colorsel_window_w );
-
-	if (gtk_grab_get_current( ) != NULL)
-		gtk_window_set_modal( GTK_WINDOW(colorsel_window_w), TRUE );
+	gtk_window_set_modal( GTK_WINDOW(colorsel_window_w), TRUE );
+	gtk_window_present( GTK_WINDOW(colorsel_window_w) );
 
 	return colorsel_window_w;
 }
 
 
-/* Creates a base dialog window. close_callback is called when the
- * window is destroyed */
+/* Creates a base dialog window */
 GtkWidget *
 gui_dialog_window( const char *title, GCallback close_callback )
 {
 	GtkWidget *window_w;
 
-	window_w = gtk_window_new( GTK_WINDOW_TOPLEVEL );
+	window_w = gtk_window_new( );
 	gtk_window_set_resizable( GTK_WINDOW(window_w), FALSE );
-	gtk_window_set_position( GTK_WINDOW(window_w), GTK_WIN_POS_CENTER );
 	gtk_window_set_title( GTK_WINDOW(window_w), title );
-	g_signal_connect( G_OBJECT(window_w), "delete_event", G_CALLBACK(gtk_widget_destroy), NULL );
 	if (close_callback != NULL)
 		g_signal_connect( G_OBJECT(window_w), "destroy", G_CALLBACK(close_callback), NULL );
-	/* !gtk_widget_show( ) */
 
 	return window_w;
 }
 
 
-/* Internal callback for the text-entry window, called when the
- * OK button is pressed */
+/* Internal callback for the text-entry window */
 static void
 entry_window_cb( G_GNUC_UNUSED GtkWidget *unused, GtkWidget *entry_window_w )
 {
@@ -1339,20 +1102,18 @@ entry_window_cb( G_GNUC_UNUSED GtkWidget *unused, GtkWidget *entry_window_w )
 	void *user_callback_data;
 
 	entry_w = g_object_get_data( G_OBJECT(entry_window_w), "entry_w" );
-	entry_text = xstrdup( gtk_entry_get_text( GTK_ENTRY(entry_w) ) );
+	entry_text = xstrdup( gtk_editable_get_text( GTK_EDITABLE(entry_w) ) );
 
 	user_callback = (void (*)( const char *, void * ))g_object_get_data( G_OBJECT(entry_window_w), "user_callback" );
 	user_callback_data = g_object_get_data( G_OBJECT(entry_window_w), "user_callback_data" );
-	gtk_widget_destroy( entry_window_w );
+	gtk_window_destroy( GTK_WINDOW(entry_window_w) );
 
-	/* Call user callback */
 	(user_callback)( entry_text, user_callback_data );
-        xfree( entry_text );
+	xfree( entry_text );
 }
 
 
-/* Creates a one-line text-entry window, initialized with the given text
- * string. OK button activates ok_callback */
+/* Creates a one-line text-entry window */
 GtkWidget *
 gui_entry_window( const char *title, const char *init_text, GCallback ok_callback, void *ok_callback_data )
 {
@@ -1362,18 +1123,21 @@ gui_entry_window( const char *title, const char *init_text, GCallback ok_callbac
 	GtkWidget *entry_w;
 	GtkWidget *hbox_w;
 	GtkWidget *button_w;
-        int width;
+	int width;
 
 	entry_window_w = gui_dialog_window( title, NULL );
-	gtk_container_set_border_width( GTK_CONTAINER(entry_window_w), 5 );
+	gtk_widget_set_margin_start( entry_window_w, 5 );
+	gtk_widget_set_margin_end( entry_window_w, 5 );
+	gtk_widget_set_margin_top( entry_window_w, 5 );
+	gtk_widget_set_margin_bottom( entry_window_w, 5 );
 	{
 		GdkDisplay *display = gdk_display_get_default( );
-		GdkMonitor *monitor = gdk_display_get_primary_monitor( display );
-		if (monitor == NULL)
-			monitor = gdk_display_get_monitor( display, 0 );
+		GListModel *monitors = gdk_display_get_monitors( display );
+		GdkMonitor *monitor = g_list_model_get_item( monitors, 0 );
 		GdkRectangle geom;
 		gdk_monitor_get_geometry( monitor, &geom );
 		width = geom.width / 2;
+		g_object_unref( monitor );
 	}
 	gtk_widget_set_size_request( entry_window_w, width, -1 );
 	g_object_set_data( G_OBJECT(entry_window_w), "user_callback", (void *)ok_callback );
@@ -1382,26 +1146,21 @@ gui_entry_window( const char *title, const char *init_text, GCallback ok_callbac
 	frame_w = gui_frame_add( entry_window_w, NULL );
 	vbox_w = gui_vbox_add( frame_w, 10 );
 
-        /* Text entry widget */
 	entry_w = gui_entry_add( vbox_w, init_text, G_CALLBACK(entry_window_cb), entry_window_w );
 	g_object_set_data( G_OBJECT(entry_window_w), "entry_w", entry_w );
 
-	/* Horizontal box for buttons */
 	hbox_w = gui_hbox_add( vbox_w, 0 );
 	gtk_box_set_homogeneous( GTK_BOX(hbox_w), TRUE );
 	gui_box_set_packing( hbox_w, EXPAND, FILL, AT_START );
 
-	/* OK/Cancel buttons */
 	gui_button_add( hbox_w, _("OK"), G_CALLBACK(entry_window_cb), entry_window_w );
 	vbox_w = gui_vbox_add( hbox_w, 0 ); /* spacer */
 	button_w = gui_button_add( hbox_w, _("Cancel"), NULL, NULL );
-	g_signal_connect_swapped( G_OBJECT(button_w), "clicked", G_CALLBACK(gtk_widget_destroy), G_OBJECT(entry_window_w) );
+	g_signal_connect_swapped( G_OBJECT(button_w), "clicked", G_CALLBACK(gtk_window_destroy), G_OBJECT(entry_window_w) );
 
-	gtk_widget_show( entry_window_w );
+	gtk_window_set_modal( GTK_WINDOW(entry_window_w), TRUE );
+	gtk_window_present( GTK_WINDOW(entry_window_w) );
 	gtk_widget_grab_focus( entry_w );
-
-	if (gtk_grab_get_current( ) != NULL)
-		gtk_window_set_modal( GTK_WINDOW(entry_window_w), TRUE );
 
 	return entry_window_w;
 }
@@ -1411,29 +1170,30 @@ gui_entry_window( const char *title, const char *init_text, GCallback ok_callbac
 static void
 filesel_window_response_cb( GtkDialog *dialog, gint response_id, G_GNUC_UNUSED gpointer data )
 {
+	GFile *file;
 	char *filename;
 	void (*user_callback)( const char *, void * );
 	void *user_callback_data;
 
 	if (response_id == GTK_RESPONSE_ACCEPT) {
-		filename = gtk_file_chooser_get_filename( GTK_FILE_CHOOSER(dialog) );
+		file = gtk_file_chooser_get_file( GTK_FILE_CHOOSER(dialog) );
+		filename = g_file_get_path( file );
+		g_object_unref( file );
 		user_callback = (void (*)( const char *, void * ))g_object_get_data( G_OBJECT(dialog), "user_callback" );
 		user_callback_data = g_object_get_data( G_OBJECT(dialog), "user_callback_data" );
-		gtk_widget_destroy( GTK_WIDGET(dialog) );
+		gtk_window_destroy( GTK_WINDOW(dialog) );
 
-		/* Call user callback */
 		(user_callback)( filename, user_callback_data );
 
 		g_free( filename );
 	}
 	else {
-		gtk_widget_destroy( GTK_WIDGET(dialog) );
+		gtk_window_destroy( GTK_WINDOW(dialog) );
 	}
 }
 
 
-/* Creates a file chooser window, with an optional default filename.
- * OK button activates ok_callback */
+/* Creates a file chooser window */
 GtkWidget *
 gui_filesel_window( const char *title, const char *init_filename, GCallback ok_callback, void *ok_callback_data )
 {
@@ -1444,35 +1204,21 @@ gui_filesel_window( const char *title, const char *init_filename, GCallback ok_c
 		_("_Cancel"), GTK_RESPONSE_CANCEL,
 		_("_OK"), GTK_RESPONSE_ACCEPT,
 		NULL );
-	if (init_filename != NULL)
-		gtk_file_chooser_set_filename( GTK_FILE_CHOOSER(filesel_window_w), init_filename );
-	gtk_window_set_position( GTK_WINDOW(filesel_window_w), GTK_WIN_POS_CENTER );
+	if (init_filename != NULL) {
+		GFile *file = g_file_new_for_path( init_filename );
+		gtk_file_chooser_set_file( GTK_FILE_CHOOSER(filesel_window_w), file, NULL );
+		g_object_unref( file );
+	}
 	g_object_set_data( G_OBJECT(filesel_window_w), "user_callback", (void *)ok_callback );
 	g_object_set_data( G_OBJECT(filesel_window_w), "user_callback_data", ok_callback_data );
 	g_signal_connect( G_OBJECT(filesel_window_w), "response", G_CALLBACK(filesel_window_response_cb), NULL );
-	/* no gtk_widget_show( ) */
-
-	if (gtk_grab_get_current( ) != NULL)
-		gtk_window_set_modal( GTK_WINDOW(filesel_window_w), TRUE );
+	gtk_window_set_modal( GTK_WINDOW(filesel_window_w), TRUE );
 
 	return filesel_window_w;
 }
 
 
-/* Associates an icon (created from XPM data) to a window */
-void
-gui_window_icon_xpm( GtkWidget *window_w, char **xpm_data )
-{
-	GdkPixbuf *pixbuf;
-
-	pixbuf = gdk_pixbuf_new_from_xpm_data( (const char **)xpm_data );
-	gtk_window_set_icon( GTK_WINDOW(window_w), pixbuf );
-	g_object_unref( pixbuf );
-}
-
-
-/* Helper function for gui_window_modalize( ), called upon the destruction
- * of the modal window */
+/* Helper function for gui_window_modalize( ) */
 static void
 window_unmodalize( G_GNUC_UNUSED GObject *unused, GtkWidget *parent_window_w )
 {
@@ -1490,7 +1236,6 @@ gui_window_modalize( GtkWidget *window_w, GtkWidget *parent_window_w )
 	gtk_widget_set_sensitive( parent_window_w, FALSE );
 	gui_cursor( parent_window_w, "not-allowed" );
 
-	/* Restore original state once the window is destroyed */
 	g_signal_connect( G_OBJECT(window_w), "destroy", G_CALLBACK(window_unmodalize), parent_window_w );
 }
 

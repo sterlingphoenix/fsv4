@@ -1,5 +1,5 @@
 project('fsv', 'c',
-  version : '4.4.00',
+  version : '4.6.3',
   default_options : ['warning_level=2', 'buildtype=debugoptimized'],
   meson_version : '>= 0.55',
 )
@@ -7,7 +7,7 @@ project('fsv', 'c',
 cc = meson.get_compiler('c')
 
 # Dependencies
-gtk_dep = dependency('gtk+-3.0', version : '>= 3.16')
+gtk_dep = dependency('gtk4', version : '>= 4.0')
 epoxy_dep = dependency('epoxy')
 cglm_dep = dependency('cglm')
 m_dep = cc.find_library('m', required : true)

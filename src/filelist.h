@@ -28,7 +28,7 @@
 #define FSV_FILELIST_H
 
 
-#ifdef __GTK_H__
+#ifdef GTK_WIDGET
 void filelist_pass_widget( GtkWidget *clist_w );
 GtkWidget *dir_contents_list( GNode *dnode );
 #endif

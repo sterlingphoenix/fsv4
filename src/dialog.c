@@ -60,7 +60,7 @@ dialog_pass_main_window_widget( GtkWidget *window_w )
 static void
 close_cb( G_GNUC_UNUSED GtkWidget *unused, GtkWidget *window_w )
 {
-	gtk_widget_destroy( window_w );
+	gtk_window_destroy( GTK_WINDOW(window_w) );
 }
 
 
@@ -105,7 +105,7 @@ dialog_change_root( void )
 	gtk_file_chooser_set_action( GTK_FILE_CHOOSER(filesel_window_w), GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER );
 	gui_window_modalize( filesel_window_w, main_window_w );
 
-	gtk_widget_show( filesel_window_w );
+	gtk_window_present( GTK_WINDOW(filesel_window_w) );
 }
 
 
@@ -468,10 +468,12 @@ csdialog_wpattern_color_selection_cb( RGBcolor *selected_color, RGBcolor *wpatte
 }
 
 
-/* Callback for mouse button release in the wildcard pattern list */
-static int
-csdialog_wpattern_clist_click_cb( GtkWidget *tree_w, GdkEventButton *ev_button )
+/* Callback for click in the wildcard pattern list (GtkGestureClick) */
+static void
+csdialog_wpattern_clist_click_cb( GtkGestureClick *gesture, G_GNUC_UNUSED int n_press,
+                                  double x, double y, G_GNUC_UNUSED gpointer user_data )
 {
+	GtkWidget *tree_w = gtk_event_controller_get_widget( GTK_EVENT_CONTROLLER(gesture) );
 	RGBcolor *color;
 	int row_type;
 	struct WPatternGroup *wpgroup;
@@ -482,20 +484,23 @@ csdialog_wpattern_clist_click_cb( GtkWidget *tree_w, GdkEventButton *ev_button )
 	GtkTreeIter iter;
 	GList *col_list;
 	int col_index;
+	int button;
+
+	button = gtk_gesture_single_get_current_button( GTK_GESTURE_SINGLE(gesture) );
 
 	/* Respond only to mouse button 1 (left button) */
-	if (ev_button->button != 1)
-		return FALSE;
+	if (button != 1)
+		return;
 
 	if (!gtk_tree_view_get_path_at_pos( GTK_TREE_VIEW(tree_w),
-			(int)ev_button->x, (int)ev_button->y,
+			(int)x, (int)y,
 			&path, &column, NULL, NULL ))
-		return FALSE;
+		return;
 
 	model = gtk_tree_view_get_model( GTK_TREE_VIEW(tree_w) );
 	if (!gtk_tree_model_get_iter( model, &iter, path )) {
 		gtk_tree_path_free( path );
-		return FALSE;
+		return;
 	}
 
 	/* Determine which column was clicked */
@@ -514,7 +519,7 @@ csdialog_wpattern_clist_click_cb( GtkWidget *tree_w, GdkEventButton *ev_button )
 		case WPLIST_WPATTERN_ROW:
 		case WPLIST_NEW_WPATTERN_ROW:
 		if (col_index != 0)
-			return FALSE;
+			return;
 		/* fall through */
 		case WPLIST_HEADER_ROW:
 		title = _("Group Color");
@@ -523,7 +528,7 @@ csdialog_wpattern_clist_click_cb( GtkWidget *tree_w, GdkEventButton *ev_button )
 
 		case WPLIST_DEFAULT_ROW:
 		if (col_index != 0)
-			return FALSE;
+			return;
 		/* fall through */
 		case WPLIST_DEFAULT_HEADER_ROW:
 		title = _("Default Color");
@@ -535,8 +540,6 @@ csdialog_wpattern_clist_click_cb( GtkWidget *tree_w, GdkEventButton *ev_button )
 
 	/* Bring up color selection dialog */
 	gui_colorsel_window( title, color, G_CALLBACK(csdialog_wpattern_color_selection_cb), color );
-
-	return FALSE;
 }
 
 
@@ -810,7 +813,7 @@ csdialog_ok_button_cb( G_GNUC_UNUSED GtkWidget *unused, GtkWidget *window_w )
         /* Update option menu to reflect current color mode */
 	window_set_color_mode( mode );
 
-	gtk_widget_destroy( window_w );
+	gtk_window_destroy( GTK_WINDOW(window_w) );
 }
 
 
@@ -905,17 +908,21 @@ dialog_color_setup( void )
 		gtk_tree_selection_set_select_function( sel, csdialog_wpattern_selection_func, NULL, NULL );
 		g_signal_connect( G_OBJECT(sel), "changed", G_CALLBACK(csdialog_wpattern_clist_selection_changed_cb), NULL );
 
-		/* Click handler for color editing */
-		g_signal_connect( G_OBJECT(wp_tree), "button_release_event", G_CALLBACK(csdialog_wpattern_clist_click_cb), NULL );
+		/* Click handler for color editing (GtkGestureClick) */
+		{
+			GtkGesture *click = gtk_gesture_click_new( );
+			gtk_gesture_single_set_button( GTK_GESTURE_SINGLE(click), 0 );
+			g_signal_connect( click, "pressed", G_CALLBACK(csdialog_wpattern_clist_click_cb), NULL );
+			gtk_widget_add_controller( GTK_WIDGET(wp_tree), GTK_EVENT_CONTROLLER(click) );
+		}
 
 		/* Put inside a scrolled window */
-		scroll_w = gtk_scrolled_window_new( NULL, NULL );
+		scroll_w = gtk_scrolled_window_new( );
 		gtk_scrolled_window_set_policy( GTK_SCROLLED_WINDOW(scroll_w), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC );
-		gtk_scrolled_window_set_shadow_type( GTK_SCROLLED_WINDOW(scroll_w), GTK_SHADOW_IN );
-		gtk_container_add( GTK_CONTAINER(scroll_w), GTK_WIDGET(wp_tree) );
-		gtk_widget_show( GTK_WIDGET(wp_tree) );
-		gtk_widget_show( scroll_w );
-		gtk_box_pack_start( GTK_BOX(hbox_w), scroll_w, TRUE, TRUE, 0 );
+		gtk_scrolled_window_set_child( GTK_SCROLLED_WINDOW(scroll_w), GTK_WIDGET(wp_tree) );
+		gtk_widget_set_hexpand( scroll_w, TRUE );
+		gtk_widget_set_vexpand( scroll_w, TRUE );
+		gtk_box_append( GTK_BOX(hbox_w), scroll_w );
 
 		csdialog.wpattern.clist_w = GTK_WIDGET(wp_tree);
 	}
@@ -940,10 +947,16 @@ dialog_color_setup( void )
 	gui_notebook_page_add( csdialog.notebook_w, _("By node type"), hbox_w );
 
 	vbox_w = gui_vbox_add( hbox_w, 10 );
-	gtk_container_set_border_width( GTK_CONTAINER(vbox_w), 3 );
+	gtk_widget_set_margin_start( vbox_w, 3 );
+	gtk_widget_set_margin_end( vbox_w, 3 );
+	gtk_widget_set_margin_top( vbox_w, 3 );
+	gtk_widget_set_margin_bottom( vbox_w, 3 );
 	gui_box_set_packing( vbox_w, EXPAND, NO_FILL, AT_START );
 	vbox2_w = gui_vbox_add( hbox_w, 10 );
-	gtk_container_set_border_width( GTK_CONTAINER(vbox2_w), 3 );
+	gtk_widget_set_margin_start( vbox2_w, 3 );
+	gtk_widget_set_margin_end( vbox2_w, 3 );
+	gtk_widget_set_margin_top( vbox2_w, 3 );
+	gtk_widget_set_margin_bottom( vbox2_w, 3 );
 	gui_box_set_packing( vbox2_w, EXPAND, NO_FILL, AT_START );
 
 	/* Create two-column listing of node type colors */
@@ -952,7 +965,7 @@ dialog_color_setup( void )
 			frame_w = gui_frame_add( vbox_w, NULL );
 		else
 			frame_w = gui_frame_add( vbox2_w, NULL );
-		gtk_frame_set_shadow_type( GTK_FRAME(frame_w), GTK_SHADOW_ETCHED_OUT );
+
 		hbox_w = gui_hbox_add( frame_w, 10 );
 
 		/* Color picker button */
@@ -1006,7 +1019,7 @@ dialog_color_setup( void )
 
 	/* Time spectrum */
 	frame_w = gui_frame_add( vbox_w, NULL );
-	gtk_frame_set_shadow_type( GTK_FRAME(frame_w), GTK_SHADOW_IN );
+	/* GTK4: shadow type removed */
 	csdialog.time.spectrum_preview_w = gui_preview_add( frame_w );
 	gui_preview_spectrum( csdialog.time.spectrum_preview_w, csdialog_time_spectrum_func );
 
@@ -1053,7 +1066,7 @@ dialog_color_setup( void )
 	/* Some cleanup will be required once the window goes away */
 	g_signal_connect( G_OBJECT(window_w), "destroy", G_CALLBACK(csdialog_destroy_cb), NULL );
 
-	gtk_widget_show( window_w );
+	gtk_window_present( GTK_WINDOW(window_w) );
 }
 
 
@@ -1239,8 +1252,7 @@ dialog_node_properties( GNode *node )
 
 		/* Directory contents listing */
 		clist_w = dir_contents_list( node );
-		gtk_box_pack_start( GTK_BOX(vbox2_w), clist_w, FALSE, FALSE, 0 );
-		gtk_widget_show( clist_w );
+		gtk_box_append( GTK_BOX(vbox2_w), clist_w );
 
 		gui_separator_add( vbox2_w );
 
@@ -1325,7 +1337,7 @@ dialog_node_properties( GNode *node )
 
 	xfree( proptext );
 
-	gtk_widget_show( window_w );
+	gtk_window_present( GTK_WINDOW(window_w) );
 }
 
 
@@ -1333,55 +1345,58 @@ dialog_node_properties( GNode *node )
 
 /* (I know, it's not a dialog, but where else to put this? :-) */
 
-/* Helper callback for context_menu( ) */
+/* GNode stored for context menu action callbacks */
+static GNode *context_menu_node = NULL;
+
+/* Action callbacks for context menu */
 static void
-collapse_cb( G_GNUC_UNUSED GtkWidget *unused, GNode *dnode )
+ctx_collapse_cb( G_GNUC_UNUSED GSimpleAction *action, G_GNUC_UNUSED GVariant *parameter, G_GNUC_UNUSED gpointer user_data )
 {
-	colexp( dnode, COLEXP_COLLAPSE_RECURSIVE );
+	if (context_menu_node != NULL)
+		colexp( context_menu_node, COLEXP_COLLAPSE_RECURSIVE );
 }
 
-
-/* ditto */
 static void
-expand_cb( G_GNUC_UNUSED GtkWidget *unused, GNode *dnode )
+ctx_expand_cb( G_GNUC_UNUSED GSimpleAction *action, G_GNUC_UNUSED GVariant *parameter, G_GNUC_UNUSED gpointer user_data )
 {
-	colexp( dnode, COLEXP_EXPAND );
+	if (context_menu_node != NULL)
+		colexp( context_menu_node, COLEXP_EXPAND );
 }
 
-
-/* ditto */
 static void
-expand_recursive_cb( G_GNUC_UNUSED GtkWidget *unused, GNode *dnode )
+ctx_expand_recursive_cb( G_GNUC_UNUSED GSimpleAction *action, G_GNUC_UNUSED GVariant *parameter, G_GNUC_UNUSED gpointer user_data )
 {
-	colexp( dnode, COLEXP_EXPAND_RECURSIVE );
+	if (context_menu_node != NULL)
+		colexp( context_menu_node, COLEXP_EXPAND_RECURSIVE );
 }
 
-
-/* ditto */
 static void
-look_at_cb( G_GNUC_UNUSED GtkWidget *unused, GNode *node )
+ctx_look_at_cb( G_GNUC_UNUSED GSimpleAction *action, G_GNUC_UNUSED GVariant *parameter, G_GNUC_UNUSED gpointer user_data )
 {
-	camera_look_at( node );
+	if (context_menu_node != NULL)
+		camera_look_at( context_menu_node );
 }
 
-
-/* ditto */
 static void
-properties_cb( G_GNUC_UNUSED GtkWidget *unused, GNode *node )
+ctx_properties_cb( G_GNUC_UNUSED GSimpleAction *action, G_GNUC_UNUSED GVariant *parameter, G_GNUC_UNUSED gpointer user_data )
 {
-	dialog_node_properties( node );
+	if (context_menu_node != NULL)
+		dialog_node_properties( context_menu_node );
 }
 
 
 void
-context_menu( GNode *node, GdkEventButton *ev_button )
+context_menu( GNode *node, GtkWidget *parent_widget, double x, double y )
 {
-	static GtkWidget *popup_menu_w = NULL;
+	static GtkWidget *popover_w = NULL;
+	GMenu *menu;
+	GMenu *section;
+	GSimpleActionGroup *action_group;
 
-	/* Recycle previous popup menu */
-	if (popup_menu_w != NULL) {
-		g_assert( GTK_IS_MENU(popup_menu_w) );
-		gtk_widget_destroy( popup_menu_w );
+	/* Recycle previous popover */
+	if (popover_w != NULL) {
+		gtk_widget_unparent( popover_w );
+		popover_w = NULL;
 	}
 
 	/* Check for the special case in which the menu has only one item */
@@ -1390,22 +1405,68 @@ context_menu( GNode *node, GdkEventButton *ev_button )
 		return;
 	}
 
-	/* Create menu */
-	popup_menu_w = gtk_menu_new( );
+	/* Save node for action callbacks */
+	context_menu_node = node;
+
+	/* Build action group */
+	action_group = g_simple_action_group_new( );
+
+	menu = g_menu_new( );
+	section = g_menu_new( );
+
 	if (NODE_IS_DIR(node)) {
-		if (dirtree_entry_expanded( node ))
-			gui_menu_item_add( popup_menu_w, _("Collapse"), G_CALLBACK(collapse_cb), node );
+		if (dirtree_entry_expanded( node )) {
+			GSimpleAction *act = g_simple_action_new( "collapse", NULL );
+			g_signal_connect( act, "activate", G_CALLBACK(ctx_collapse_cb), NULL );
+			g_action_map_add_action( G_ACTION_MAP(action_group), G_ACTION(act) );
+			g_menu_append( section, _("Collapse"), "ctx.collapse" );
+		}
 		else {
-			gui_menu_item_add( popup_menu_w, _("Expand"), G_CALLBACK(expand_cb), node );
-			if (DIR_NODE_DESC(node)->subtree.counts[NODE_DIRECTORY] > 0)
-				gui_menu_item_add( popup_menu_w, _("Expand all"), G_CALLBACK(expand_recursive_cb), node );
+			GSimpleAction *act = g_simple_action_new( "expand", NULL );
+			g_signal_connect( act, "activate", G_CALLBACK(ctx_expand_cb), NULL );
+			g_action_map_add_action( G_ACTION_MAP(action_group), G_ACTION(act) );
+			g_menu_append( section, _("Expand"), "ctx.expand" );
+			if (DIR_NODE_DESC(node)->subtree.counts[NODE_DIRECTORY] > 0) {
+				act = g_simple_action_new( "expand-all", NULL );
+				g_signal_connect( act, "activate", G_CALLBACK(ctx_expand_recursive_cb), NULL );
+				g_action_map_add_action( G_ACTION_MAP(action_group), G_ACTION(act) );
+				g_menu_append( section, _("Expand all"), "ctx.expand-all" );
+			}
 		}
 	}
-	if (node != globals.current_node)
-		gui_menu_item_add( popup_menu_w, _("Look at"), G_CALLBACK(look_at_cb), node );
-	gui_menu_item_add( popup_menu_w, _("Properties"), G_CALLBACK(properties_cb), node );
+	if (node != globals.current_node) {
+		GSimpleAction *act = g_simple_action_new( "look-at", NULL );
+		g_signal_connect( act, "activate", G_CALLBACK(ctx_look_at_cb), NULL );
+		g_action_map_add_action( G_ACTION_MAP(action_group), G_ACTION(act) );
+		g_menu_append( section, _("Look at"), "ctx.look-at" );
+	}
+	{
+		GSimpleAction *act = g_simple_action_new( "properties", NULL );
+		g_signal_connect( act, "activate", G_CALLBACK(ctx_properties_cb), NULL );
+		g_action_map_add_action( G_ACTION_MAP(action_group), G_ACTION(act) );
+		g_menu_append( section, _("Properties"), "ctx.properties" );
+	}
 
-	gtk_menu_popup_at_pointer( GTK_MENU(popup_menu_w), (GdkEvent *)ev_button );
+	g_menu_append_section( menu, NULL, G_MENU_MODEL(section) );
+
+	/* Insert action group into the parent widget */
+	gtk_widget_insert_action_group( parent_widget, "ctx", G_ACTION_GROUP(action_group) );
+
+	/* Create popover menu */
+	popover_w = gtk_popover_menu_new_from_model( G_MENU_MODEL(menu) );
+	gtk_widget_set_parent( popover_w, parent_widget );
+	gtk_popover_set_has_arrow( GTK_POPOVER(popover_w), FALSE );
+
+	/* Position at click location */
+	{
+		GdkRectangle rect = { (int)x, (int)y, 1, 1 };
+		gtk_popover_set_pointing_to( GTK_POPOVER(popover_w), &rect );
+	}
+
+	gtk_popover_popup( GTK_POPOVER(popover_w) );
+
+	g_object_unref( section );
+	g_object_unref( menu );
 }
 
 

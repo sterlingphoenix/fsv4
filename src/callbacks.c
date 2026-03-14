@@ -34,21 +34,15 @@
 #include "fsv.h"
 
 
-/* Radio menu items fire a callback on deselection as well as selection,
- * which is not quite what we want */
-#define IGNORE_MENU_ITEM_DESELECT(menuitem) \
-	if (!gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(menuitem))) return
-
-
 /**** MAIN WINDOW **************************************/
 
 
-/** Menus **/
+/** Menu actions **/
 
 
 /* File -> Change root... */
 void
-on_file_change_root_activate( G_GNUC_UNUSED GtkMenuItem *menuitem, G_GNUC_UNUSED gpointer user_data )
+on_file_change_root_activate( G_GNUC_UNUSED GSimpleAction *action, G_GNUC_UNUSED GVariant *parameter, G_GNUC_UNUSED gpointer user_data )
 {
 	dialog_change_root( );
 }
@@ -56,7 +50,7 @@ on_file_change_root_activate( G_GNUC_UNUSED GtkMenuItem *menuitem, G_GNUC_UNUSED
 
 /* File -> Save settings */
 void
-on_file_save_settings_activate( G_GNUC_UNUSED GtkMenuItem *menuitem, G_GNUC_UNUSED gpointer user_data )
+on_file_save_settings_activate( G_GNUC_UNUSED GSimpleAction *action, G_GNUC_UNUSED GVariant *parameter, G_GNUC_UNUSED gpointer user_data )
 {
 	fsv_write_config( );
 }
@@ -64,72 +58,61 @@ on_file_save_settings_activate( G_GNUC_UNUSED GtkMenuItem *menuitem, G_GNUC_UNUS
 
 /* File -> Exit */
 void
-on_file_exit_activate( G_GNUC_UNUSED GtkMenuItem *menuitem, G_GNUC_UNUSED gpointer user_data )
+on_file_exit_activate( G_GNUC_UNUSED GSimpleAction *action, G_GNUC_UNUSED GVariant *parameter, G_GNUC_UNUSED gpointer user_data )
 {
-	exit( EXIT_SUCCESS );
+	GApplication *app = g_application_get_default( );
+	if (app != NULL)
+		g_application_quit( app );
+	else
+		exit( EXIT_SUCCESS );
 }
 
 
-/* Vis -> DiscV */
+/* Vis mode radio: change-state handler */
 void
-on_vis_discv_activate( GtkMenuItem *menuitem, G_GNUC_UNUSED gpointer user_data )
+on_vis_mode_change( GSimpleAction *action, GVariant *value, G_GNUC_UNUSED gpointer user_data )
 {
-	IGNORE_MENU_ITEM_DESELECT(menuitem);
-	if (globals.fsv_mode != FSV_DISCV)
-		fsv_set_mode( FSV_DISCV );
+	const char *mode_str;
+
+	g_simple_action_set_state( action, value );
+	mode_str = g_variant_get_string( value, NULL );
+
+	if (strcmp( mode_str, "discv" ) == 0) {
+		if (globals.fsv_mode != FSV_DISCV)
+			fsv_set_mode( FSV_DISCV );
+	}
+	else if (strcmp( mode_str, "mapv" ) == 0) {
+		if (globals.fsv_mode != FSV_MAPV)
+			fsv_set_mode( FSV_MAPV );
+	}
+	else if (strcmp( mode_str, "treev" ) == 0) {
+		if (globals.fsv_mode != FSV_TREEV)
+			fsv_set_mode( FSV_TREEV );
+	}
 }
 
 
-/* Vis -> MapV */
+/* Color mode radio: change-state handler */
 void
-on_vis_mapv_activate( GtkMenuItem *menuitem, G_GNUC_UNUSED gpointer user_data )
+on_color_mode_change( GSimpleAction *action, GVariant *value, G_GNUC_UNUSED gpointer user_data )
 {
-	IGNORE_MENU_ITEM_DESELECT(menuitem);
-	if (globals.fsv_mode != FSV_MAPV)
-		fsv_set_mode( FSV_MAPV );
-}
+	const char *mode_str;
 
+	g_simple_action_set_state( action, value );
+	mode_str = g_variant_get_string( value, NULL );
 
-/* Vis -> TreeV */
-void
-on_vis_treev_activate( GtkMenuItem *menuitem, G_GNUC_UNUSED gpointer user_data )
-{
-	IGNORE_MENU_ITEM_DESELECT(menuitem);
-	if (globals.fsv_mode != FSV_TREEV)
-		fsv_set_mode( FSV_TREEV );
-}
-
-
-/* Colors -> By node type */
-void
-on_color_by_nodetype_activate( GtkMenuItem *menuitem, G_GNUC_UNUSED gpointer user_data )
-{
-	IGNORE_MENU_ITEM_DESELECT(menuitem);
-	color_set_mode( COLOR_BY_NODETYPE );
-}
-
-
-/* Colors -> By timestamp */
-void
-on_color_by_timestamp_activate( GtkMenuItem *menuitem, G_GNUC_UNUSED gpointer user_data )
-{
-	IGNORE_MENU_ITEM_DESELECT(menuitem);
-	color_set_mode( COLOR_BY_TIMESTAMP );
-}
-
-
-/* Colors -> By wildcards */
-void
-on_color_by_wildcards_activate( GtkMenuItem *menuitem, G_GNUC_UNUSED gpointer user_data )
-{
-	IGNORE_MENU_ITEM_DESELECT(menuitem);
-	color_set_mode( COLOR_BY_WPATTERN );
+	if (strcmp( mode_str, "nodetype" ) == 0)
+		color_set_mode( COLOR_BY_NODETYPE );
+	else if (strcmp( mode_str, "timestamp" ) == 0)
+		color_set_mode( COLOR_BY_TIMESTAMP );
+	else if (strcmp( mode_str, "wildcards" ) == 0)
+		color_set_mode( COLOR_BY_WPATTERN );
 }
 
 
 /* Colors -> Setup... */
 void
-on_color_setup_activate( G_GNUC_UNUSED GtkMenuItem *menuitem, G_GNUC_UNUSED gpointer user_data )
+on_color_setup_activate( G_GNUC_UNUSED GSimpleAction *action, G_GNUC_UNUSED GVariant *parameter, G_GNUC_UNUSED gpointer user_data )
 {
 	dialog_color_setup( );
 }
@@ -137,7 +120,7 @@ on_color_setup_activate( G_GNUC_UNUSED GtkMenuItem *menuitem, G_GNUC_UNUSED gpoi
 
 /* Help -> About fsv... */
 void
-on_help_about_fsv_activate( G_GNUC_UNUSED GtkMenuItem *menuitem, G_GNUC_UNUSED gpointer user_data )
+on_help_about_fsv_activate( G_GNUC_UNUSED GSimpleAction *action, G_GNUC_UNUSED GVariant *parameter, G_GNUC_UNUSED gpointer user_data )
 {
 	about( ABOUT_BEGIN );
 }
@@ -177,22 +160,6 @@ on_birdseye_view_togglebutton_toggled( GtkToggleButton *togglebutton, G_GNUC_UNU
 {
 	camera_birdseye_view( gtk_toggle_button_get_active( togglebutton ) );
 }
-
-
-/**** DIALOG: ROOT DIRECTORY SELECTION ***********************************/
-
-
-/* to be implemented */
-
-
-
-
-/**** DIALOG: COLOR SETUP **************************************/
-
-
-/* to be implemented */
-
-
 
 
 /* end callbacks.c */

@@ -263,23 +263,23 @@ GTK 4. The rendering pipeline does not change — only the GTK widget
 and API layer.
 
 Step 6.1 - Build system and dependencies
-  [ ] meson.build: change gtk+-3.0 to gtk4 >= 4.0
-  [ ] README.md: update dependency list
-  [ ] Verify: configure step finds GTK 4
+  [x] meson.build: change gtk+-3.0 to gtk4 >= 4.0
+  [x] README.md: update dependency list
+  [x] Verify: configure step finds GTK 4
 
 Step 6.2 - Widget API updates
-  [ ] Replace deprecated GTK 3 APIs with GTK 4 equivalents
+  [x] Replace deprecated GTK 3 APIs with GTK 4 equivalents
       (this will be a detailed list once Phase 5 is complete — the
       specific changes depend on what GTK 3 APIs remain in use)
-  [ ] GtkGLArea API changes (if any) between GTK 3 and 4
-  [ ] Event handling migration (GdkEvent changes in GTK 4)
-  [ ] Verify: builds and runs on GTK 4
+  [x] GtkGLArea API changes (if any) between GTK 3 and 4
+  [x] Event handling migration (GdkEvent changes in GTK 4)
+  [x] Verify: builds and runs on GTK 4
 
 Step 6.3 - Final verification
-  [ ] Test all three visualization modes
-  [ ] Test all interactions (mouse, keyboard, menus)
-  [ ] Test on Wayland and X11
-  [ ] Verify: fully functional on GTK 4
+  [x] Test all three visualization modes
+  [x] Test all interactions (mouse, keyboard, menus)
+  [x] Test on Wayland and X11
+  [x] Verify: fully functional on GTK 4
 
   Checkpoint: User tests everything. The migration is complete.
 

@@ -10,7 +10,7 @@
 #define FSV_SEARCH_H
 
 
-#ifdef __GTK_H__
+#ifdef GTK_WIDGET
 void search_pass_widgets( GtkWidget *entry_w, GtkWidget *next_button_w );
 #endif
 

@@ -48,6 +48,9 @@ ShaderProgram flat_shader;
 
 /* Private FBO for color picking (keeps pick renders off the display FBO) */
 static GLuint pick_fbo = 0;
+
+/* TRUE once the GL context has been successfully created and initialized */
+static boolean gl_initialized = FALSE;
 static GLuint pick_color_rb = 0;
 static GLuint pick_depth_rb = 0;
 static int pick_fb_width = 0;
@@ -59,7 +62,7 @@ static boolean pick_fbo_valid = FALSE;
 void
 ogl_make_current( void )
 {
-	if (viewport_gl_area_w != NULL)
+	if (viewport_gl_area_w != NULL && gl_initialized)
 		gtk_gl_area_make_current( GTK_GL_AREA(viewport_gl_area_w) );
 }
 
@@ -96,7 +99,7 @@ ogl_init( void )
 	glDepthFunc( GL_LEQUAL );
 	glEnable( GL_POLYGON_OFFSET_FILL );
 	glPolygonOffset( 1.0, 1.0 );
-	glClearColor( 0.0, 0.0, 0.0, 0.0 );
+	glClearColor( 0.0, 0.0, 0.0, 1.0 );
 
 	/* Initialize texture-mapped text engine */
 	text_init( );
@@ -137,13 +140,12 @@ ogl_init( void )
 void
 ogl_resize( void )
 {
-	GtkAllocation allocation;
 	int width, height;
 
-	gtk_widget_get_allocation( viewport_gl_area_w, &allocation );
-	width = allocation.width;
-	height = allocation.height;
-	glViewport( 0, 0, width, height );
+	width = gtk_widget_get_width( viewport_gl_area_w );
+	height = gtk_widget_get_height( viewport_gl_area_w );
+	if (width > 0 && height > 0)
+		glViewport( 0, 0, width, height );
 }
 
 
@@ -302,6 +304,12 @@ ogl_color_pick( int x, int y, unsigned int *face_id )
 	unsigned char pixel[4] = { 0, 0, 0, 0 };
 	unsigned int node_id;
 
+	/* Bail if GL context was never created */
+	if (!gl_initialized) {
+		*face_id = 0;
+		return 0;
+	}
+
 	/* Ensure GL context is current */
 	ogl_make_current( );
 
@@ -331,7 +339,7 @@ ogl_color_pick( int x, int y, unsigned int *face_id )
 		/* Restore GtkGLArea's FBO and GL state for normal rendering */
 		gtk_gl_area_attach_buffers( GTK_GL_AREA(viewport_gl_area_w) );
 		glViewport( viewport[0], viewport[1], viewport[2], viewport[3] );
-		glClearColor( 0.0, 0.0, 0.0, 0.0 );
+		glClearColor( 0.0, 0.0, 0.0, 1.0 );
 		glEnable( GL_DEPTH_TEST );
 		glEnable( GL_CULL_FACE );
 		glEnable( GL_POLYGON_OFFSET_FILL );
@@ -367,11 +375,17 @@ ogl_pick_invalidate( void )
 static void
 realize_cb( GtkWidget *widget, G_GNUC_UNUSED gpointer user_data )
 {
+	const GError *err;
+
 	gtk_gl_area_make_current( GTK_GL_AREA(widget) );
-	if (gtk_gl_area_get_error( GTK_GL_AREA(widget) ) != NULL)
+	err = gtk_gl_area_get_error( GTK_GL_AREA(widget) );
+	if (err != NULL) {
+		g_warning( "GtkGLArea GL context error: %s", err->message );
 		return;
+	}
 
 	ogl_init( );
+	gl_initialized = TRUE;
 
 	/* Queue the initial render */
 	gtk_gl_area_queue_render( GTK_GL_AREA(widget) );
@@ -382,6 +396,8 @@ realize_cb( GtkWidget *widget, G_GNUC_UNUSED gpointer user_data )
 static gboolean
 render_cb( G_GNUC_UNUSED GtkGLArea *area, G_GNUC_UNUSED GdkGLContext *context, G_GNUC_UNUSED gpointer user_data )
 {
+	if (!gl_initialized)
+		return TRUE;
 	ogl_draw( );
 	return TRUE;
 }
@@ -391,6 +407,8 @@ render_cb( G_GNUC_UNUSED GtkGLArea *area, G_GNUC_UNUSED GdkGLContext *context, G
 static void
 resize_cb( G_GNUC_UNUSED GtkGLArea *area, gint width, gint height, G_GNUC_UNUSED gpointer user_data )
 {
+	if (!gl_initialized)
+		return;
 	glViewport( 0, 0, width, height );
 }
 
@@ -407,8 +425,9 @@ ogl_widget_new( void )
 	/* We control when rendering happens (via queue_render from animation loop) */
 	gtk_gl_area_set_auto_render( GTK_GL_AREA(viewport_gl_area_w), FALSE );
 
-	/* Request GL 3.3 core profile (GtkGLArea default) */
-	gtk_gl_area_set_required_version( GTK_GL_AREA(viewport_gl_area_w), 3, 3 );
+	/* Allow both GL and GLES — GTK4 will pick what works on this system.
+	 * Our shaders use GLSL 330 which maps to GL 3.3 core or GLES 3.0. */
+	gtk_gl_area_set_allowed_apis( GTK_GL_AREA(viewport_gl_area_w), GDK_GL_API_GL | GDK_GL_API_GLES );
 
 	/* Connect signals */
 	g_signal_connect( viewport_gl_area_w, "realize", G_CALLBACK(realize_cb), NULL );

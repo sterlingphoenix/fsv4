@@ -98,58 +98,62 @@ dnode_from_iter( GtkTreeIter *iter )
 }
 
 
-/* Callback for button press in the directory tree area */
-static int
-dirtree_select_cb( GtkWidget *tree_w, GdkEventButton *ev_button )
+/* Callback for click in the directory tree area (GtkGestureClick) */
+static void
+dirtree_select_cb( GtkGestureClick *gesture, int n_press, double x, double y, G_GNUC_UNUSED gpointer user_data )
 {
+	GtkWidget *tree_w = gtk_event_controller_get_widget( GTK_EVENT_CONTROLLER(gesture) );
 	GNode *dnode;
 	GtkTreePath *path;
 	GtkTreeViewColumn *column;
 	GtkTreeSelection *sel;
+	int button;
 
 	/* If About presentation is up, end it */
 	about( ABOUT_END );
 
 	if (globals.fsv_mode == FSV_SPLASH)
-		return FALSE;
+		return;
+
+	button = gtk_gesture_single_get_current_button( GTK_GESTURE_SINGLE(gesture) );
 
 	/* Find which row was clicked */
 	if (!gtk_tree_view_get_path_at_pos( GTK_TREE_VIEW(tree_w),
-			(int)ev_button->x, (int)ev_button->y,
+			(int)x, (int)y,
 			&path, &column, NULL, NULL ))
-		return FALSE;
+		return;
 
 	dnode = dnode_from_path( path );
 	if (dnode == NULL) {
 		gtk_tree_path_free( path );
-		return FALSE;
+		return;
 	}
 
 	/* A single-click from button 1 highlights the node, shows the
 	 * name, and updates the file list if necessary */
-	if ((ev_button->button == 1) && (ev_button->type == GDK_BUTTON_PRESS)) {
+	if ((button == 1) && (n_press == 1)) {
 		geometry_highlight_node( dnode, FALSE );
 		window_statusbar( SB_RIGHT, node_absname( dnode ) );
 		if (dnode != dirtree_current_dnode)
 			filelist_populate( dnode );
 		dirtree_current_dnode = dnode;
 		gtk_tree_path_free( path );
-		return FALSE;
+		return;
 	}
 
 	/* A double-click from button 1 gets the camera moving */
-	if ((ev_button->button == 1) && (ev_button->type == GDK_2BUTTON_PRESS)) {
+	if ((button == 1) && (n_press == 2)) {
 		camera_look_at( dnode );
-		/* Preempt the forthcoming tree expand/collapse */
-		g_signal_stop_emission_by_name( G_OBJECT(tree_w), "button_press_event" );
+		/* Claim the gesture to preempt tree expand/collapse */
+		gtk_gesture_set_state( GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED );
 		gtk_tree_path_free( path );
-		return TRUE;
+		return;
 	}
 
 	/* A click from button 3 selects the row, highlights the node,
 	 * shows the name, updates the file list if necessary, and brings
 	 * up a context-sensitive menu */
-	if (ev_button->button == 3) {
+	if (button == 3) {
 		sel = gtk_tree_view_get_selection( GTK_TREE_VIEW(tree_w) );
 		gtk_tree_selection_select_path( sel, path );
 		geometry_highlight_node( dnode, FALSE );
@@ -157,13 +161,12 @@ dirtree_select_cb( GtkWidget *tree_w, GdkEventButton *ev_button )
 		if (dnode != dirtree_current_dnode)
 			filelist_populate( dnode );
 		dirtree_current_dnode = dnode;
-		context_menu( dnode, ev_button );
+		context_menu( dnode, tree_w, x, y );
 		gtk_tree_path_free( path );
-		return FALSE;
+		return;
 	}
 
 	gtk_tree_path_free( path );
-	return FALSE;
 }
 
 
@@ -233,7 +236,12 @@ dirtree_pass_widget( GtkWidget *tree_w )
 	dir_tree_w = tree_w;
 
 	/* Connect signal handlers */
-	g_signal_connect( G_OBJECT(dir_tree_w), "button_press_event", G_CALLBACK(dirtree_select_cb), NULL );
+	{
+		GtkGesture *click = gtk_gesture_click_new( );
+		gtk_gesture_single_set_button( GTK_GESTURE_SINGLE(click), 0 ); /* all buttons */
+		g_signal_connect( click, "pressed", G_CALLBACK(dirtree_select_cb), NULL );
+		gtk_widget_add_controller( dir_tree_w, GTK_EVENT_CONTROLLER(click) );
+	}
 	g_signal_connect( G_OBJECT(dir_tree_w), "row-collapsed", G_CALLBACK(dirtree_collapse_cb), NULL );
 	g_signal_connect( G_OBJECT(dir_tree_w), "row-expanded", G_CALLBACK(dirtree_expand_cb), NULL );
 

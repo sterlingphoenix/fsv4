@@ -46,7 +46,7 @@
 
 /* Mapping of CSS cursor names to traditional X cursor names.
  * Incomplete cursor themes (e.g. whiteglass) may have the traditional
- * X cursors but lack the CSS names that GTK 3 widgets request.
+ * X cursors but lack the CSS names that GTK 4 widgets request.
  * Multiple fallbacks are listed per CSS name (first match wins). */
 #define MAX_CURSOR_FALLBACKS 3
 static const struct {
@@ -106,9 +106,9 @@ detect_cursor_theme( void )
 		}
 	}
 
-	/* User's GTK 3 settings file */
+	/* User's GTK 4 settings file */
 	kf = g_key_file_new( );
-	path = g_build_filename( g_get_home_dir( ), ".config", "gtk-3.0",
+	path = g_build_filename( g_get_home_dir( ), ".config", "gtk-4.0",
 		"settings.ini", NULL );
 	if (g_key_file_load_from_file( kf, path, G_KEY_FILE_NONE, NULL ))
 		theme = g_key_file_get_string( kf, "Settings",
@@ -118,9 +118,9 @@ detect_cursor_theme( void )
 	if (theme != NULL)
 		return theme;
 
-	/* System-wide GTK 3 settings */
+	/* System-wide GTK 4 settings */
 	kf = g_key_file_new( );
-	if (g_key_file_load_from_file( kf, "/etc/gtk-3.0/settings.ini",
+	if (g_key_file_load_from_file( kf, "/etc/gtk-4.0/settings.ini",
 			G_KEY_FILE_NONE, NULL ))
 		theme = g_key_file_get_string( kf, "Settings",
 			"gtk-cursor-theme-name", NULL );
@@ -207,7 +207,7 @@ find_cursor_dir( const char *theme_name )
 
 /* Creates a temporary overlay directory with symlinks from CSS cursor
  * names to traditional X cursor names for the active cursor theme.
- * This allows GTK 3 widgets (GtkPaned dividers, GtkTreeView column
+ * This allows GTK 4 widgets (GtkPaned dividers, GtkTreeView column
  * resize handles, etc.) to show correct cursors even when the theme
  * lacks CSS-named cursor files.
  * Must be called BEFORE gtk_init( ) so that Xcursor picks up the
@@ -313,16 +313,30 @@ cursor_theme_fixup( void )
 }
 
 
-/* Suppresses "Unable to load X from the cursor theme" GDK messages.
- * These are benign warnings that may still occur if the cursor theme
- * lacks both the CSS name and its traditional X equivalent. */
-static void
-gdk_message_handler( const gchar *log_domain, GLogLevelFlags log_level,
-                     const gchar *message, G_GNUC_UNUSED gpointer user_data )
+/* Suppresses benign GTK/GDK warnings:
+ * - "Unable to load X from the cursor theme" — incomplete cursor themes
+ * - "reported baselines" — GtkImage from pixbuf in GTK 4.x reports
+ *   invalid baselines (G_MININT); cosmetic, no functional impact */
+static GLogWriterOutput
+log_writer_filter( GLogLevelFlags log_level, const GLogField *fields,
+                   gsize n_fields, G_GNUC_UNUSED gpointer user_data )
 {
-	if (message != NULL && strstr( message, "from the cursor theme" ) != NULL)
-		return;
-	g_log_default_handler( log_domain, log_level, message, user_data );
+	gsize i;
+
+	for (i = 0; i < n_fields; i++) {
+		if (strcmp( fields[i].key, "MESSAGE" ) == 0) {
+			const char *msg = (const char *)fields[i].value;
+			if (msg != NULL) {
+				if (strstr( msg, "from the cursor theme" ) != NULL)
+					return G_LOG_WRITER_HANDLED;
+				if (strstr( msg, "reported baselines" ) != NULL)
+					return G_LOG_WRITER_HANDLED;
+			}
+			break;
+		}
+	}
+
+	return g_log_writer_default( log_level, fields, n_fields, user_data );
 }
 
 
@@ -339,6 +353,9 @@ enum {
 
 /* Initial visualization mode */
 static FsvMode initial_fsv_mode = FSV_MAPV;
+
+/* Root directory to scan (set during command-line parsing) */
+static char *initial_root_dir = NULL;
 
 /* Token strings for config file */
 static const char *tokens_fsv_mode[] = { "discv", "mapv", "treev", NULL };
@@ -510,15 +527,41 @@ fsv_write_config( void )
 }
 
 
+/* Idle callback to load filesystem after window is realized */
+static gboolean
+load_after_realize( G_GNUC_UNUSED gpointer user_data )
+{
+	fsv_load( initial_root_dir );
+	xfree( initial_root_dir );
+	initial_root_dir = NULL;
+	return G_SOURCE_REMOVE;
+}
+
+
+/* GtkApplication "activate" callback */
+static void
+app_activate_cb( GtkApplication *app, G_GNUC_UNUSED gpointer user_data )
+{
+	window_init( app, initial_fsv_mode );
+	color_init( );
+
+	/* Schedule filesystem load after the window is realized and
+	 * the GL context is available */
+	g_idle_add( load_after_realize, NULL );
+}
+
+
 int
 main( int argc, char **argv )
 {
+	GtkApplication *app;
 	int opt_id;
-	char *root_dir;
+	int status;
 
 	/* Initialize global variables */
 	globals.fstree = NULL;
 	globals.history = NULL;
+	globals.fsv_mode = FSV_SPLASH;
 	/* Set sane camera state so setup_modelview_matrix( ) in ogl.c
 	 * doesn't choke. (It does get called in splash screen mode) */
 	camera->fov = 45.0;
@@ -603,7 +646,7 @@ main( int argc, char **argv )
 	/* Determine root directory */
 	if (optind < argc) {
                 /* From command line */
-		root_dir = xstrdup( argv[optind++] );
+		initial_root_dir = xstrdup( argv[optind++] );
 		if (optind < argc) {
 			/* Excess arguments! */
 			fprintf( stderr, _("Junk in command line:") );
@@ -615,26 +658,26 @@ main( int argc, char **argv )
 	}
 	else {
 		/* Use current directory */
-		root_dir = xstrdup( "." );
+		initial_root_dir = xstrdup( "." );
 	}
 
 	/* Validate root directory */
 	{
 		struct stat st;
 
-		if (stat( root_dir, &st ) != 0) {
+		if (stat( initial_root_dir, &st ) != 0) {
 			fprintf( stderr, _("fsv: %s: %s\n"),
-				root_dir, strerror( errno ) );
+				initial_root_dir, strerror( errno ) );
 			exit( EXIT_FAILURE );
 		}
 		if (!S_ISDIR( st.st_mode )) {
 			fprintf( stderr, _("fsv: %s: Not a directory\n"),
-				root_dir );
+				initial_root_dir );
 			exit( EXIT_FAILURE );
 		}
-		if (access( root_dir, R_OK | X_OK ) != 0) {
+		if (access( initial_root_dir, R_OK | X_OK ) != 0) {
 			fprintf( stderr, _("fsv: %s: Permission denied\n"),
-				root_dir );
+				initial_root_dir );
 			exit( EXIT_FAILURE );
 		}
 	}
@@ -642,26 +685,19 @@ main( int argc, char **argv )
 	/* Patch incomplete cursor themes before GTK opens the display */
 	cursor_theme_fixup( );
 
-	/* Initialize GTK+ */
-	gtk_init( &argc, &argv );
+	/* Initialize GTK */
+	gtk_init( );
 
-	/* Suppress any remaining cursor theme warnings from GDK */
-	g_log_set_handler( "Gdk", G_LOG_LEVEL_MESSAGE,
-		gdk_message_handler, NULL );
+	/* Suppress benign GDK/GTK warnings (cursor theme, image baselines) */
+	g_log_set_writer_func( log_writer_filter, NULL, NULL );
 
-	/* Check for OpenGL support */
-	if (!ogl_gl_query( ))
-		quit( _("fsv requires OpenGL support.") );
+	/* Create application and run */
+	app = gtk_application_new( "com.freakzilla.fsv", G_APPLICATION_DEFAULT_FLAGS );
+	g_signal_connect( app, "activate", G_CALLBACK(app_activate_cb), NULL );
+	status = g_application_run( G_APPLICATION(app), 1, argv );
+	g_object_unref( app );
 
-	window_init( initial_fsv_mode );
-	color_init( );
-
-	fsv_load( root_dir );
-	xfree( root_dir );
-
-	gtk_main( );
-
-	return 0;
+	return status;
 }
 
 
