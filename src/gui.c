@@ -1179,55 +1179,69 @@ gui_entry_window( const char *title, const char *init_text, GCallback ok_callbac
 }
 
 
-/* Internal callback for the file chooser dialog response */
+/* Data passed to the async file dialog completion callback */
+struct FileSelData {
+	GCallback callback;
+	void *callback_data;
+};
+
+/* Async completion callback for the file/folder dialog */
 static void
-filesel_window_response_cb( GtkDialog *dialog, gint response_id, G_GNUC_UNUSED gpointer data )
+filesel_dialog_done_cb( GObject *source, GAsyncResult *result, gpointer user_data )
 {
+	GtkFileDialog *dialog = GTK_FILE_DIALOG(source);
+	struct FileSelData *fsd = (struct FileSelData *)user_data;
 	GFile *file;
 	char *filename;
 	void (*user_callback)( const char *, void * );
-	void *user_callback_data;
 
-	if (response_id == GTK_RESPONSE_ACCEPT) {
-		file = gtk_file_chooser_get_file( GTK_FILE_CHOOSER(dialog) );
+	/* Try select_folder_finish first, then open_finish */
+	file = gtk_file_dialog_select_folder_finish( dialog, result, NULL );
+	if (file == NULL)
+		file = gtk_file_dialog_open_finish( dialog, result, NULL );
+	if (file != NULL) {
 		filename = g_file_get_path( file );
 		g_object_unref( file );
-		user_callback = (void (*)( const char *, void * ))g_object_get_data( G_OBJECT(dialog), "user_callback" );
-		user_callback_data = g_object_get_data( G_OBJECT(dialog), "user_callback_data" );
-		gtk_window_destroy( GTK_WINDOW(dialog) );
-
-		(user_callback)( filename, user_callback_data );
-
+		user_callback = (void (*)( const char *, void * ))fsd->callback;
+		(user_callback)( filename, fsd->callback_data );
 		g_free( filename );
 	}
-	else {
-		gtk_window_destroy( GTK_WINDOW(dialog) );
-	}
+	g_free( fsd );
 }
 
 
-/* Creates a file chooser window */
-GtkWidget *
-gui_filesel_window( const char *title, const char *init_filename, GCallback ok_callback, void *ok_callback_data )
+/* Opens a file/folder chooser dialog (async).
+ * If select_folder is TRUE, opens a folder chooser instead. */
+void
+gui_filesel_window( const char *title, const char *init_filename, GCallback ok_callback, void *ok_callback_data, boolean select_folder )
 {
-	GtkWidget *filesel_window_w;
+	GtkFileDialog *dialog;
+	GtkWindow *parent;
+	struct FileSelData *fsd;
+	GFile *init_folder = NULL;
 
-	filesel_window_w = gtk_file_chooser_dialog_new( title, NULL,
-		GTK_FILE_CHOOSER_ACTION_OPEN,
-		_("_Cancel"), GTK_RESPONSE_CANCEL,
-		_("_OK"), GTK_RESPONSE_ACCEPT,
-		NULL );
+	dialog = gtk_file_dialog_new( );
+	gtk_file_dialog_set_title( dialog, title );
+	gtk_file_dialog_set_modal( dialog, TRUE );
+
 	if (init_filename != NULL) {
-		GFile *file = g_file_new_for_path( init_filename );
-		gtk_file_chooser_set_file( GTK_FILE_CHOOSER(filesel_window_w), file, NULL );
-		g_object_unref( file );
+		init_folder = g_file_new_for_path( init_filename );
+		gtk_file_dialog_set_initial_folder( dialog, init_folder );
 	}
-	g_object_set_data( G_OBJECT(filesel_window_w), "user_callback", (void *)ok_callback );
-	g_object_set_data( G_OBJECT(filesel_window_w), "user_callback_data", ok_callback_data );
-	g_signal_connect( G_OBJECT(filesel_window_w), "response", G_CALLBACK(filesel_window_response_cb), NULL );
-	gtk_window_set_modal( GTK_WINDOW(filesel_window_w), TRUE );
 
-	return filesel_window_w;
+	parent = GTK_WINDOW(gtk_application_get_active_window( GTK_APPLICATION(g_application_get_default( )) ));
+
+	fsd = g_new( struct FileSelData, 1 );
+	fsd->callback = ok_callback;
+	fsd->callback_data = ok_callback_data;
+
+	if (select_folder)
+		gtk_file_dialog_select_folder( dialog, parent, NULL, filesel_dialog_done_cb, fsd );
+	else
+		gtk_file_dialog_open( dialog, parent, NULL, filesel_dialog_done_cb, fsd );
+
+	if (init_folder != NULL)
+		g_object_unref( init_folder );
 }
 
 

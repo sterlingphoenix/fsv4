@@ -79,7 +79,6 @@ change_root_cb( const char *dir )
 void
 dialog_change_root( void )
 {
-	GtkWidget *filesel_window_w;
 	const char *root_name;
 	char *dir;
 
@@ -95,17 +94,11 @@ dialog_change_root( void )
 	gui_cursor( main_window_w, "wait" );
 	gui_update( );
 
-	filesel_window_w = gui_filesel_window( _("Change Root Directory"), dir, G_CALLBACK(change_root_cb), NULL );
+	gui_filesel_window( _("Change Root Directory"), dir, G_CALLBACK(change_root_cb), NULL, TRUE );
 	xfree( dir );
 
 	gui_cursor( main_window_w, NULL );
 	gui_update( );
-
-	/* Make it a directory chooser */
-	gtk_file_chooser_set_action( GTK_FILE_CHOOSER(filesel_window_w), GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER );
-	gui_window_modalize( filesel_window_w, main_window_w );
-
-	gtk_window_present( GTK_WINDOW(filesel_window_w) );
 }
 
 

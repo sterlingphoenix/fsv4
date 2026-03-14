@@ -299,12 +299,12 @@ Step 7.1 - GtkComboBoxText → GtkDropDown
       color setup dialog works correctly
 
 Step 7.2 - GtkColorChooser → GtkColorDialog
-  [ ] Replace GtkColorChooserDialog with GtkColorDialog +
+  [x] Replace GtkColorChooserDialog with GtkColorDialog +
       gtk_color_dialog_choose_rgba (async)
-  [ ] Replace GtkColorButton with GtkColorDialogButton
-  [ ] Update gui.c (gui_colorsel_window, gui_colorpicker_add,
+  [x] Replace GtkColorButton with GtkColorDialogButton
+  [x] Update gui.c (gui_colorsel_window, gui_colorpicker_add,
       gui_colorpicker_set_color) and dialog.c callers
-  [ ] Verify: builds with no GtkColorChooser deprecation warnings,
+  [x] Verify: builds with no GtkColorChooser deprecation warnings,
       color picker and color setup dialog work correctly
 
 Step 7.3 - GtkFileChooserDialog → GtkFileDialog
