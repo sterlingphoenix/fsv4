@@ -806,13 +806,11 @@ gui_pixmap_xpm_add( GtkWidget *parent_w, char **xpm_data )
 {
 	GtkWidget *image_w;
 	GdkPixbuf *pixbuf;
-	GdkTexture *texture;
 
 	pixbuf = gdk_pixbuf_new_from_xpm_data( (const char **)xpm_data );
-	texture = gdk_texture_new_for_pixbuf( pixbuf );
-	image_w = gtk_image_new_from_paintable( GDK_PAINTABLE(texture) );
-	gtk_widget_set_valign( image_w, GTK_ALIGN_CENTER );
-	g_object_unref( texture );
+G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+	image_w = gtk_image_new_from_pixbuf( pixbuf );
+G_GNUC_END_IGNORE_DEPRECATIONS
 	g_object_unref( pixbuf );
 	parent_child( parent_w, image_w );
 

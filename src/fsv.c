@@ -313,16 +313,30 @@ cursor_theme_fixup( void )
 }
 
 
-/* Suppresses "Unable to load X from the cursor theme" GDK messages.
- * These are benign warnings that may still occur if the cursor theme
- * lacks both the CSS name and its traditional X equivalent. */
-static void
-gdk_message_handler( const gchar *log_domain, GLogLevelFlags log_level,
-                     const gchar *message, G_GNUC_UNUSED gpointer user_data )
+/* Suppresses benign GTK/GDK warnings:
+ * - "Unable to load X from the cursor theme" — incomplete cursor themes
+ * - "reported baselines" — GtkImage from pixbuf in GTK 4.x reports
+ *   invalid baselines (G_MININT); cosmetic, no functional impact */
+static GLogWriterOutput
+log_writer_filter( GLogLevelFlags log_level, const GLogField *fields,
+                   gsize n_fields, G_GNUC_UNUSED gpointer user_data )
 {
-	if (message != NULL && strstr( message, "from the cursor theme" ) != NULL)
-		return;
-	g_log_default_handler( log_domain, log_level, message, user_data );
+	gsize i;
+
+	for (i = 0; i < n_fields; i++) {
+		if (strcmp( fields[i].key, "MESSAGE" ) == 0) {
+			const char *msg = (const char *)fields[i].value;
+			if (msg != NULL) {
+				if (strstr( msg, "from the cursor theme" ) != NULL)
+					return G_LOG_WRITER_HANDLED;
+				if (strstr( msg, "reported baselines" ) != NULL)
+					return G_LOG_WRITER_HANDLED;
+			}
+			break;
+		}
+	}
+
+	return g_log_writer_default( log_level, fields, n_fields, user_data );
 }
 
 
@@ -674,9 +688,8 @@ main( int argc, char **argv )
 	/* Initialize GTK */
 	gtk_init( );
 
-	/* Suppress any remaining cursor theme warnings from GDK */
-	g_log_set_handler( "Gdk", G_LOG_LEVEL_MESSAGE,
-		gdk_message_handler, NULL );
+	/* Suppress benign GDK/GTK warnings (cursor theme, image baselines) */
+	g_log_set_writer_func( log_writer_filter, NULL, NULL );
 
 	/* Create application and run */
 	app = gtk_application_new( "com.freakzilla.fsv", G_APPLICATION_DEFAULT_FLAGS );

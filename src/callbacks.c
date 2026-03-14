@@ -60,7 +60,11 @@ on_file_save_settings_activate( G_GNUC_UNUSED GSimpleAction *action, G_GNUC_UNUS
 void
 on_file_exit_activate( G_GNUC_UNUSED GSimpleAction *action, G_GNUC_UNUSED GVariant *parameter, G_GNUC_UNUSED gpointer user_data )
 {
-	exit( EXIT_SUCCESS );
+	GApplication *app = g_application_get_default( );
+	if (app != NULL)
+		g_application_quit( app );
+	else
+		exit( EXIT_SUCCESS );
 }
 
 

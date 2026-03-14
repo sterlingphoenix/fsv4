@@ -268,12 +268,12 @@ Step 6.1 - Build system and dependencies
   [x] Verify: configure step finds GTK 4
 
 Step 6.2 - Widget API updates
-  [ ] Replace deprecated GTK 3 APIs with GTK 4 equivalents
+  [x] Replace deprecated GTK 3 APIs with GTK 4 equivalents
       (this will be a detailed list once Phase 5 is complete — the
       specific changes depend on what GTK 3 APIs remain in use)
-  [ ] GtkGLArea API changes (if any) between GTK 3 and 4
-  [ ] Event handling migration (GdkEvent changes in GTK 4)
-  [ ] Verify: builds and runs on GTK 4
+  [x] GtkGLArea API changes (if any) between GTK 3 and 4
+  [x] Event handling migration (GdkEvent changes in GTK 4)
+  [x] Verify: builds and runs on GTK 4
 
 Step 6.3 - Final verification
   [ ] Test all three visualization modes
