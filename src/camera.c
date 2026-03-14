@@ -364,9 +364,9 @@ camera_scrollbar_move_cb( GtkAdjustment *adj, const char *mesg )
 void
 camera_pass_scrollbar_widgets( GtkWidget *x_scrollbar_w, GtkWidget *y_scrollbar_w )
 {
-	/* Get the adjustments */
-	x_scrollbar_adj = gtk_range_get_adjustment( GTK_RANGE(x_scrollbar_w) );
-	y_scrollbar_adj = gtk_range_get_adjustment( GTK_RANGE(y_scrollbar_w) );
+	/* Get the adjustments (GTK4: GtkScrollbar is not a GtkRange) */
+	x_scrollbar_adj = gtk_scrollbar_get_adjustment( GTK_SCROLLBAR(x_scrollbar_w) );
+	y_scrollbar_adj = gtk_scrollbar_get_adjustment( GTK_SCROLLBAR(y_scrollbar_w) );
 
 	/* Connect signal handlers */
 	g_signal_connect( G_OBJECT(x_scrollbar_adj), "value_changed", G_CALLBACK(camera_scrollbar_move_cb), x_axis_mesg );
@@ -581,6 +581,8 @@ treev_get_scrollbar_states( AdjValues *x_adj, AdjValues *y_adj )
 static void
 adj_apply( GtkAdjustment *adj, const AdjValues *vals )
 {
+	double lower, upper, value, step, page, page_size;
+
 	if (!isfinite( vals->lower ) || !isfinite( vals->upper ) ||
 	    !isfinite( vals->value ) || !isfinite( vals->step_increment ) ||
 	    !isfinite( vals->page_increment ) || !isfinite( vals->page_size )) {
@@ -588,13 +590,25 @@ adj_apply( GtkAdjustment *adj, const AdjValues *vals )
 		gtk_adjustment_configure( adj, 0.0, 0.0, 100.0, 0.0, 0.0, 100.0 );
 		return;
 	}
-	gtk_adjustment_configure( adj,
-		vals->value,
-		vals->lower,
-		vals->upper,
-		vals->step_increment,
-		vals->page_increment,
-		vals->page_size );
+
+	lower = vals->lower;
+	upper = vals->upper;
+	value = vals->value;
+	step = vals->step_increment;
+	page = vals->page_increment;
+	page_size = vals->page_size;
+
+	/* GTK4 enforces lower + page_size <= upper */
+	if (lower + page_size > upper)
+		upper = lower + page_size;
+
+	/* Clamp value into valid range */
+	if (value < lower)
+		value = lower;
+	if (value > upper - page_size)
+		value = upper - page_size;
+
+	gtk_adjustment_configure( adj, value, lower, upper, step, page, page_size );
 }
 
 

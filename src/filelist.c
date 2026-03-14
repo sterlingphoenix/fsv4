@@ -242,10 +242,11 @@ filelist_show_entry( GNode *node )
 }
 
 
-/* Callback for a click in the file list area */
-static int
-filelist_select_cb( GtkWidget *tree_w, GdkEventButton *ev_button )
+/* Callback for a click in the file list area (GtkGestureClick) */
+static void
+filelist_select_cb( GtkGestureClick *gesture, int n_press, double x, double y, G_GNUC_UNUSED gpointer user_data )
 {
+	GtkWidget *tree_w = gtk_event_controller_get_widget( GTK_EVENT_CONTROLLER(gesture) );
 	GNode *node;
 	GtkTreePath *path;
 	GtkTreeViewColumn *column;
@@ -253,22 +254,25 @@ filelist_select_cb( GtkWidget *tree_w, GdkEventButton *ev_button )
 	GtkTreeIter iter;
 	GtkTreeSelection *sel;
 	int data_col;
+	int button;
 
 	/* If About presentation is up, end it */
 	about( ABOUT_END );
 
 	if (globals.fsv_mode == FSV_SPLASH)
-		return FALSE;
+		return;
+
+	button = gtk_gesture_single_get_current_button( GTK_GESTURE_SINGLE(gesture) );
 
 	if (!gtk_tree_view_get_path_at_pos( GTK_TREE_VIEW(tree_w),
-			(int)ev_button->x, (int)ev_button->y,
+			(int)x, (int)y,
 			&path, &column, NULL, NULL ))
-		return FALSE;
+		return;
 
 	model = gtk_tree_view_get_model( GTK_TREE_VIEW(tree_w) );
 	if (!gtk_tree_model_get_iter( model, &iter, path )) {
 		gtk_tree_path_free( path );
-		return FALSE;
+		return;
 	}
 
 	/* Get node pointer from data column */
@@ -276,38 +280,37 @@ filelist_select_cb( GtkWidget *tree_w, GdkEventButton *ev_button )
 	gtk_tree_model_get( model, &iter, data_col, &node, -1 );
 	if (node == NULL) {
 		gtk_tree_path_free( path );
-		return FALSE;
+		return;
 	}
 
 	/* A single-click from button 1 highlights the node and shows the name */
-	if ((ev_button->button == 1) && (ev_button->type == GDK_BUTTON_PRESS)) {
+	if ((button == 1) && (n_press == 1)) {
 		geometry_highlight_node( node, FALSE );
 		window_statusbar( SB_RIGHT, node_absname( node ) );
 		gtk_tree_path_free( path );
-		return FALSE;
+		return;
 	}
 
 	/* A double-click from button 1 gets the camera moving */
-	if ((ev_button->button == 1) && (ev_button->type == GDK_2BUTTON_PRESS)) {
+	if ((button == 1) && (n_press == 2)) {
 		camera_look_at( node );
 		gtk_tree_path_free( path );
-		return FALSE;
+		return;
 	}
 
 	/* A click from button 3 selects the row, highlights the node,
 	 * shows the name, and pops up a context-sensitive menu */
-	if (ev_button->button == 3) {
+	if (button == 3) {
 		sel = gtk_tree_view_get_selection( GTK_TREE_VIEW(tree_w) );
 		gtk_tree_selection_select_path( sel, path );
 		geometry_highlight_node( node, FALSE );
 		window_statusbar( SB_RIGHT, node_absname( node ) );
-		context_menu( node, ev_button );
+		context_menu( node, tree_w, x, y );
 		gtk_tree_path_free( path );
-		return FALSE;
+		return;
 	}
 
 	gtk_tree_path_free( path );
-	return FALSE;
 }
 
 
@@ -318,10 +321,18 @@ filelist_init( void )
 	GtkWidget *parent_w;
 
 	/* Replace current tree view widget with a single-column one */
-	parent_w = gtk_widget_get_parent( gtk_widget_get_parent( file_tree_w ) );
-	gtk_widget_destroy( gtk_widget_get_parent( file_tree_w ) );
+	{
+		GtkWidget *old_scroll_w = gtk_widget_get_parent( file_tree_w );
+		parent_w = gtk_widget_get_parent( old_scroll_w );
+		gtk_widget_unparent( old_scroll_w );
+	}
 	file_tree_w = gui_clist_add( parent_w, 1, NULL );
-	g_signal_connect( G_OBJECT(file_tree_w), "button_press_event", G_CALLBACK(filelist_select_cb), NULL );
+	{
+		GtkGesture *click = gtk_gesture_click_new( );
+		gtk_gesture_single_set_button( GTK_GESTURE_SINGLE(click), 0 );
+		g_signal_connect( click, "pressed", G_CALLBACK(filelist_select_cb), NULL );
+		gtk_widget_add_controller( file_tree_w, GTK_EVENT_CONTROLLER(click) );
+	}
 
 	filelist_populate( root_dnode );
 
@@ -348,8 +359,11 @@ filelist_scan_monitor_init( void )
 	col_titles[2] = _("Bytes");
 
 	/* Replace current tree view widget with a 3-column one */
-	parent_w = gtk_widget_get_parent( gtk_widget_get_parent( file_tree_w ) );
-	gtk_widget_destroy( gtk_widget_get_parent( file_tree_w ) );
+	{
+		GtkWidget *old_scroll_w = gtk_widget_get_parent( file_tree_w );
+		parent_w = gtk_widget_get_parent( old_scroll_w );
+		gtk_widget_unparent( old_scroll_w );
+	}
 	file_tree_w = gui_clist_add( parent_w, 3, col_titles );
 
 	/* Place icons and static text */

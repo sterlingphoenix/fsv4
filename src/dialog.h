@@ -28,9 +28,9 @@
 #define FSV_DIALOGS_H
 
 
-#ifdef __GTK_H__
+#ifdef GTK_WIDGET
 void dialog_pass_main_window_widget( GtkWidget *window_w );
-void context_menu( GNode *node, GdkEventButton *ev_button );
+void context_menu( GNode *node, GtkWidget *parent_widget, double x, double y );
 #endif
 void dialog_change_root( void );
 void dialog_color_setup( void );

@@ -2,7 +2,7 @@
 
 NOTE: this project **is** actively maintained! However, it is a stepping stone to a complete modernisation. 
 
-This is the fork that updates from gtk2 to gtk3. This enables building on a modern Linux system (test case was Ubuntu 25.10).
+This is the fork that updates to GTK 4 with a modern OpenGL 3.3 core profile rendering pipeline. This enables building on a modern Linux system (test case was Ubuntu 25.10).
 
 
 This repo is a fork of [fsv](https://github.com/mcuelenaere/fsv), which is itself a fork of [fsv](http://fsv.sourceforge.net/).
@@ -23,17 +23,14 @@ Its ancestor, SGI's `fsn` (pronounced "fusion") originated on IRIX and was promi
 
 **Requirements**
 
-- GTK 3.16 or later (for GtkGLArea)
+- GTK 4.0 or later
 - libepoxy (for OpenGL function loading)
-- OpenGL compatibility profile (legacy fixed-function pipeline)
-
-The app sets `GDK_GL=legacy` automatically to request a GL compatibility profile context.
-This works on NVIDIA and most Mesa drivers. On Wayland with some Mesa configurations,
-you may need to fall back to X11: `GDK_BACKEND=x11 fsv /path`.
+- cglm (C OpenGL mathematics library)
+- OpenGL 3.3 core profile
 
 **Install**
 
-1. `sudo apt-get install libgtk-3-dev libepoxy-dev libcglm-dev meson ninja-build`
+1. `sudo apt-get install libgtk-4-dev libepoxy-dev libcglm-dev meson ninja-build`
 2. Clone the repository
 3. Build:
     - `meson setup builddir`

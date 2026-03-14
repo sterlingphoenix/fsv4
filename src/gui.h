@@ -1,6 +1,6 @@
 /* gui.h */
 
-/* Higher-level GTK+ interface */
+/* Higher-level GTK interface */
 
 /* fsv - 3D File System Visualizer
  * Copyright (C)1999 Daniel Richard G. <skunk@mit.edu>
@@ -28,9 +28,9 @@
 #define FSV_GUI_H
 
 
-#ifdef __GTK_H__
+#ifdef GTK_WIDGET
 
-/* For clearer gui_*_packing( ) syntax */
+/* For clearer packing syntax (still used as booleans) */
 #define EXPAND		TRUE
 #define NO_EXPAND	FALSE
 #define FILL		TRUE
@@ -45,11 +45,11 @@ struct _Icon {
 	GdkPixbuf *pixbuf;
 };
 
-#endif /* __GTK_H__ */
+#endif /* GTK_WIDGET */
 
 
 void gui_update( void );
-#ifdef __GTK_H__
+#ifdef GTK_WIDGET
 boolean gui_adjustment_widget_busy( GtkAdjustment *adj );
 GtkAdjustment *gui_int_adjustment( int value, int lower, int upper );
 GtkWidget *gui_hbox_add( GtkWidget *parent_w, int spacing );
@@ -74,12 +74,7 @@ char *gui_entry_get_text( GtkWidget *entry_w );
 void gui_entry_highlight( GtkWidget *entry_w );
 GtkWidget *gui_frame_add( GtkWidget *parent_w, const char *title );
 GtkWidget *gui_gl_area_add( GtkWidget *parent_w );
-void gui_keybind( GtkWidget *widget, char *keystroke );
 GtkWidget *gui_label_add( GtkWidget *parent_w, const char *label_text );
-GtkWidget *gui_menu_add( GtkWidget *parent_menu_w, const char *label );
-GtkWidget *gui_menu_item_add( GtkWidget *menu_w, const char *label, GCallback callback, void *callback_data );
-void gui_radio_menu_begin( int init_selected );
-GtkWidget *gui_radio_menu_item_add( GtkWidget *menu_w, const char *label, GCallback callback, void *callback_data );
 GtkWidget *gui_option_menu_add( GtkWidget *parent_w, int init_selected );
 GtkWidget *gui_option_menu_item( const char *label, GCallback callback, void *callback_data );
 GtkWidget *gui_notebook_add( GtkWidget *parent_w );
@@ -102,9 +97,8 @@ GtkWidget *gui_colorsel_window( const char *title, RGBcolor *init_color, GCallba
 GtkWidget *gui_dialog_window( const char *title, GCallback close_callback );
 GtkWidget *gui_entry_window( const char *title, const char *init_text, GCallback ok_callback, void *ok_callback_data );
 GtkWidget *gui_filesel_window( const char *title, const char *init_filename, GCallback ok_callback, void *ok_callback_data );
-void gui_window_icon_xpm( GtkWidget *window_w, char **xpm_data );
 void gui_window_modalize( GtkWidget *window_w, GtkWidget *parent_window_w );
-#endif /* __GTK_H__ */
+#endif /* GTK_WIDGET */
 
 
 /* end gui.h */

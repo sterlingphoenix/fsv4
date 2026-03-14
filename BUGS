@@ -6,3 +6,4 @@ In DiscV, discs render underneath other discs.
 * In TreeV, initial block is very high which leads to the top "vanishing".
 * In TreeV, text often blinks and is partially visible.
 * About page should render a lot faster. 
+* Help menu seems to be too big.

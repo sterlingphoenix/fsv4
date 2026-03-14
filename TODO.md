@@ -263,9 +263,9 @@ GTK 4. The rendering pipeline does not change — only the GTK widget
 and API layer.
 
 Step 6.1 - Build system and dependencies
-  [ ] meson.build: change gtk+-3.0 to gtk4 >= 4.0
-  [ ] README.md: update dependency list
-  [ ] Verify: configure step finds GTK 4
+  [x] meson.build: change gtk+-3.0 to gtk4 >= 4.0
+  [x] README.md: update dependency list
+  [x] Verify: configure step finds GTK 4
 
 Step 6.2 - Widget API updates
   [ ] Replace deprecated GTK 3 APIs with GTK 4 equivalents
