@@ -410,20 +410,20 @@ gui_clist_moveto_row( GtkWidget *tree_view_w, int row, double moveto_time )
 }
 
 
-/* Internal callback for the color picker widget */
+/* Internal callback for the color dialog button "notify::rgba" signal */
 static void
-color_picker_cb( GtkColorButton *colorbutton, gpointer data )
+color_picker_cb( GObject *object, G_GNUC_UNUSED GParamSpec *pspec, gpointer data )
 {
 	void (*user_callback)( RGBcolor *, void * );
 	RGBcolor color;
-	GdkRGBA rgba;
+	const GdkRGBA *rgba;
 
-	gtk_color_chooser_get_rgba( GTK_COLOR_CHOOSER(colorbutton), &rgba );
-	color.r = (float)rgba.red;
-	color.g = (float)rgba.green;
-	color.b = (float)rgba.blue;
+	rgba = gtk_color_dialog_button_get_rgba( GTK_COLOR_DIALOG_BUTTON(object) );
+	color.r = (float)rgba->red;
+	color.g = (float)rgba->green;
+	color.b = (float)rgba->blue;
 
-	user_callback = (void (*)( RGBcolor *, void * ))g_object_get_data( G_OBJECT(colorbutton), "user_callback" );
+	user_callback = (void (*)( RGBcolor *, void * ))g_object_get_data( object, "user_callback" );
 	(user_callback)( &color, data );
 }
 
@@ -433,13 +433,15 @@ GtkWidget *
 gui_colorpicker_add( GtkWidget *parent_w, RGBcolor *init_color, const char *title, GCallback callback, void *callback_data )
 {
 	GtkWidget *colorbutton_w;
+	GtkColorDialog *dialog;
 
-	colorbutton_w = gtk_color_button_new();
-	gui_colorpicker_set_color(colorbutton_w, init_color);
-	gtk_color_button_set_title(GTK_COLOR_BUTTON(colorbutton_w), title);
-	g_signal_connect(G_OBJECT(colorbutton_w), "color-set", G_CALLBACK(color_picker_cb), callback_data);
-	g_object_set_data(G_OBJECT(colorbutton_w), "user_callback", (void *)callback);
-	parent_child(parent_w, colorbutton_w);
+	dialog = gtk_color_dialog_new( );
+	gtk_color_dialog_set_title( dialog, title );
+	colorbutton_w = gtk_color_dialog_button_new( dialog );
+	gui_colorpicker_set_color( colorbutton_w, init_color );
+	g_signal_connect( G_OBJECT(colorbutton_w), "notify::rgba", G_CALLBACK(color_picker_cb), callback_data );
+	g_object_set_data( G_OBJECT(colorbutton_w), "user_callback", (void *)callback );
+	parent_child( parent_w, colorbutton_w );
 
 	return colorbutton_w;
 }
@@ -456,7 +458,7 @@ gui_colorpicker_set_color( GtkWidget *colorbutton_w, RGBcolor *color )
 		.alpha	= 1.0,
 	};
 
-	gtk_color_chooser_set_rgba( GTK_COLOR_CHOOSER(colorbutton_w), &rgba );
+	gtk_color_dialog_button_set_rgba( GTK_COLOR_DIALOG_BUTTON(colorbutton_w), &rgba );
 }
 
 
@@ -689,48 +691,52 @@ static struct OptionMenuItem optmenu_items[16];
 static int optmenu_item_count = 0;
 
 
-/* Callback dispatcher for combo box "changed" signal */
+/* Callback dispatcher for GtkDropDown "notify::selected" signal */
 static void
-option_menu_changed_cb( GtkComboBox *combo, G_GNUC_UNUSED gpointer data )
+option_menu_selected_cb( GObject *object, G_GNUC_UNUSED GParamSpec *pspec, G_GNUC_UNUSED gpointer data )
 {
 	struct OptionMenuItem *items;
 	int count;
-	int active;
+	guint active;
 
-	active = gtk_combo_box_get_active( combo );
-	items = (struct OptionMenuItem *)g_object_get_data( G_OBJECT(combo), "optmenu_items" );
-	count = GPOINTER_TO_INT(g_object_get_data( G_OBJECT(combo), "optmenu_item_count" ));
-	if (active >= 0 && active < count && items[active].callback != NULL) {
+	active = gtk_drop_down_get_selected( GTK_DROP_DOWN(object) );
+	items = (struct OptionMenuItem *)g_object_get_data( object, "optmenu_items" );
+	count = GPOINTER_TO_INT(g_object_get_data( object, "optmenu_item_count" ));
+	if (active < (guint)count && items[active].callback != NULL) {
 		void (*cb)( GtkWidget *, void * ) = (void (*)( GtkWidget *, void * ))items[active].callback;
-		cb( GTK_WIDGET(combo), items[active].callback_data );
+		cb( GTK_WIDGET(object), items[active].callback_data );
 	}
 }
 
 
-/* The combo box widget */
+/* The drop-down selection widget */
 GtkWidget *
 gui_option_menu_add( GtkWidget *parent_w, int init_selected )
 {
-	GtkWidget *combo_w;
+	GtkWidget *dropdown_w;
+	GtkStringList *string_list;
 	struct OptionMenuItem *items_copy;
 	int i;
 
-	combo_w = gtk_combo_box_text_new( );
+	/* Build string list from accumulated items */
+	string_list = gtk_string_list_new( NULL );
 	for (i = 0; i < optmenu_item_count; i++)
-		gtk_combo_box_text_append_text( GTK_COMBO_BOX_TEXT(combo_w), optmenu_items[i].label );
+		gtk_string_list_append( string_list, optmenu_items[i].label );
+
+	dropdown_w = gtk_drop_down_new( G_LIST_MODEL(string_list), NULL );
 
 	items_copy = g_new( struct OptionMenuItem, optmenu_item_count );
 	memcpy( items_copy, optmenu_items, optmenu_item_count * sizeof(struct OptionMenuItem) );
-	g_object_set_data_full( G_OBJECT(combo_w), "optmenu_items", items_copy, g_free );
-	g_object_set_data( G_OBJECT(combo_w), "optmenu_item_count", GINT_TO_POINTER(optmenu_item_count) );
+	g_object_set_data_full( G_OBJECT(dropdown_w), "optmenu_items", items_copy, g_free );
+	g_object_set_data( G_OBJECT(dropdown_w), "optmenu_item_count", GINT_TO_POINTER(optmenu_item_count) );
 
-	gtk_combo_box_set_active( GTK_COMBO_BOX(combo_w), init_selected );
-	g_signal_connect( G_OBJECT(combo_w), "changed", G_CALLBACK(option_menu_changed_cb), NULL );
+	gtk_drop_down_set_selected( GTK_DROP_DOWN(dropdown_w), init_selected );
+	g_signal_connect( G_OBJECT(dropdown_w), "notify::selected", G_CALLBACK(option_menu_selected_cb), NULL );
 
-	parent_child( parent_w, combo_w );
+	parent_child( parent_w, dropdown_w );
 	optmenu_item_count = 0;
 
-	return combo_w;
+	return dropdown_w;
 }
 
 
@@ -1027,52 +1033,59 @@ gui_widget_packing( GtkWidget *widget, boolean expand, boolean fill, G_GNUC_UNUS
 }
 
 
-/* Internal callback for the color chooser dialog response */
+/* Data passed to the async color dialog completion callback */
+struct ColorSelData {
+	GCallback callback;
+	void *callback_data;
+};
+
+/* Async completion callback for the color dialog */
 static void
-colorsel_window_response_cb( GtkDialog *dialog, gint response_id, G_GNUC_UNUSED gpointer user_data )
+colorsel_dialog_done_cb( GObject *source, GAsyncResult *result, gpointer user_data )
 {
+	GtkColorDialog *dialog = GTK_COLOR_DIALOG(source);
+	struct ColorSelData *csd = (struct ColorSelData *)user_data;
+	GdkRGBA *rgba;
 	RGBcolor color;
-	GdkRGBA rgba;
 	void (*user_callback)( const RGBcolor *, void * );
-	void *user_callback_data;
 
-	user_callback = (void (*)( const RGBcolor *, void * ))g_object_get_data( G_OBJECT(dialog), "user_callback" );
-	user_callback_data = g_object_get_data( G_OBJECT(dialog), "user_callback_data" );
-
-	if (response_id == GTK_RESPONSE_OK) {
-		gtk_color_chooser_get_rgba( GTK_COLOR_CHOOSER(dialog), &rgba );
-		color.r = (float)rgba.red;
-		color.g = (float)rgba.green;
-		color.b = (float)rgba.blue;
-		gtk_window_destroy( GTK_WINDOW(dialog) );
-		(user_callback)( &color, user_callback_data );
+	rgba = gtk_color_dialog_choose_rgba_finish( dialog, result, NULL );
+	if (rgba != NULL) {
+		color.r = (float)rgba->red;
+		color.g = (float)rgba->green;
+		color.b = (float)rgba->blue;
+		user_callback = (void (*)( const RGBcolor *, void * ))csd->callback;
+		(user_callback)( &color, csd->callback_data );
+		gdk_rgba_free( rgba );
 	}
-	else {
-		gtk_window_destroy( GTK_WINDOW(dialog) );
-	}
+	g_free( csd );
 }
 
 
-/* Creates a color chooser window */
+/* Opens a color chooser dialog (async) */
 GtkWidget *
 gui_colorsel_window( const char *title, RGBcolor *init_color, GCallback ok_callback, void *ok_callback_data )
 {
-	GtkWidget *colorsel_window_w;
+	GtkColorDialog *dialog;
 	GdkRGBA rgba;
+	struct ColorSelData *csd;
 
-	colorsel_window_w = gtk_color_chooser_dialog_new( title, NULL );
+	dialog = gtk_color_dialog_new( );
+	gtk_color_dialog_set_title( dialog, title );
 	rgba.red = init_color->r;
 	rgba.green = init_color->g;
 	rgba.blue = init_color->b;
 	rgba.alpha = 1.0;
-	gtk_color_chooser_set_rgba( GTK_COLOR_CHOOSER(colorsel_window_w), &rgba );
-	g_object_set_data( G_OBJECT(colorsel_window_w), "user_callback", (void *)ok_callback );
-	g_object_set_data( G_OBJECT(colorsel_window_w), "user_callback_data", ok_callback_data );
-	g_signal_connect( G_OBJECT(colorsel_window_w), "response", G_CALLBACK(colorsel_window_response_cb), NULL );
-	gtk_window_set_modal( GTK_WINDOW(colorsel_window_w), TRUE );
-	gtk_window_present( GTK_WINDOW(colorsel_window_w) );
 
-	return colorsel_window_w;
+	csd = g_new( struct ColorSelData, 1 );
+	csd->callback = ok_callback;
+	csd->callback_data = ok_callback_data;
+
+	gtk_color_dialog_choose_rgba( dialog,
+		GTK_WINDOW(gtk_application_get_active_window( GTK_APPLICATION(g_application_get_default( )) )),
+		&rgba, NULL, colorsel_dialog_done_cb, csd );
+
+	return NULL;
 }
 
 

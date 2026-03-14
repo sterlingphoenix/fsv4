@@ -236,11 +236,11 @@ csdialog_time_edit_cb( GtkWidget *dateedit_w )
 
 /* Callback for the "Color by:" timestamp combo box */
 static void
-csdialog_time_timestamp_option_menu_cb( GtkWidget *combo_w )
+csdialog_time_timestamp_option_menu_cb( GtkWidget *dropdown_w )
 {
-	int active = gtk_combo_box_get_active( GTK_COMBO_BOX(combo_w) );
+	guint active = gtk_drop_down_get_selected( GTK_DROP_DOWN(dropdown_w) );
 
-	/* Combo box indices match TimeStampType enum values */
+	/* Drop-down indices match TimeStampType enum values */
 	csdialog.color_config.by_timestamp.timestamp_type = (TimeStampType)active;
 }
 
@@ -294,9 +294,9 @@ csdialog_time_color_picker_set_access( boolean enabled )
 
 /* Callback for the spectrum type combo box */
 static void
-csdialog_time_spectrum_option_menu_cb( GtkWidget *combo_w )
+csdialog_time_spectrum_option_menu_cb( GtkWidget *dropdown_w )
 {
-	int active = gtk_combo_box_get_active( GTK_COMBO_BOX(combo_w) );
+	guint active = gtk_drop_down_get_selected( GTK_DROP_DOWN(dropdown_w) );
 	SpectrumType type = (SpectrumType)active;
 
 	/* Set new spectrum type and draw it */
