@@ -60,6 +60,14 @@ GtkWidget *gui_button_with_pixmap_xpm_add( GtkWidget *parent_w, char **xpm_data,
 GtkWidget *gui_toggle_button_add( GtkWidget *parent_w, const char *label, boolean active, GCallback callback, void *callback_data );
 GtkWidget *gui_clist_add( GtkWidget *parent_w, int num_cols, char *col_titles[] );
 void gui_clist_moveto_row( GtkWidget *clist_w, int row, double moveto_time );
+void gui_clist_clear( GtkWidget *clist_w );
+void gui_clist_append( GtkWidget *clist_w, GdkPixbuf *icon, const char *text[], int num_text, gpointer data );
+int gui_clist_get_n_rows( GtkWidget *clist_w );
+gpointer gui_clist_get_row_data( GtkWidget *clist_w, int position );
+void gui_clist_set_row_text( GtkWidget *clist_w, int position, int col, const char *text );
+int gui_clist_find_by_data( GtkWidget *clist_w, gpointer data );
+void gui_clist_select_row( GtkWidget *clist_w, int position );
+int gui_clist_get_selected( GtkWidget *clist_w );
 GtkWidget *gui_colorpicker_add( GtkWidget *parent_w, RGBcolor *init_color, const char *title, GCallback callback, void *callback_data );
 void gui_colorpicker_set_color( GtkWidget *colorpicker_w, RGBcolor *color );
 GtkWidget *gui_ctree_add( GtkWidget *parent_w );

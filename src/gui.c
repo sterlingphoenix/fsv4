@@ -284,112 +284,281 @@ gui_toggle_button_add( GtkWidget *parent_w, const char *label, boolean active, G
 }
 
 
+/**** FsvListRow — GObject for GListStore-backed list views ****/
+
+struct _FsvListRow {
+	GObject parent;
+	GdkPixbuf *icon;
+	char *col_text[4];
+	gpointer data;
+};
+
+#define FSV_TYPE_LIST_ROW (fsv_list_row_get_type( ))
+G_DECLARE_FINAL_TYPE(FsvListRow, fsv_list_row, FSV, LIST_ROW, GObject)
+G_DEFINE_TYPE(FsvListRow, fsv_list_row, G_TYPE_OBJECT)
+
+enum {
+	PROP_0,
+	PROP_ICON,
+	PROP_TEXT0,
+	PROP_TEXT1,
+	PROP_TEXT2,
+	PROP_TEXT3,
+	N_PROPERTIES
+};
+static GParamSpec *list_row_properties[N_PROPERTIES];
+
+static void
+fsv_list_row_finalize( GObject *obj )
+{
+	FsvListRow *row = FSV_LIST_ROW(obj);
+	int i;
+
+	g_clear_object( &row->icon );
+	for (i = 0; i < 4; i++)
+		g_free( row->col_text[i] );
+	G_OBJECT_CLASS(fsv_list_row_parent_class)->finalize( obj );
+}
+
+static void
+fsv_list_row_set_property( GObject *obj, guint prop_id, const GValue *value, GParamSpec *pspec )
+{
+	FsvListRow *row = FSV_LIST_ROW(obj);
+	int col;
+
+	switch (prop_id) {
+		case PROP_ICON:
+		g_clear_object( &row->icon );
+		row->icon = g_value_dup_object( value );
+		break;
+
+		case PROP_TEXT0: case PROP_TEXT1: case PROP_TEXT2: case PROP_TEXT3:
+		col = prop_id - PROP_TEXT0;
+		g_free( row->col_text[col] );
+		row->col_text[col] = g_value_dup_string( value );
+		break;
+
+		default:
+		G_OBJECT_WARN_INVALID_PROPERTY_ID( obj, prop_id, pspec );
+	}
+}
+
+static void
+fsv_list_row_get_property( GObject *obj, guint prop_id, GValue *value, GParamSpec *pspec )
+{
+	FsvListRow *row = FSV_LIST_ROW(obj);
+	int col;
+
+	switch (prop_id) {
+		case PROP_ICON:
+		g_value_set_object( value, row->icon );
+		break;
+
+		case PROP_TEXT0: case PROP_TEXT1: case PROP_TEXT2: case PROP_TEXT3:
+		col = prop_id - PROP_TEXT0;
+		g_value_set_string( value, row->col_text[col] );
+		break;
+
+		default:
+		G_OBJECT_WARN_INVALID_PROPERTY_ID( obj, prop_id, pspec );
+	}
+}
+
+static void
+fsv_list_row_class_init( FsvListRowClass *klass )
+{
+	GObjectClass *gobject_class = G_OBJECT_CLASS(klass);
+
+	gobject_class->finalize = fsv_list_row_finalize;
+	gobject_class->set_property = fsv_list_row_set_property;
+	gobject_class->get_property = fsv_list_row_get_property;
+
+	list_row_properties[PROP_ICON] = g_param_spec_object( "icon", NULL, NULL, GDK_TYPE_PIXBUF, G_PARAM_READWRITE );
+	list_row_properties[PROP_TEXT0] = g_param_spec_string( "text0", NULL, NULL, NULL, G_PARAM_READWRITE );
+	list_row_properties[PROP_TEXT1] = g_param_spec_string( "text1", NULL, NULL, NULL, G_PARAM_READWRITE );
+	list_row_properties[PROP_TEXT2] = g_param_spec_string( "text2", NULL, NULL, NULL, G_PARAM_READWRITE );
+	list_row_properties[PROP_TEXT3] = g_param_spec_string( "text3", NULL, NULL, NULL, G_PARAM_READWRITE );
+	g_object_class_install_properties( gobject_class, N_PROPERTIES, list_row_properties );
+}
+
+static void
+fsv_list_row_init( G_GNUC_UNUSED FsvListRow *row )
+{
+}
+
+
+/**** GtkColumnView factory callbacks ****/
+
+/* Factory setup for column 0: icon + text */
+static void
+clist_col0_setup_cb( G_GNUC_UNUSED GtkListItemFactory *factory, GtkListItem *list_item, G_GNUC_UNUSED gpointer user_data )
+{
+	GtkWidget *box = gtk_box_new( GTK_ORIENTATION_HORIZONTAL, 4 );
+	GtkWidget *image = gtk_image_new( );
+	GtkWidget *label = gtk_label_new( NULL );
+
+	gtk_label_set_xalign( GTK_LABEL(label), 0.0 );
+	gtk_widget_set_hexpand( label, TRUE );
+	gtk_box_append( GTK_BOX(box), image );
+	gtk_box_append( GTK_BOX(box), label );
+	gtk_list_item_set_child( list_item, box );
+}
+
+/* Factory bind for column 0: set icon + text from item */
+static void
+clist_col0_bind_cb( G_GNUC_UNUSED GtkListItemFactory *factory, GtkListItem *list_item, G_GNUC_UNUSED gpointer user_data )
+{
+	GtkWidget *box = gtk_list_item_get_child( list_item );
+	GtkWidget *image = gtk_widget_get_first_child( box );
+	GtkWidget *label = gtk_widget_get_next_sibling( image );
+	FsvListRow *row = FSV_LIST_ROW(gtk_list_item_get_item( list_item ));
+
+	if (row->icon != NULL) {
+G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+		gtk_image_set_from_pixbuf( GTK_IMAGE(image), row->icon );
+G_GNUC_END_IGNORE_DEPRECATIONS
+	}
+	else {
+		gtk_image_clear( GTK_IMAGE(image) );
+	}
+
+	gtk_label_set_text( GTK_LABEL(label), row->col_text[0] != NULL ? row->col_text[0] : "" );
+}
+
+/* Factory unbind for column 0: clear content */
+static void
+clist_col0_unbind_cb( G_GNUC_UNUSED GtkListItemFactory *factory, GtkListItem *list_item, G_GNUC_UNUSED gpointer user_data )
+{
+	GtkWidget *box = gtk_list_item_get_child( list_item );
+	GtkWidget *image = gtk_widget_get_first_child( box );
+
+	gtk_image_clear( GTK_IMAGE(image) );
+}
+
+/* Factory setup for text-only columns */
+static void
+clist_text_setup_cb( G_GNUC_UNUSED GtkListItemFactory *factory, GtkListItem *list_item, G_GNUC_UNUSED gpointer user_data )
+{
+	GtkWidget *label = gtk_label_new( NULL );
+	gtk_label_set_xalign( GTK_LABEL(label), 0.0 );
+	gtk_list_item_set_child( list_item, label );
+}
+
+/* Factory bind for text-only columns */
+static void
+clist_text_bind_cb( GtkListItemFactory *factory, GtkListItem *list_item, G_GNUC_UNUSED gpointer user_data )
+{
+	GtkWidget *label = gtk_list_item_get_child( list_item );
+	FsvListRow *row = FSV_LIST_ROW(gtk_list_item_get_item( list_item ));
+	int col = GPOINTER_TO_INT(g_object_get_data( G_OBJECT(factory), "col_index" ));
+
+	gtk_label_set_text( GTK_LABEL(label), (col >= 0 && col < 4 && row->col_text[col] != NULL) ? row->col_text[col] : "" );
+}
+
+
 /* The [multi-column] list widget (fitted into a scrolled window).
- * Returns a GtkTreeView backed by a GtkListStore.
- * Model columns: pixbuf (0), text[0..num_cols-1] (1..num_cols), pointer (num_cols+1).
- * First visible column shows pixbuf + text; remaining columns show text only.
- * Note: GtkTreeView is deprecated in GTK4 but still functional. */
+ * Returns a GtkColumnView backed by a GListStore of FsvListRow.
+ * Column 0 shows icon + text; remaining columns show text only. */
 GtkWidget *
 gui_clist_add( GtkWidget *parent_w, int num_cols, char *col_titles[] )
 {
 	GtkWidget *scrollwin_w;
-	GtkWidget *tree_view_w;
-	GtkListStore *store;
-	GtkCellRenderer *renderer;
-	GtkTreeViewColumn *column;
-	GtkTreeSelection *selection;
-	GType *col_types;
-	int total_cols;
+	GtkWidget *column_view_w;
+	GListStore *store;
+	GtkSingleSelection *sel_model;
+	GtkListItemFactory *factory;
+	GtkColumnViewColumn *column;
 	int i;
-	int *num_cols_p;
 
 	scrollwin_w = gtk_scrolled_window_new( );
 	gtk_scrolled_window_set_policy( GTK_SCROLLED_WINDOW(scrollwin_w), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC );
+	gtk_widget_add_css_class( scrollwin_w, "view" );
 	parent_child_full( parent_w, scrollwin_w, EXPAND, FILL );
 
-	/* Build column types array: pixbuf, num_cols strings, pointer */
-	total_cols = num_cols + 2;
-	col_types = g_new( GType, total_cols );
-	col_types[0] = GDK_TYPE_PIXBUF;
-	for (i = 0; i < num_cols; i++)
-		col_types[i + 1] = G_TYPE_STRING;
-	col_types[num_cols + 1] = G_TYPE_POINTER;
+	store = g_list_store_new( FSV_TYPE_LIST_ROW );
+	sel_model = gtk_single_selection_new( G_LIST_MODEL(store) );
+	gtk_single_selection_set_autoselect( sel_model, FALSE );
+	gtk_single_selection_set_can_unselect( sel_model, TRUE );
 
-	store = gtk_list_store_newv( total_cols, col_types );
-	g_free( col_types );
+	column_view_w = gtk_column_view_new( GTK_SELECTION_MODEL(sel_model) );
+	gtk_column_view_set_show_column_separators( GTK_COLUMN_VIEW(column_view_w), FALSE );
+	gtk_column_view_set_show_row_separators( GTK_COLUMN_VIEW(column_view_w), FALSE );
 
-	tree_view_w = gtk_tree_view_new_with_model( GTK_TREE_MODEL(store) );
-	g_object_unref( store );
-	gtk_tree_view_set_headers_visible( GTK_TREE_VIEW(tree_view_w), col_titles != NULL );
-
-	/* First column: pixbuf + text */
-	column = gtk_tree_view_column_new( );
-	if (col_titles != NULL && col_titles[0] != NULL)
-		gtk_tree_view_column_set_title( column, col_titles[0] );
-	renderer = gtk_cell_renderer_pixbuf_new( );
-	gtk_tree_view_column_pack_start( column, renderer, FALSE );
-	gtk_tree_view_column_add_attribute( column, renderer, "pixbuf", 0 );
-	renderer = gtk_cell_renderer_text_new( );
-	gtk_tree_view_column_pack_start( column, renderer, TRUE );
-	gtk_tree_view_column_add_attribute( column, renderer, "text", 1 );
-	gtk_tree_view_column_set_resizable( column, TRUE );
-	gtk_tree_view_append_column( GTK_TREE_VIEW(tree_view_w), column );
+	/* Column 0: icon + text */
+	factory = gtk_signal_list_item_factory_new( );
+	g_signal_connect( factory, "setup", G_CALLBACK(clist_col0_setup_cb), NULL );
+	g_signal_connect( factory, "bind", G_CALLBACK(clist_col0_bind_cb), NULL );
+	g_signal_connect( factory, "unbind", G_CALLBACK(clist_col0_unbind_cb), NULL );
+	column = gtk_column_view_column_new( (col_titles != NULL) ? col_titles[0] : NULL, factory );
+	gtk_column_view_column_set_resizable( column, TRUE );
+	gtk_column_view_column_set_expand( column, TRUE );
+	gtk_column_view_append_column( GTK_COLUMN_VIEW(column_view_w), column );
+	g_object_unref( column );
 
 	/* Additional text columns */
 	for (i = 1; i < num_cols; i++) {
-		renderer = gtk_cell_renderer_text_new( );
-		column = gtk_tree_view_column_new_with_attributes(
-			(col_titles != NULL) ? col_titles[i] : NULL,
-			renderer, "text", i + 1, NULL );
-		gtk_tree_view_column_set_resizable( column, TRUE );
-		gtk_tree_view_append_column( GTK_TREE_VIEW(tree_view_w), column );
+		factory = gtk_signal_list_item_factory_new( );
+		g_object_set_data( G_OBJECT(factory), "col_index", GINT_TO_POINTER(i) );
+		g_signal_connect( factory, "setup", G_CALLBACK(clist_text_setup_cb), NULL );
+		g_signal_connect( factory, "bind", G_CALLBACK(clist_text_bind_cb), NULL );
+		column = gtk_column_view_column_new( (col_titles != NULL) ? col_titles[i] : NULL, factory );
+		gtk_column_view_column_set_resizable( column, TRUE );
+		gtk_column_view_append_column( GTK_COLUMN_VIEW(column_view_w), column );
+		g_object_unref( column );
 	}
 
-	/* Single selection mode */
-	selection = gtk_tree_view_get_selection( GTK_TREE_VIEW(tree_view_w) );
-	gtk_tree_selection_set_mode( selection, GTK_SELECTION_SINGLE );
+	/* Show headers only if titles were provided */
+	gtk_column_view_set_show_column_separators( GTK_COLUMN_VIEW(column_view_w), col_titles != NULL );
 
-	/* Store num_cols on the widget for later use */
-	num_cols_p = g_new( int, 1 );
-	*num_cols_p = num_cols;
-	g_object_set_data_full( G_OBJECT(tree_view_w), "num_cols", num_cols_p, g_free );
+	/* Store references for callers */
+	g_object_set_data( G_OBJECT(column_view_w), "list_store", store );
+	g_object_set_data( G_OBJECT(column_view_w), "selection_model", sel_model );
 
-	gtk_scrolled_window_set_child( GTK_SCROLLED_WINDOW(scrollwin_w), tree_view_w );
+	gtk_scrolled_window_set_child( GTK_SCROLLED_WINDOW(scrollwin_w), column_view_w );
 
-	return tree_view_w;
+	return column_view_w;
 }
 
 
-/* Scrolls a tree view to a given row (-1 indicates last row). */
+/* Scrolls a list widget to a given row (-1 indicates last row).
+ * Works with both GtkColumnView (new) and GtkTreeView (legacy, for dialog.c). */
 void
-gui_clist_moveto_row( GtkWidget *tree_view_w, int row, double moveto_time )
+gui_clist_moveto_row( GtkWidget *widget, int row, double moveto_time )
 {
-	GtkTreeModel *model;
-	GtkTreePath *path;
 	GtkAdjustment *vadj;
 	GtkWidget *scrollwin_w;
 	double *anim_value_var;
 	float k, new_value;
 	int n_rows;
 
-	model = gtk_tree_view_get_model( GTK_TREE_VIEW(tree_view_w) );
-	n_rows = gtk_tree_model_iter_n_children( model, NULL );
+	if (GTK_IS_COLUMN_VIEW(widget)) {
+		GListStore *store = g_object_get_data( G_OBJECT(widget), "list_store" );
+		n_rows = (int)g_list_model_get_n_items( G_LIST_MODEL(store) );
+	}
+	else {
+G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+		GtkTreeModel *model = gtk_tree_view_get_model( GTK_TREE_VIEW(widget) );
+		n_rows = gtk_tree_model_iter_n_children( model, NULL );
+G_GNUC_END_IGNORE_DEPRECATIONS
+	}
+
 	if (n_rows == 0)
 		return;
-
 	if (row < 0)
 		row = n_rows - 1;
 	if (row >= n_rows)
 		row = n_rows - 1;
 
-	if (moveto_time <= 0.0) {
-		path = gtk_tree_path_new_from_indices( row, -1 );
-		gtk_tree_view_scroll_to_cell( GTK_TREE_VIEW(tree_view_w), path, NULL, TRUE, 0.5, 0.0 );
+	if (!GTK_IS_COLUMN_VIEW(widget) && moveto_time <= 0.0) {
+G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+		GtkTreePath *path = gtk_tree_path_new_from_indices( row, -1 );
+		gtk_tree_view_scroll_to_cell( GTK_TREE_VIEW(widget), path, NULL, TRUE, 0.5, 0.0 );
 		gtk_tree_path_free( path );
+G_GNUC_END_IGNORE_DEPRECATIONS
 		return;
 	}
 
-	scrollwin_w = gtk_widget_get_parent( tree_view_w );
+	scrollwin_w = gtk_widget_get_parent( widget );
 	if (!GTK_IS_SCROLLED_WINDOW(scrollwin_w))
 		return;
 	vadj = gtk_scrolled_window_get_vadjustment( GTK_SCROLLED_WINDOW(scrollwin_w) );
@@ -397,6 +566,11 @@ gui_clist_moveto_row( GtkWidget *tree_view_w, int row, double moveto_time )
 	k = (double)row / (double)n_rows;
 	k = k * gtk_adjustment_get_upper( vadj ) - 0.5 * gtk_adjustment_get_page_size( vadj );
 	new_value = CLAMP(k, 0.0, gtk_adjustment_get_upper( vadj ) - gtk_adjustment_get_page_size( vadj ));
+
+	if (moveto_time <= 0.0) {
+		gtk_adjustment_set_value( vadj, new_value );
+		return;
+	}
 
 	anim_value_var = g_object_get_data( G_OBJECT(vadj), "anim_value_var" );
 	if (anim_value_var == NULL) {
@@ -407,6 +581,122 @@ gui_clist_moveto_row( GtkWidget *tree_view_w, int row, double moveto_time )
 	morph_break( anim_value_var );
 	*anim_value_var = gtk_adjustment_get_value( vadj );
 	morph_full( anim_value_var, MORPH_SIGMOID, new_value, moveto_time, adjustment_step_cb, adjustment_step_cb, vadj );
+}
+
+
+/**** gui_clist helper functions ****/
+
+/* Removes all rows from a clist */
+void
+gui_clist_clear( GtkWidget *clist_w )
+{
+	GListStore *store = g_object_get_data( G_OBJECT(clist_w), "list_store" );
+	g_list_store_remove_all( store );
+}
+
+
+/* Appends a row to a clist. text[] must have at least num_cols entries. */
+void
+gui_clist_append( GtkWidget *clist_w, GdkPixbuf *icon, const char *text[], int num_text, gpointer data )
+{
+	GListStore *store = g_object_get_data( G_OBJECT(clist_w), "list_store" );
+	FsvListRow *row = g_object_new( FSV_TYPE_LIST_ROW, NULL );
+	int i;
+
+	if (icon != NULL)
+		row->icon = g_object_ref( icon );
+	for (i = 0; i < num_text && i < 4; i++)
+		row->col_text[i] = g_strdup( text[i] );
+	row->data = data;
+	g_list_store_append( store, row );
+	g_object_unref( row );
+}
+
+
+/* Returns the number of rows in a clist */
+int
+gui_clist_get_n_rows( GtkWidget *clist_w )
+{
+	GListStore *store = g_object_get_data( G_OBJECT(clist_w), "list_store" );
+	return (int)g_list_model_get_n_items( G_LIST_MODEL(store) );
+}
+
+
+/* Returns the data pointer from row at position */
+gpointer
+gui_clist_get_row_data( GtkWidget *clist_w, int position )
+{
+	GListStore *store = g_object_get_data( G_OBJECT(clist_w), "list_store" );
+	FsvListRow *row = g_list_model_get_item( G_LIST_MODEL(store), (guint)position );
+	gpointer data;
+
+	if (row == NULL)
+		return NULL;
+	data = row->data;
+	g_object_unref( row );
+	return data;
+}
+
+
+/* Sets a text column value on an existing row and forces the view to update */
+void
+gui_clist_set_row_text( GtkWidget *clist_w, int position, int col, const char *text )
+{
+	GListStore *store = g_object_get_data( G_OBJECT(clist_w), "list_store" );
+	FsvListRow *row = g_list_model_get_item( G_LIST_MODEL(store), (guint)position );
+	gpointer items[1];
+
+	if (row == NULL || col < 0 || col >= 4)
+		return;
+	g_free( row->col_text[col] );
+	row->col_text[col] = g_strdup( text );
+	/* Replace item at same position to trigger items-changed and rebind */
+	items[0] = row;
+	g_list_store_splice( store, (guint)position, 1, items, 1 );
+	g_object_unref( row );
+}
+
+
+/* Finds a row by its data pointer, returns position or -1 */
+int
+gui_clist_find_by_data( GtkWidget *clist_w, gpointer data )
+{
+	GListStore *store = g_object_get_data( G_OBJECT(clist_w), "list_store" );
+	guint n = g_list_model_get_n_items( G_LIST_MODEL(store) );
+	guint i;
+
+	for (i = 0; i < n; i++) {
+		FsvListRow *row = g_list_model_get_item( G_LIST_MODEL(store), i );
+		gpointer row_data = row->data;
+		g_object_unref( row );
+		if (row_data == data)
+			return (int)i;
+	}
+	return -1;
+}
+
+
+/* Selects a row by position (-1 to unselect all) */
+void
+gui_clist_select_row( GtkWidget *clist_w, int position )
+{
+	GtkSingleSelection *sel = g_object_get_data( G_OBJECT(clist_w), "selection_model" );
+	if (position < 0)
+		gtk_single_selection_set_selected( sel, GTK_INVALID_LIST_POSITION );
+	else
+		gtk_single_selection_set_selected( sel, (guint)position );
+}
+
+
+/* Returns the selected row position, or -1 if none */
+int
+gui_clist_get_selected( GtkWidget *clist_w )
+{
+	GtkSingleSelection *sel = g_object_get_data( G_OBJECT(clist_w), "selection_model" );
+	guint pos = gtk_single_selection_get_selected( sel );
+	if (pos == GTK_INVALID_LIST_POSITION)
+		return -1;
+	return (int)pos;
 }
 
 
@@ -485,8 +775,10 @@ gui_ctree_add( GtkWidget *parent_w )
 
 	scrollwin_w = gtk_scrolled_window_new( );
 	gtk_scrolled_window_set_policy( GTK_SCROLLED_WINDOW(scrollwin_w), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC );
+	gtk_widget_add_css_class( scrollwin_w, "view" );
 	parent_child_full( parent_w, scrollwin_w, EXPAND, FILL );
 
+G_GNUC_BEGIN_IGNORE_DEPRECATIONS
 	store = gtk_tree_store_new( CTREE_NUM_COLS, GDK_TYPE_PIXBUF, G_TYPE_STRING, G_TYPE_POINTER );
 	tree_view_w = gtk_tree_view_new_with_model( GTK_TREE_MODEL(store) );
 	g_object_unref( store );

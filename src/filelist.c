@@ -39,26 +39,8 @@
 /* Time for the filelist to scroll to a given entry (in seconds) */
 #define FILELIST_SCROLL_TIME 0.5
 
-/* Model column indices for the normal file list (1 visible column).
- * Model: pixbuf (0), name (1), node_ptr (2) */
-enum {
-	FLIST_COL_PIXBUF = 0,
-	FLIST_COL_NAME   = 1,
-	FLIST_COL_DATA   = 2
-};
 
-/* Model column indices for the scan monitor (3 visible columns).
- * Model: pixbuf (0), type (1), found (2), bytes (3), data (4) */
-enum {
-	SCANMON_COL_PIXBUF = 0,
-	SCANMON_COL_TYPE   = 1,
-	SCANMON_COL_FOUND  = 2,
-	SCANMON_COL_BYTES  = 3,
-	SCANMON_COL_DATA   = 4
-};
-
-
-/* The file list widget (GtkTreeView) */
+/* The file list widget (GtkColumnView) */
 static GtkWidget *file_tree_w;
 
 /* Directory currently listed */
@@ -102,8 +84,7 @@ filelist_reset_access( void )
 	if (enabled)
 		gui_cursor( file_tree_w, NULL );
 	else {
-		GtkTreeSelection *sel = gtk_tree_view_get_selection( GTK_TREE_VIEW(file_tree_w) );
-		gtk_tree_selection_unselect_all( sel );
+		gui_clist_select_row( file_tree_w, -1 );
 		gui_cursor( file_tree_w, "not-allowed" );
 	}
 }
@@ -117,33 +98,6 @@ compare_node( GNode *a, GNode *b )
 }
 
 
-/* Helper: find a row by its data pointer and return its path.
- * Returns NULL if not found. Caller must free the path. */
-static GtkTreePath *
-find_path_by_data( GtkTreeView *tree_view, gpointer data )
-{
-	GtkTreeModel *model = gtk_tree_view_get_model( tree_view );
-	GtkTreeIter iter;
-	gboolean valid;
-	int num_cols_val;
-	int data_col;
-
-	/* Get data column index */
-	num_cols_val = *(int *)g_object_get_data( G_OBJECT(tree_view), "num_cols" );
-	data_col = num_cols_val + 1;
-
-	valid = gtk_tree_model_get_iter_first( model, &iter );
-	while (valid) {
-		gpointer row_data;
-		gtk_tree_model_get( model, &iter, data_col, &row_data, -1 );
-		if (row_data == data)
-			return gtk_tree_model_get_path( model, &iter );
-		valid = gtk_tree_model_iter_next( model, &iter );
-	}
-	return NULL;
-}
-
-
 /* Displays contents of a directory in the file list */
 void
 filelist_populate( GNode *dnode )
@@ -151,8 +105,6 @@ filelist_populate( GNode *dnode )
 	GNode *node;
 	GList *node_list = NULL, *node_llink;
 	Icon *icon;
-	GtkListStore *store;
-	GtkTreeIter iter;
 	int count = 0;
 	char strbuf[64];
 
@@ -167,19 +119,16 @@ filelist_populate( GNode *dnode )
 	G_LIST_SORT(node_list, compare_node);
 
 	/* Update file list */
-	store = GTK_LIST_STORE(gtk_tree_view_get_model( GTK_TREE_VIEW(file_tree_w) ));
-	gtk_list_store_clear( store );
+	gui_clist_clear( file_tree_w );
 	node_llink = node_list;
 	while (node_llink != NULL) {
 		node = (GNode *)node_llink->data;
 		icon = &node_type_mini_icons[NODE_DESC(node)->type];
 
-		gtk_list_store_append( store, &iter );
-		gtk_list_store_set( store, &iter,
-			FLIST_COL_PIXBUF, icon->pixbuf,
-			FLIST_COL_NAME, NODE_DESC(node)->name,
-			FLIST_COL_DATA, node,
-			-1 );
+		{
+			const char *text[] = { NODE_DESC(node)->name };
+			gui_clist_append( file_tree_w, icon->pixbuf, text, 1, node );
+		}
 
 		++count;
 		node_llink = node_llink->next;
@@ -214,8 +163,7 @@ void
 filelist_show_entry( GNode *node )
 {
 	GNode *dnode;
-	GtkTreePath *path;
-	GtkTreeSelection *sel;
+	int pos;
 
 	/* Corresponding directory */
 	if (NODE_IS_DIR(node))
@@ -229,32 +177,23 @@ filelist_show_entry( GNode *node )
 	}
 
 	/* Scroll file list to proper entry */
-	path = find_path_by_data( GTK_TREE_VIEW(file_tree_w), node );
-	sel = gtk_tree_view_get_selection( GTK_TREE_VIEW(file_tree_w) );
-	if (path != NULL) {
-		gtk_tree_selection_select_path( sel, path );
-		gtk_tree_view_scroll_to_cell( GTK_TREE_VIEW(file_tree_w), path, NULL, TRUE, 0.5, 0.0 );
-		gtk_tree_path_free( path );
+	pos = gui_clist_find_by_data( file_tree_w, node );
+	if (pos >= 0) {
+		gui_clist_select_row( file_tree_w, pos );
+		gui_clist_moveto_row( file_tree_w, pos, 0.0 );
 	}
 	else {
-		gtk_tree_selection_unselect_all( sel );
+		gui_clist_select_row( file_tree_w, -1 );
 	}
 }
 
 
-/* Callback for a click in the file list area (GtkGestureClick) */
+/* Callback for selection change in the file list */
 static void
-filelist_select_cb( GtkGestureClick *gesture, int n_press, double x, double y, G_GNUC_UNUSED gpointer user_data )
+filelist_selection_changed_cb( GtkSingleSelection *sel, G_GNUC_UNUSED GParamSpec *pspec, G_GNUC_UNUSED gpointer user_data )
 {
-	GtkWidget *tree_w = gtk_event_controller_get_widget( GTK_EVENT_CONTROLLER(gesture) );
+	guint position;
 	GNode *node;
-	GtkTreePath *path;
-	GtkTreeViewColumn *column;
-	GtkTreeModel *model;
-	GtkTreeIter iter;
-	GtkTreeSelection *sel;
-	int data_col;
-	int button;
 
 	/* If About presentation is up, end it */
 	about( ABOUT_END );
@@ -262,55 +201,57 @@ filelist_select_cb( GtkGestureClick *gesture, int n_press, double x, double y, G
 	if (globals.fsv_mode == FSV_SPLASH)
 		return;
 
-	button = gtk_gesture_single_get_current_button( GTK_GESTURE_SINGLE(gesture) );
-
-	if (!gtk_tree_view_get_path_at_pos( GTK_TREE_VIEW(tree_w),
-			(int)x, (int)y,
-			&path, &column, NULL, NULL ))
+	position = gtk_single_selection_get_selected( sel );
+	if (position == GTK_INVALID_LIST_POSITION)
 		return;
 
-	model = gtk_tree_view_get_model( GTK_TREE_VIEW(tree_w) );
-	if (!gtk_tree_model_get_iter( model, &iter, path )) {
-		gtk_tree_path_free( path );
+	node = (GNode *)gui_clist_get_row_data( file_tree_w, (int)position );
+	if (node == NULL)
 		return;
-	}
 
-	/* Get node pointer from data column */
-	data_col = *(int *)g_object_get_data( G_OBJECT(tree_w), "num_cols" ) + 1;
-	gtk_tree_model_get( model, &iter, data_col, &node, -1 );
-	if (node == NULL) {
-		gtk_tree_path_free( path );
+	geometry_highlight_node( node, FALSE );
+	window_statusbar( SB_RIGHT, node_absname( node ) );
+}
+
+
+/* Callback for double-click (activate) in the file list */
+static void
+filelist_activate_cb( GtkColumnView *column_view, guint position, G_GNUC_UNUSED gpointer user_data )
+{
+	GNode *node;
+
+	if (globals.fsv_mode == FSV_SPLASH)
 		return;
-	}
 
-	/* A single-click from button 1 highlights the node and shows the name */
-	if ((button == 1) && (n_press == 1)) {
-		geometry_highlight_node( node, FALSE );
-		window_statusbar( SB_RIGHT, node_absname( node ) );
-		gtk_tree_path_free( path );
-		return;
-	}
-
-	/* A double-click from button 1 gets the camera moving */
-	if ((button == 1) && (n_press == 2)) {
+	node = (GNode *)gui_clist_get_row_data( GTK_WIDGET(column_view), (int)position );
+	if (node != NULL)
 		camera_look_at( node );
-		gtk_tree_path_free( path );
-		return;
-	}
+}
 
-	/* A click from button 3 selects the row, highlights the node,
-	 * shows the name, and pops up a context-sensitive menu */
-	if (button == 3) {
-		sel = gtk_tree_view_get_selection( GTK_TREE_VIEW(tree_w) );
-		gtk_tree_selection_select_path( sel, path );
-		geometry_highlight_node( node, FALSE );
-		window_statusbar( SB_RIGHT, node_absname( node ) );
-		context_menu( node, tree_w, x, y );
-		gtk_tree_path_free( path );
-		return;
-	}
 
-	gtk_tree_path_free( path );
+/* Callback for right-click in the file list */
+static void
+filelist_right_click_cb( GtkGestureClick *gesture, G_GNUC_UNUSED int n_press,
+                         double x, double y, G_GNUC_UNUSED gpointer user_data )
+{
+	GtkWidget *cv_w = gtk_event_controller_get_widget( GTK_EVENT_CONTROLLER(gesture) );
+	int pos;
+	GNode *node;
+
+	if (globals.fsv_mode == FSV_SPLASH)
+		return;
+
+	pos = gui_clist_get_selected( cv_w );
+	if (pos < 0)
+		return;
+
+	node = (GNode *)gui_clist_get_row_data( cv_w, pos );
+	if (node == NULL)
+		return;
+
+	geometry_highlight_node( node, FALSE );
+	window_statusbar( SB_RIGHT, node_absname( node ) );
+	context_menu( node, cv_w, x, y );
 }
 
 
@@ -319,20 +260,29 @@ void
 filelist_init( void )
 {
 	GtkWidget *parent_w;
+	GtkSingleSelection *sel;
+	GtkGesture *click;
 
-	/* Replace current tree view widget with a single-column one */
+	/* Replace current widget with a single-column one */
 	{
 		GtkWidget *old_scroll_w = gtk_widget_get_parent( file_tree_w );
 		parent_w = gtk_widget_get_parent( old_scroll_w );
-		gtk_widget_unparent( old_scroll_w );
+		gtk_paned_set_end_child( GTK_PANED(parent_w), NULL );
 	}
 	file_tree_w = gui_clist_add( parent_w, 1, NULL );
-	{
-		GtkGesture *click = gtk_gesture_click_new( );
-		gtk_gesture_single_set_button( GTK_GESTURE_SINGLE(click), 0 );
-		g_signal_connect( click, "pressed", G_CALLBACK(filelist_select_cb), NULL );
-		gtk_widget_add_controller( file_tree_w, GTK_EVENT_CONTROLLER(click) );
-	}
+
+	/* Connect selection-changed for single-click highlight */
+	sel = g_object_get_data( G_OBJECT(file_tree_w), "selection_model" );
+	g_signal_connect( sel, "notify::selected", G_CALLBACK(filelist_selection_changed_cb), NULL );
+
+	/* Connect activate for double-click */
+	g_signal_connect( file_tree_w, "activate", G_CALLBACK(filelist_activate_cb), NULL );
+
+	/* Connect right-click gesture for context menu */
+	click = gtk_gesture_click_new( );
+	gtk_gesture_single_set_button( GTK_GESTURE_SINGLE(click), 3 );
+	g_signal_connect( click, "pressed", G_CALLBACK(filelist_right_click_cb), NULL );
+	gtk_widget_add_controller( file_tree_w, GTK_EVENT_CONTROLLER(click) );
 
 	filelist_populate( root_dnode );
 
@@ -349,8 +299,6 @@ filelist_scan_monitor_init( void )
 {
 	char *col_titles[3];
 	GtkWidget *parent_w;
-	GtkListStore *store;
-	GtkTreeIter iter;
 	Icon *icon;
 	int i;
 
@@ -358,29 +306,24 @@ filelist_scan_monitor_init( void )
 	col_titles[1] = _("Found");
 	col_titles[2] = _("Bytes");
 
-	/* Replace current tree view widget with a 3-column one */
+	/* Replace current widget with a 3-column one */
 	{
 		GtkWidget *old_scroll_w = gtk_widget_get_parent( file_tree_w );
 		parent_w = gtk_widget_get_parent( old_scroll_w );
-		gtk_widget_unparent( old_scroll_w );
+		gtk_paned_set_end_child( GTK_PANED(parent_w), NULL );
 	}
 	file_tree_w = gui_clist_add( parent_w, 3, col_titles );
 
 	/* Place icons and static text */
-	store = GTK_LIST_STORE(gtk_tree_view_get_model( GTK_TREE_VIEW(file_tree_w) ));
 	for (i = 1; i <= NUM_NODE_TYPES; i++) {
-		gtk_list_store_append( store, &iter );
 		if (i < NUM_NODE_TYPES) {
 			icon = &node_type_mini_icons[i];
-			gtk_list_store_set( store, &iter,
-				SCANMON_COL_PIXBUF, icon->pixbuf,
-				SCANMON_COL_TYPE, _(node_type_plural_names[i]),
-				-1 );
+			const char *text[] = { _(node_type_plural_names[i]), "", "" };
+			gui_clist_append( file_tree_w, icon->pixbuf, text, 3, NULL );
 		}
 		else {
-			gtk_list_store_set( store, &iter,
-				SCANMON_COL_TYPE, _("TOTAL"),
-				-1 );
+			const char *text[] = { _("TOTAL"), "", "" };
+			gui_clist_append( file_tree_w, NULL, text, 3, NULL );
 		}
 	}
 }
@@ -390,52 +333,42 @@ filelist_scan_monitor_init( void )
 void
 filelist_scan_monitor( int *node_counts, int64 *size_counts )
 {
-	GtkListStore *store;
-	GtkTreeIter iter;
 	const char *str;
 	int64 size_total = 0;
 	int node_total = 0;
 	int i;
-	gboolean valid;
 
-	store = GTK_LIST_STORE(gtk_tree_view_get_model( GTK_TREE_VIEW(file_tree_w) ));
-	valid = gtk_tree_model_get_iter_first( GTK_TREE_MODEL(store), &iter );
+	for (i = 1; i <= NUM_NODE_TYPES; i++) {
+		int row = i - 1;
 
-	for (i = 1; i <= NUM_NODE_TYPES && valid; i++) {
-		/* Column 2: Found count */
+		/* Column 1: Found count */
 		if (i < NUM_NODE_TYPES) {
 			str = i64toa( node_counts[i] );
 			node_total += node_counts[i];
 		}
 		else
 			str = i64toa( node_total );
-		gtk_list_store_set( store, &iter, SCANMON_COL_FOUND, str, -1 );
+		gui_clist_set_row_text( file_tree_w, row, 1, str );
 
-		/* Column 3: Bytes */
+		/* Column 2: Bytes */
 		if (i < NUM_NODE_TYPES) {
 			str = i64toa( size_counts[i] );
 			size_total += size_counts[i];
 		}
 		else
 			str = i64toa( size_total );
-		gtk_list_store_set( store, &iter, SCANMON_COL_BYTES, str, -1 );
-
-		valid = gtk_tree_model_iter_next( GTK_TREE_MODEL(store), &iter );
+		gui_clist_set_row_text( file_tree_w, row, 2, str );
 	}
 }
 
 
-/* Creates the tree view widget used in the "Contents" page of the Properties
- * dialog for a directory */
+/* Creates the list widget used in the "Contents" page of the Properties
+ * dialog for a directory. Returns a scrolled window containing the list. */
 GtkWidget *
 dir_contents_list( GNode *dnode )
 {
 	char *col_titles[2];
-	GtkListStore *store;
-	GtkTreeView *tree_view;
-	GtkTreeIter iter;
-	GtkCellRenderer *renderer;
-	GtkTreeViewColumn *column;
+	GtkWidget *clist_w;
 	Icon *icon;
 	int i;
 
@@ -444,42 +377,21 @@ dir_contents_list( GNode *dnode )
 	col_titles[0] = _("Node type");
 	col_titles[1] = _("Quantity");
 
-	/* Create a simple 2-column list (not inside a scrolled window) */
-	store = gtk_list_store_new( 3, GDK_TYPE_PIXBUF, G_TYPE_STRING, G_TYPE_STRING );
-	tree_view = GTK_TREE_VIEW(gtk_tree_view_new_with_model( GTK_TREE_MODEL(store) ));
-	g_object_unref( store );
-
-	/* Column 0: icon + type name */
-	column = gtk_tree_view_column_new( );
-	gtk_tree_view_column_set_title( column, col_titles[0] );
-	renderer = gtk_cell_renderer_pixbuf_new( );
-	gtk_tree_view_column_pack_start( column, renderer, FALSE );
-	gtk_tree_view_column_add_attribute( column, renderer, "pixbuf", 0 );
-	renderer = gtk_cell_renderer_text_new( );
-	gtk_tree_view_column_pack_start( column, renderer, TRUE );
-	gtk_tree_view_column_add_attribute( column, renderer, "text", 1 );
-	gtk_tree_view_append_column( tree_view, column );
-
-	/* Column 1: quantity */
-	renderer = gtk_cell_renderer_text_new( );
-	column = gtk_tree_view_column_new_with_attributes( col_titles[1], renderer, "text", 2, NULL );
-	gtk_tree_view_append_column( tree_view, column );
-
-	/* Selection mode */
-	gtk_tree_selection_set_mode( gtk_tree_view_get_selection( tree_view ), GTK_SELECTION_SINGLE );
+	/* Create a 2-column list (NULL parent — caller will parent it) */
+	clist_w = gui_clist_add( NULL, 2, col_titles );
 
 	/* Populate */
 	for (i = 1; i < NUM_NODE_TYPES; i++) {
-		gtk_list_store_append( store, &iter );
 		icon = &node_type_mini_icons[i];
-		gtk_list_store_set( store, &iter,
-			0, icon->pixbuf,
-			1, _(node_type_plural_names[i]),
-			2, (char *)i64toa( DIR_NODE_DESC(dnode)->subtree.counts[i] ),
-			-1 );
+		const char *text[] = {
+			_(node_type_plural_names[i]),
+			(char *)i64toa( DIR_NODE_DESC(dnode)->subtree.counts[i] )
+		};
+		gui_clist_append( clist_w, icon->pixbuf, text, 2, NULL );
 	}
 
-	return GTK_WIDGET(tree_view);
+	/* Return the scrolled window (parent of the column view) */
+	return gtk_widget_get_parent( clist_w );
 }
 
 

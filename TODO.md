@@ -308,10 +308,10 @@ Step 7.2 - GtkColorChooser → GtkColorDialog
       color picker and color setup dialog work correctly
 
 Step 7.3 - GtkFileChooserDialog → GtkFileDialog
-  [ ] Replace GtkFileChooserDialog with GtkFileDialog +
+  [x] Replace GtkFileChooserDialog with GtkFileDialog +
       gtk_file_dialog_open (async)
-  [ ] Update gui.c (gui_filesel_window) and dialog.c callers
-  [ ] Verify: builds with no GtkFileChooser deprecation warnings,
+  [x] Update gui.c (gui_filesel_window) and dialog.c callers
+  [x] Verify: builds with no GtkFileChooser deprecation warnings,
       Change Root dialog works correctly
 
 Step 7.4 - File list (GtkTreeView → GtkColumnView)
