@@ -272,11 +272,115 @@ factory_unbind_cb( G_GNUC_UNUSED GtkSignalListItemFactory *factory,
 }
 
 
+/* Helper: get GNode* from a flat-model position */
+static GNode *
+dnode_at_position( guint position )
+{
+	GtkTreeListRow *row;
+	gpointer item;
+	GNode *dnode = NULL;
+
+	row = gtk_tree_list_model_get_row( tree_list_model, position );
+	if (row == NULL)
+		return NULL;
+
+	item = gtk_tree_list_row_get_item( row );
+	if (item != NULL && FSV_IS_DIR_ITEM(item))
+		dnode = fsv_dir_item_get_dnode( FSV_DIR_ITEM(item) );
+	if (item != NULL)
+		g_object_unref( item );
+	g_object_unref( row );
+
+	return dnode;
+}
+
+
+/* Callback for single-click selection change */
+static void
+dirtree_selection_changed_cb( GtkSingleSelection *sel,
+                              G_GNUC_UNUSED GParamSpec *pspec,
+                              G_GNUC_UNUSED gpointer user_data )
+{
+	guint position;
+	GNode *dnode;
+
+	/* If About presentation is up, end it */
+	about( ABOUT_END );
+
+	if (globals.fsv_mode == FSV_SPLASH)
+		return;
+
+	position = gtk_single_selection_get_selected( sel );
+	if (position == GTK_INVALID_LIST_POSITION)
+		return;
+
+	dnode = dnode_at_position( position );
+	if (dnode == NULL)
+		return;
+
+	geometry_highlight_node( dnode, FALSE );
+	window_statusbar( SB_RIGHT, node_absname( dnode ) );
+	if (dnode != dirtree_current_dnode)
+		filelist_populate( dnode );
+	dirtree_current_dnode = dnode;
+}
+
+
+/* Callback for double-click / Enter (activate) */
+static void
+dirtree_activate_cb( GtkListView *list_view, guint position,
+                     G_GNUC_UNUSED gpointer user_data )
+{
+	GNode *dnode;
+
+	(void)list_view;
+
+	if (globals.fsv_mode == FSV_SPLASH)
+		return;
+
+	dnode = dnode_at_position( position );
+	if (dnode != NULL)
+		camera_look_at( dnode );
+}
+
+
+/* Callback for right-click context menu */
+static void
+dirtree_right_click_cb( GtkGestureClick *gesture,
+                        G_GNUC_UNUSED int n_press,
+                        double x, double y,
+                        G_GNUC_UNUSED gpointer user_data )
+{
+	GtkWidget *widget = gtk_event_controller_get_widget( GTK_EVENT_CONTROLLER(gesture) );
+	guint position;
+	GNode *dnode;
+
+	if (globals.fsv_mode == FSV_SPLASH)
+		return;
+
+	position = gtk_single_selection_get_selected( selection_model );
+	if (position == GTK_INVALID_LIST_POSITION)
+		return;
+
+	dnode = dnode_at_position( position );
+	if (dnode == NULL)
+		return;
+
+	geometry_highlight_node( dnode, FALSE );
+	window_statusbar( SB_RIGHT, node_absname( dnode ) );
+	if (dnode != dirtree_current_dnode)
+		filelist_populate( dnode );
+	dirtree_current_dnode = dnode;
+	context_menu( dnode, widget, x, y );
+}
+
+
 /* Correspondence from window_init( ) */
 void
 dirtree_pass_widget( GtkWidget *tree_w )
 {
 	GtkListItemFactory *factory;
+	GtkGesture *click;
 
 	dir_tree_w = tree_w;
 
@@ -290,6 +394,21 @@ dirtree_pass_widget( GtkWidget *tree_w )
 	g_signal_connect( factory, "setup", G_CALLBACK(factory_setup_cb), NULL );
 	g_signal_connect( factory, "bind", G_CALLBACK(factory_bind_cb), NULL );
 	g_signal_connect( factory, "unbind", G_CALLBACK(factory_unbind_cb), NULL );
+
+	/* Connect selection change for single-click highlight */
+	g_signal_connect( selection_model, "notify::selected",
+		G_CALLBACK(dirtree_selection_changed_cb), NULL );
+
+	/* Connect activate for double-click / Enter */
+	g_signal_connect( dir_tree_w, "activate",
+		G_CALLBACK(dirtree_activate_cb), NULL );
+
+	/* Connect right-click gesture for context menu */
+	click = gtk_gesture_click_new( );
+	gtk_gesture_single_set_button( GTK_GESTURE_SINGLE(click), 3 );
+	g_signal_connect( click, "pressed",
+		G_CALLBACK(dirtree_right_click_cb), NULL );
+	gtk_widget_add_controller( dir_tree_w, GTK_EVENT_CONTROLLER(click) );
 }
 
 
