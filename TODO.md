@@ -315,15 +315,15 @@ Step 7.3 - GtkFileChooserDialog → GtkFileDialog
       Change Root dialog works correctly
 
 Step 7.4 - File list (GtkTreeView → GtkColumnView)
-  [ ] Replace gui_clist_add with GtkColumnView + GtkColumnViewColumn
+  [x] Replace gui_clist_add with GtkColumnView + GtkColumnViewColumn
       + GtkSignalListItemFactory backed by a GListStore
-  [ ] Replace GtkListStore row operations (append, set, clear) with
+  [x] Replace GtkListStore row operations (append, set, clear) with
       GListStore equivalents in filelist.c
-  [ ] Replace GtkTreeSelection usage with GtkSingleSelection
-  [ ] Replace GtkCellRenderer (pixbuf + text) with factory-created
+  [x] Replace GtkTreeSelection usage with GtkSingleSelection
+  [x] Replace GtkCellRenderer (pixbuf + text) with factory-created
       widgets (GtkImage + GtkLabel in a GtkBox)
-  [ ] Update gui_clist_moveto_row for the new model
-  [ ] Verify: builds with no GtkListStore/GtkCellRenderer deprecation
+  [x] Update gui_clist_moveto_row for the new model
+  [x] Verify: builds with no GtkListStore/GtkCellRenderer deprecation
       warnings in filelist.c, file list displays and selects correctly
 
   Checkpoint: User tests file list — columns display correctly,
