@@ -48,6 +48,15 @@ struct _Icon {
 #endif /* GTK_WIDGET */
 
 
+/* FsvDirItem — GObject wrapping a GNode* for the directory tree model */
+#ifdef GTK_WIDGET
+#define FSV_TYPE_DIR_ITEM (fsv_dir_item_get_type())
+G_DECLARE_FINAL_TYPE(FsvDirItem, fsv_dir_item, FSV, DIR_ITEM, GObject)
+FsvDirItem *fsv_dir_item_new( GNode *dnode );
+GNode *fsv_dir_item_get_dnode( FsvDirItem *item );
+#endif /* GTK_WIDGET */
+
+
 void gui_update( void );
 #ifdef GTK_WIDGET
 boolean gui_adjustment_widget_busy( GtkAdjustment *adj );
@@ -71,7 +80,6 @@ int gui_clist_get_selected( GtkWidget *clist_w );
 GtkWidget *gui_colorpicker_add( GtkWidget *parent_w, RGBcolor *init_color, const char *title, GCallback callback, void *callback_data );
 void gui_colorpicker_set_color( GtkWidget *colorpicker_w, RGBcolor *color );
 GtkWidget *gui_ctree_add( GtkWidget *parent_w );
-GtkTreeIter *gui_ctree_node_add( GtkWidget *tree_w, GtkTreeIter *parent, Icon icon_pair[2], const char *text, boolean expanded, void *data );
 void gui_cursor( GtkWidget *widget, const char *name );
 GtkWidget *gui_dateedit_add( GtkWidget *parent_w, time_t the_time, GCallback callback, void *callback_data );
 time_t gui_dateedit_get_time( GtkWidget *dateedit_w );

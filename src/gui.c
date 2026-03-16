@@ -752,84 +752,125 @@ gui_colorpicker_set_color( GtkWidget *colorbutton_w, RGBcolor *color )
 }
 
 
-/* Column indices for the tree (ctree replacement) model */
-enum {
-	CTREE_COL_PIXBUF,
-	CTREE_COL_NAME,
-	CTREE_COL_DATA,
-	CTREE_NUM_COLS
+/* FsvDirItem — GObject wrapping a GNode* for the directory tree model */
+
+struct _FsvDirItem {
+	GObject parent_instance;
+	GNode *dnode;
 };
 
+G_DEFINE_TYPE(FsvDirItem, fsv_dir_item, G_TYPE_OBJECT)
 
-/* The tree widget (fitted into a scrolled window).
- * Returns a GtkTreeView backed by a GtkTreeStore. */
+static void
+fsv_dir_item_class_init( G_GNUC_UNUSED FsvDirItemClass *klass )
+{
+}
+
+static void
+fsv_dir_item_init( FsvDirItem *self )
+{
+	self->dnode = NULL;
+}
+
+FsvDirItem *
+fsv_dir_item_new( GNode *dnode )
+{
+	FsvDirItem *item = g_object_new( FSV_TYPE_DIR_ITEM, NULL );
+	item->dnode = dnode;
+	return item;
+}
+
+GNode *
+fsv_dir_item_get_dnode( FsvDirItem *item )
+{
+	g_return_val_if_fail( FSV_IS_DIR_ITEM(item), NULL );
+	return item->dnode;
+}
+
+
+/* Callback for GtkTreeListModel: create child model for a directory item */
+static GListModel *
+ctree_create_child_model( gpointer item_ptr, G_GNUC_UNUSED gpointer user_data )
+{
+	FsvDirItem *item = FSV_DIR_ITEM(item_ptr);
+	GNode *dnode = fsv_dir_item_get_dnode( item );
+	GNode *child;
+	GListStore *store;
+	boolean has_dir_children = FALSE;
+
+	if (dnode == NULL)
+		return NULL;
+
+	/* Check if this directory has any directory children */
+	child = dnode->children;
+	while (child != NULL) {
+		if (NODE_IS_DIR(child)) {
+			has_dir_children = TRUE;
+			break;
+		}
+		child = child->next;
+	}
+
+	if (!has_dir_children)
+		return NULL;
+
+	/* Create a GListStore of FsvDirItem for each directory child */
+	store = g_list_store_new( FSV_TYPE_DIR_ITEM );
+	child = dnode->children;
+	while (child != NULL) {
+		if (NODE_IS_DIR(child)) {
+			FsvDirItem *child_item = fsv_dir_item_new( child );
+			g_list_store_append( store, child_item );
+			g_object_unref( child_item );
+		}
+		child = child->next;
+	}
+
+	return G_LIST_MODEL(store);
+}
+
+
+/* The directory tree widget (fitted into a scrolled window).
+ * Returns a GtkListView backed by GtkTreeListModel + GtkSingleSelection. */
 GtkWidget *
 gui_ctree_add( GtkWidget *parent_w )
 {
 	GtkWidget *scrollwin_w;
-	GtkWidget *tree_view_w;
-	GtkTreeStore *store;
-	GtkCellRenderer *renderer;
-	GtkTreeViewColumn *column;
-	GtkTreeSelection *selection;
+	GtkWidget *list_view_w;
+	GListStore *root_store;
+	GtkTreeListModel *tree_model;
+	GtkSingleSelection *sel;
+	GtkListItemFactory *factory;
 
 	scrollwin_w = gtk_scrolled_window_new( );
 	gtk_scrolled_window_set_policy( GTK_SCROLLED_WINDOW(scrollwin_w), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC );
 	gtk_widget_add_css_class( scrollwin_w, "view" );
 	parent_child_full( parent_w, scrollwin_w, EXPAND, FILL );
 
-G_GNUC_BEGIN_IGNORE_DEPRECATIONS
-	store = gtk_tree_store_new( CTREE_NUM_COLS, GDK_TYPE_PIXBUF, G_TYPE_STRING, G_TYPE_POINTER );
-	tree_view_w = gtk_tree_view_new_with_model( GTK_TREE_MODEL(store) );
-	g_object_unref( store );
+	root_store = g_list_store_new( FSV_TYPE_DIR_ITEM );
+	tree_model = gtk_tree_list_model_new(
+		G_LIST_MODEL(root_store),
+		FALSE,		/* passthrough = FALSE (wrap in GtkTreeListRow) */
+		FALSE,		/* autoexpand = FALSE */
+		ctree_create_child_model,
+		NULL, NULL );
 
-	column = gtk_tree_view_column_new( );
-	renderer = gtk_cell_renderer_pixbuf_new( );
-	gtk_tree_view_column_pack_start( column, renderer, FALSE );
-	gtk_tree_view_column_add_attribute( column, renderer, "pixbuf", CTREE_COL_PIXBUF );
-	renderer = gtk_cell_renderer_text_new( );
-	gtk_tree_view_column_pack_start( column, renderer, TRUE );
-	gtk_tree_view_column_add_attribute( column, renderer, "text", CTREE_COL_NAME );
-	gtk_tree_view_append_column( GTK_TREE_VIEW(tree_view_w), column );
+	sel = gtk_single_selection_new( G_LIST_MODEL(tree_model) );
+	gtk_single_selection_set_autoselect( sel, FALSE );
+	gtk_single_selection_set_can_unselect( sel, TRUE );
 
-	gtk_tree_view_set_headers_visible( GTK_TREE_VIEW(tree_view_w), FALSE );
-	gtk_tree_view_set_enable_tree_lines( GTK_TREE_VIEW(tree_view_w), TRUE );
+	factory = gtk_signal_list_item_factory_new( );
+	/* Factory setup/bind signals are connected in dirtree_pass_widget */
 
-	selection = gtk_tree_view_get_selection( GTK_TREE_VIEW(tree_view_w) );
-	gtk_tree_selection_set_mode( selection, GTK_SELECTION_BROWSE );
+	list_view_w = gtk_list_view_new( GTK_SELECTION_MODEL(sel), factory );
+	gtk_scrolled_window_set_child( GTK_SCROLLED_WINDOW(scrollwin_w), list_view_w );
 
-	gtk_scrolled_window_set_child( GTK_SCROLLED_WINDOW(scrollwin_w), tree_view_w );
+	/* Store references for dirtree.c to retrieve */
+	g_object_set_data( G_OBJECT(list_view_w), "root_store", root_store );
+	g_object_set_data( G_OBJECT(list_view_w), "tree_list_model", tree_model );
+	g_object_set_data( G_OBJECT(list_view_w), "selection_model", sel );
 
-	return tree_view_w;
-}
-
-
-/* Adds a new node to a tree view backed by a GtkTreeStore */
-GtkTreeIter *
-gui_ctree_node_add( GtkWidget *tree_w, GtkTreeIter *parent, Icon icon_pair[2], const char *text, boolean expanded, void *data )
-{
-	GtkTreeStore *store;
-	GtkTreeIter *iter;
-	GdkPixbuf *icon;
-
-	store = GTK_TREE_STORE(gtk_tree_view_get_model( GTK_TREE_VIEW(tree_w) ));
-	iter = g_new( GtkTreeIter, 1 );
-	gtk_tree_store_append( store, iter, parent );
-
-	icon = expanded ? icon_pair[1].pixbuf : icon_pair[0].pixbuf;
-	gtk_tree_store_set( store, iter,
-		CTREE_COL_PIXBUF, icon,
-		CTREE_COL_NAME, text,
-		CTREE_COL_DATA, data,
-		-1 );
-
-	if (expanded) {
-		GtkTreePath *path = gtk_tree_model_get_path( GTK_TREE_MODEL(store), iter );
-		gtk_tree_view_expand_row( GTK_TREE_VIEW(tree_w), path, FALSE );
-		gtk_tree_path_free( path );
-	}
-
-	return iter;
+	return list_view_w;
 }
 
 

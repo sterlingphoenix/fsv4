@@ -367,7 +367,7 @@ scanfs( const char *dir )
 	name = g_path_get_dirname( root_dir );
 	NODE_DESC(globals.fstree)->name = g_string_chunk_insert( name_strchunk, name );
 	g_free( name );
-	DIR_NODE_DESC(globals.fstree)->ctnode = NULL; /* needed in dirtree_entry_new( ) */
+	DIR_NODE_DESC(globals.fstree)->tree_expanded = FALSE;
 
 	/* Set up root directory node */
 	g_node_append_data( globals.fstree, g_slice_new0( DirNodeDesc ) );
