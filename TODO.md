@@ -335,12 +335,12 @@ Step 7.5 - Directory tree (GtkTreeView → GtkListView + GtkTreeListModel)
       GtkSignalListItemFactory backed by a GListStore-per-level
   [x] Replace GtkTreeStore operations (append, set, clear) with
       GListStore equivalents in dirtree.c
-  [ ] Replace GtkTreeSelection with GtkSingleSelection
+  [x] Replace GtkTreeSelection with GtkSingleSelection
   [x] Implement expand/collapse via GtkTreeListRow
   [x] Replace gui_ctree_node_add with GListStore item insertion
   [x] Update dirtree_entry_expand, dirtree_entry_collapse,
       dirtree_entry_expand_recursive, dirtree_select for new model
-  [ ] Verify: builds with no GtkTreeView/GtkTreeStore deprecation
+  [x] Verify: builds with no GtkTreeView/GtkTreeStore deprecation
       warnings in dirtree.c, directory tree displays, expands,
       collapses, and selects correctly
 
