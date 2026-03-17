@@ -348,9 +348,9 @@ Step 7.5 - Directory tree (GtkTreeView → GtkListView + GtkTreeListModel)
   clicking selects and navigates, tree stays in sync with 3D view.
 
 Step 7.6 - Dialog lists (remaining GtkTreeView usage)
-  [ ] Replace any remaining GtkTreeView/GtkListStore usage in
+  [x] Replace any remaining GtkTreeView/GtkListStore usage in
       dialog.c (color setup wildcard pattern list, node properties)
-  [ ] Verify: builds with no remaining deprecation warnings,
+  [x] Verify: builds with no remaining deprecation warnings,
       all dialogs work correctly
 
 Step 7.7 - Final cleanup
