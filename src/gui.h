@@ -42,7 +42,7 @@
 /* Icon container */
 typedef struct _Icon Icon;
 struct _Icon {
-	GdkPixbuf *pixbuf;
+	GdkTexture *texture;
 };
 
 #endif /* GTK_WIDGET */
@@ -70,7 +70,7 @@ GtkWidget *gui_toggle_button_add( GtkWidget *parent_w, const char *label, boolea
 GtkWidget *gui_clist_add( GtkWidget *parent_w, int num_cols, char *col_titles[] );
 void gui_clist_moveto_row( GtkWidget *clist_w, int row, double moveto_time );
 void gui_clist_clear( GtkWidget *clist_w );
-void gui_clist_append( GtkWidget *clist_w, GdkPixbuf *icon, const char *text[], int num_text, gpointer data );
+void gui_clist_append( GtkWidget *clist_w, GdkTexture *icon, const char *text[], int num_text, gpointer data );
 int gui_clist_get_n_rows( GtkWidget *clist_w );
 gpointer gui_clist_get_row_data( GtkWidget *clist_w, int position );
 void gui_clist_set_row_text( GtkWidget *clist_w, int position, int col, const char *text );

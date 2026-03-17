@@ -354,11 +354,11 @@ Step 7.6 - Dialog lists (remaining GtkTreeView usage)
       all dialogs work correctly
 
 Step 7.7 - Final cleanup
-  [ ] Remove any remaining GdkPixbuf usage where GdkTexture/
+  [x] Remove any remaining GdkPixbuf usage where GdkTexture/
       GdkPaintable is the GTK 4 replacement
-  [ ] Remove G_GNUC_BEGIN_IGNORE_DEPRECATIONS guards
-  [ ] Verify: ninja -C builddir produces zero deprecation warnings
-  [ ] Verify: program runs, all features work
+  [x] Remove G_GNUC_BEGIN_IGNORE_DEPRECATIONS guards
+  [x] Verify: ninja -C builddir produces zero deprecation warnings
+  [x] Verify: program runs, all features work
 
   Checkpoint: User tests everything. Build is warning-free.
 

@@ -288,7 +288,7 @@ gui_toggle_button_add( GtkWidget *parent_w, const char *label, boolean active, G
 
 struct _FsvListRow {
 	GObject parent;
-	GdkPixbuf *icon;
+	GdkTexture *icon;
 	char *col_text[4];
 	gpointer data;
 };
@@ -373,7 +373,7 @@ fsv_list_row_class_init( FsvListRowClass *klass )
 	gobject_class->set_property = fsv_list_row_set_property;
 	gobject_class->get_property = fsv_list_row_get_property;
 
-	list_row_properties[PROP_ICON] = g_param_spec_object( "icon", NULL, NULL, GDK_TYPE_PIXBUF, G_PARAM_READWRITE );
+	list_row_properties[PROP_ICON] = g_param_spec_object( "icon", NULL, NULL, GDK_TYPE_TEXTURE, G_PARAM_READWRITE );
 	list_row_properties[PROP_TEXT0] = g_param_spec_string( "text0", NULL, NULL, NULL, G_PARAM_READWRITE );
 	list_row_properties[PROP_TEXT1] = g_param_spec_string( "text1", NULL, NULL, NULL, G_PARAM_READWRITE );
 	list_row_properties[PROP_TEXT2] = g_param_spec_string( "text2", NULL, NULL, NULL, G_PARAM_READWRITE );
@@ -413,14 +413,10 @@ clist_col0_bind_cb( G_GNUC_UNUSED GtkListItemFactory *factory, GtkListItem *list
 	GtkWidget *label = gtk_widget_get_next_sibling( image );
 	FsvListRow *row = FSV_LIST_ROW(gtk_list_item_get_item( list_item ));
 
-	if (row->icon != NULL) {
-G_GNUC_BEGIN_IGNORE_DEPRECATIONS
-		gtk_image_set_from_pixbuf( GTK_IMAGE(image), row->icon );
-G_GNUC_END_IGNORE_DEPRECATIONS
-	}
-	else {
+	if (row->icon != NULL)
+		gtk_image_set_from_paintable( GTK_IMAGE(image), GDK_PAINTABLE(row->icon) );
+	else
 		gtk_image_clear( GTK_IMAGE(image) );
-	}
 
 	gtk_label_set_text( GTK_LABEL(label), row->col_text[0] != NULL ? row->col_text[0] : "" );
 }
@@ -520,8 +516,7 @@ gui_clist_add( GtkWidget *parent_w, int num_cols, char *col_titles[] )
 }
 
 
-/* Scrolls a list widget to a given row (-1 indicates last row).
- * Works with both GtkColumnView (new) and GtkTreeView (legacy, for dialog.c). */
+/* Scrolls a list widget to a given row (-1 indicates last row). */
 void
 gui_clist_moveto_row( GtkWidget *widget, int row, double moveto_time )
 {
@@ -530,17 +525,11 @@ gui_clist_moveto_row( GtkWidget *widget, int row, double moveto_time )
 	double *anim_value_var;
 	float k, new_value;
 	int n_rows;
+	GListStore *store;
 
-	if (GTK_IS_COLUMN_VIEW(widget)) {
-		GListStore *store = g_object_get_data( G_OBJECT(widget), "list_store" );
-		n_rows = (int)g_list_model_get_n_items( G_LIST_MODEL(store) );
-	}
-	else {
-G_GNUC_BEGIN_IGNORE_DEPRECATIONS
-		GtkTreeModel *model = gtk_tree_view_get_model( GTK_TREE_VIEW(widget) );
-		n_rows = gtk_tree_model_iter_n_children( model, NULL );
-G_GNUC_END_IGNORE_DEPRECATIONS
-	}
+	store = g_object_get_data( G_OBJECT(widget), "list_store" );
+	g_return_if_fail( store != NULL );
+	n_rows = (int)g_list_model_get_n_items( G_LIST_MODEL(store) );
 
 	if (n_rows == 0)
 		return;
@@ -548,15 +537,6 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		row = n_rows - 1;
 	if (row >= n_rows)
 		row = n_rows - 1;
-
-	if (!GTK_IS_COLUMN_VIEW(widget) && moveto_time <= 0.0) {
-G_GNUC_BEGIN_IGNORE_DEPRECATIONS
-		GtkTreePath *path = gtk_tree_path_new_from_indices( row, -1 );
-		gtk_tree_view_scroll_to_cell( GTK_TREE_VIEW(widget), path, NULL, TRUE, 0.5, 0.0 );
-		gtk_tree_path_free( path );
-G_GNUC_END_IGNORE_DEPRECATIONS
-		return;
-	}
 
 	scrollwin_w = gtk_widget_get_parent( widget );
 	if (!GTK_IS_SCROLLED_WINDOW(scrollwin_w))
@@ -597,7 +577,7 @@ gui_clist_clear( GtkWidget *clist_w )
 
 /* Appends a row to a clist. text[] must have at least num_cols entries. */
 void
-gui_clist_append( GtkWidget *clist_w, GdkPixbuf *icon, const char *text[], int num_text, gpointer data )
+gui_clist_append( GtkWidget *clist_w, GdkTexture *icon, const char *text[], int num_text, gpointer data )
 {
 	GListStore *store = g_object_get_data( G_OBJECT(clist_w), "list_store" );
 	FsvListRow *row = g_object_new( FSV_TYPE_LIST_ROW, NULL );
@@ -1139,18 +1119,38 @@ gui_vpaned_add( GtkWidget *parent_w, int divider_y_pos )
 }
 
 
+/* Helper: convert XPM data to GdkTexture via PNG encoding */
+static GdkTexture *
+texture_from_xpm( char **xpm_data )
+{
+	GdkPixbuf *pixbuf;
+	GdkTexture *texture;
+	char *png_buf = NULL;
+	gsize png_len = 0;
+	GBytes *bytes;
+
+	pixbuf = gdk_pixbuf_new_from_xpm_data( (const char **)xpm_data );
+	gdk_pixbuf_save_to_buffer( pixbuf, &png_buf, &png_len, "png", NULL, NULL );
+	g_object_unref( pixbuf );
+
+	bytes = g_bytes_new_take( png_buf, png_len );
+	texture = gdk_texture_new_from_bytes( bytes, NULL );
+	g_bytes_unref( bytes );
+
+	return texture;
+}
+
+
 /* The image widget (created from XPM data) */
 GtkWidget *
 gui_pixmap_xpm_add( GtkWidget *parent_w, char **xpm_data )
 {
 	GtkWidget *image_w;
-	GdkPixbuf *pixbuf;
+	GdkTexture *texture;
 
-	pixbuf = gdk_pixbuf_new_from_xpm_data( (const char **)xpm_data );
-G_GNUC_BEGIN_IGNORE_DEPRECATIONS
-	image_w = gtk_image_new_from_pixbuf( pixbuf );
-G_GNUC_END_IGNORE_DEPRECATIONS
-	g_object_unref( pixbuf );
+	texture = texture_from_xpm( xpm_data );
+	image_w = gtk_image_new_from_paintable( GDK_PAINTABLE(texture) );
+	g_object_unref( texture );
 	parent_child( parent_w, image_w );
 
 	return image_w;

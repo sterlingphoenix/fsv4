@@ -46,7 +46,7 @@ static GtkWidget *file_tree_w;
 /* Directory currently listed */
 static GNode *filelist_current_dnode;
 
-/* Mini node type icons (GdkPixbuf) */
+/* Mini node type icons (GdkTexture) */
 static Icon node_type_mini_icons[NUM_NODE_TYPES];
 
 
@@ -56,8 +56,20 @@ filelist_icons_init( void )
 {
 	int i;
 
-	for (i = 1; i < NUM_NODE_TYPES; i++)
-		node_type_mini_icons[i].pixbuf = gdk_pixbuf_new_from_xpm_data( (const char **)node_type_mini_xpms[i] );
+	for (i = 1; i < NUM_NODE_TYPES; i++) {
+		GdkPixbuf *pixbuf;
+		char *png_buf = NULL;
+		gsize png_len = 0;
+		GBytes *bytes;
+
+		pixbuf = gdk_pixbuf_new_from_xpm_data( (const char **)node_type_mini_xpms[i] );
+		gdk_pixbuf_save_to_buffer( pixbuf, &png_buf, &png_len, "png", NULL, NULL );
+		g_object_unref( pixbuf );
+
+		bytes = g_bytes_new_take( png_buf, png_len );
+		node_type_mini_icons[i].texture = gdk_texture_new_from_bytes( bytes, NULL );
+		g_bytes_unref( bytes );
+	}
 }
 
 
@@ -127,7 +139,7 @@ filelist_populate( GNode *dnode )
 
 		{
 			const char *text[] = { NODE_DESC(node)->name };
-			gui_clist_append( file_tree_w, icon->pixbuf, text, 1, node );
+			gui_clist_append( file_tree_w, icon->texture, text, 1, node );
 		}
 
 		++count;
@@ -319,7 +331,7 @@ filelist_scan_monitor_init( void )
 		if (i < NUM_NODE_TYPES) {
 			icon = &node_type_mini_icons[i];
 			const char *text[] = { _(node_type_plural_names[i]), "", "" };
-			gui_clist_append( file_tree_w, icon->pixbuf, text, 3, NULL );
+			gui_clist_append( file_tree_w, icon->texture, text, 3, NULL );
 		}
 		else {
 			const char *text[] = { _("TOTAL"), "", "" };
@@ -387,7 +399,7 @@ dir_contents_list( GNode *dnode )
 			_(node_type_plural_names[i]),
 			(char *)i64toa( DIR_NODE_DESC(dnode)->subtree.counts[i] )
 		};
-		gui_clist_append( clist_w, icon->pixbuf, text, 2, NULL );
+		gui_clist_append( clist_w, icon->texture, text, 2, NULL );
 	}
 
 	/* Return the scrolled window (parent of the column view) */
