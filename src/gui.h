@@ -42,9 +42,18 @@
 /* Icon container */
 typedef struct _Icon Icon;
 struct _Icon {
-	GdkPixbuf *pixbuf;
+	GdkTexture *texture;
 };
 
+#endif /* GTK_WIDGET */
+
+
+/* FsvDirItem — GObject wrapping a GNode* for the directory tree model */
+#ifdef GTK_WIDGET
+#define FSV_TYPE_DIR_ITEM (fsv_dir_item_get_type())
+G_DECLARE_FINAL_TYPE(FsvDirItem, fsv_dir_item, FSV, DIR_ITEM, GObject)
+FsvDirItem *fsv_dir_item_new( GNode *dnode );
+GNode *fsv_dir_item_get_dnode( FsvDirItem *item );
 #endif /* GTK_WIDGET */
 
 
@@ -60,10 +69,17 @@ GtkWidget *gui_button_with_pixmap_xpm_add( GtkWidget *parent_w, char **xpm_data,
 GtkWidget *gui_toggle_button_add( GtkWidget *parent_w, const char *label, boolean active, GCallback callback, void *callback_data );
 GtkWidget *gui_clist_add( GtkWidget *parent_w, int num_cols, char *col_titles[] );
 void gui_clist_moveto_row( GtkWidget *clist_w, int row, double moveto_time );
+void gui_clist_clear( GtkWidget *clist_w );
+void gui_clist_append( GtkWidget *clist_w, GdkTexture *icon, const char *text[], int num_text, gpointer data );
+int gui_clist_get_n_rows( GtkWidget *clist_w );
+gpointer gui_clist_get_row_data( GtkWidget *clist_w, int position );
+void gui_clist_set_row_text( GtkWidget *clist_w, int position, int col, const char *text );
+int gui_clist_find_by_data( GtkWidget *clist_w, gpointer data );
+void gui_clist_select_row( GtkWidget *clist_w, int position );
+int gui_clist_get_selected( GtkWidget *clist_w );
 GtkWidget *gui_colorpicker_add( GtkWidget *parent_w, RGBcolor *init_color, const char *title, GCallback callback, void *callback_data );
 void gui_colorpicker_set_color( GtkWidget *colorpicker_w, RGBcolor *color );
 GtkWidget *gui_ctree_add( GtkWidget *parent_w );
-GtkTreeIter *gui_ctree_node_add( GtkWidget *tree_w, GtkTreeIter *parent, Icon icon_pair[2], const char *text, boolean expanded, void *data );
 void gui_cursor( GtkWidget *widget, const char *name );
 GtkWidget *gui_dateedit_add( GtkWidget *parent_w, time_t the_time, GCallback callback, void *callback_data );
 time_t gui_dateedit_get_time( GtkWidget *dateedit_w );
@@ -96,7 +112,7 @@ void gui_widget_packing( GtkWidget *widget, boolean expand, boolean fill, boolea
 GtkWidget *gui_colorsel_window( const char *title, RGBcolor *init_color, GCallback ok_callback, void *ok_callback_data );
 GtkWidget *gui_dialog_window( const char *title, GCallback close_callback );
 GtkWidget *gui_entry_window( const char *title, const char *init_text, GCallback ok_callback, void *ok_callback_data );
-GtkWidget *gui_filesel_window( const char *title, const char *init_filename, GCallback ok_callback, void *ok_callback_data );
+void gui_filesel_window( const char *title, const char *init_filename, GCallback ok_callback, void *ok_callback_data, boolean select_folder );
 void gui_window_modalize( GtkWidget *window_w, GtkWidget *parent_window_w );
 #endif /* GTK_WIDGET */
 

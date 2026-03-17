@@ -284,112 +284,261 @@ gui_toggle_button_add( GtkWidget *parent_w, const char *label, boolean active, G
 }
 
 
+/**** FsvListRow — GObject for GListStore-backed list views ****/
+
+struct _FsvListRow {
+	GObject parent;
+	GdkTexture *icon;
+	char *col_text[4];
+	gpointer data;
+};
+
+#define FSV_TYPE_LIST_ROW (fsv_list_row_get_type( ))
+G_DECLARE_FINAL_TYPE(FsvListRow, fsv_list_row, FSV, LIST_ROW, GObject)
+G_DEFINE_TYPE(FsvListRow, fsv_list_row, G_TYPE_OBJECT)
+
+enum {
+	PROP_0,
+	PROP_ICON,
+	PROP_TEXT0,
+	PROP_TEXT1,
+	PROP_TEXT2,
+	PROP_TEXT3,
+	N_PROPERTIES
+};
+static GParamSpec *list_row_properties[N_PROPERTIES];
+
+static void
+fsv_list_row_finalize( GObject *obj )
+{
+	FsvListRow *row = FSV_LIST_ROW(obj);
+	int i;
+
+	g_clear_object( &row->icon );
+	for (i = 0; i < 4; i++)
+		g_free( row->col_text[i] );
+	G_OBJECT_CLASS(fsv_list_row_parent_class)->finalize( obj );
+}
+
+static void
+fsv_list_row_set_property( GObject *obj, guint prop_id, const GValue *value, GParamSpec *pspec )
+{
+	FsvListRow *row = FSV_LIST_ROW(obj);
+	int col;
+
+	switch (prop_id) {
+		case PROP_ICON:
+		g_clear_object( &row->icon );
+		row->icon = g_value_dup_object( value );
+		break;
+
+		case PROP_TEXT0: case PROP_TEXT1: case PROP_TEXT2: case PROP_TEXT3:
+		col = prop_id - PROP_TEXT0;
+		g_free( row->col_text[col] );
+		row->col_text[col] = g_value_dup_string( value );
+		break;
+
+		default:
+		G_OBJECT_WARN_INVALID_PROPERTY_ID( obj, prop_id, pspec );
+	}
+}
+
+static void
+fsv_list_row_get_property( GObject *obj, guint prop_id, GValue *value, GParamSpec *pspec )
+{
+	FsvListRow *row = FSV_LIST_ROW(obj);
+	int col;
+
+	switch (prop_id) {
+		case PROP_ICON:
+		g_value_set_object( value, row->icon );
+		break;
+
+		case PROP_TEXT0: case PROP_TEXT1: case PROP_TEXT2: case PROP_TEXT3:
+		col = prop_id - PROP_TEXT0;
+		g_value_set_string( value, row->col_text[col] );
+		break;
+
+		default:
+		G_OBJECT_WARN_INVALID_PROPERTY_ID( obj, prop_id, pspec );
+	}
+}
+
+static void
+fsv_list_row_class_init( FsvListRowClass *klass )
+{
+	GObjectClass *gobject_class = G_OBJECT_CLASS(klass);
+
+	gobject_class->finalize = fsv_list_row_finalize;
+	gobject_class->set_property = fsv_list_row_set_property;
+	gobject_class->get_property = fsv_list_row_get_property;
+
+	list_row_properties[PROP_ICON] = g_param_spec_object( "icon", NULL, NULL, GDK_TYPE_TEXTURE, G_PARAM_READWRITE );
+	list_row_properties[PROP_TEXT0] = g_param_spec_string( "text0", NULL, NULL, NULL, G_PARAM_READWRITE );
+	list_row_properties[PROP_TEXT1] = g_param_spec_string( "text1", NULL, NULL, NULL, G_PARAM_READWRITE );
+	list_row_properties[PROP_TEXT2] = g_param_spec_string( "text2", NULL, NULL, NULL, G_PARAM_READWRITE );
+	list_row_properties[PROP_TEXT3] = g_param_spec_string( "text3", NULL, NULL, NULL, G_PARAM_READWRITE );
+	g_object_class_install_properties( gobject_class, N_PROPERTIES, list_row_properties );
+}
+
+static void
+fsv_list_row_init( G_GNUC_UNUSED FsvListRow *row )
+{
+}
+
+
+/**** GtkColumnView factory callbacks ****/
+
+/* Factory setup for column 0: icon + text */
+static void
+clist_col0_setup_cb( G_GNUC_UNUSED GtkListItemFactory *factory, GtkListItem *list_item, G_GNUC_UNUSED gpointer user_data )
+{
+	GtkWidget *box = gtk_box_new( GTK_ORIENTATION_HORIZONTAL, 4 );
+	GtkWidget *image = gtk_image_new( );
+	GtkWidget *label = gtk_label_new( NULL );
+
+	gtk_label_set_xalign( GTK_LABEL(label), 0.0 );
+	gtk_widget_set_hexpand( label, TRUE );
+	gtk_box_append( GTK_BOX(box), image );
+	gtk_box_append( GTK_BOX(box), label );
+	gtk_list_item_set_child( list_item, box );
+}
+
+/* Factory bind for column 0: set icon + text from item */
+static void
+clist_col0_bind_cb( G_GNUC_UNUSED GtkListItemFactory *factory, GtkListItem *list_item, G_GNUC_UNUSED gpointer user_data )
+{
+	GtkWidget *box = gtk_list_item_get_child( list_item );
+	GtkWidget *image = gtk_widget_get_first_child( box );
+	GtkWidget *label = gtk_widget_get_next_sibling( image );
+	FsvListRow *row = FSV_LIST_ROW(gtk_list_item_get_item( list_item ));
+
+	if (row->icon != NULL)
+		gtk_image_set_from_paintable( GTK_IMAGE(image), GDK_PAINTABLE(row->icon) );
+	else
+		gtk_image_clear( GTK_IMAGE(image) );
+
+	gtk_label_set_text( GTK_LABEL(label), row->col_text[0] != NULL ? row->col_text[0] : "" );
+}
+
+/* Factory unbind for column 0: clear content */
+static void
+clist_col0_unbind_cb( G_GNUC_UNUSED GtkListItemFactory *factory, GtkListItem *list_item, G_GNUC_UNUSED gpointer user_data )
+{
+	GtkWidget *box = gtk_list_item_get_child( list_item );
+	GtkWidget *image = gtk_widget_get_first_child( box );
+
+	gtk_image_clear( GTK_IMAGE(image) );
+}
+
+/* Factory setup for text-only columns */
+static void
+clist_text_setup_cb( G_GNUC_UNUSED GtkListItemFactory *factory, GtkListItem *list_item, G_GNUC_UNUSED gpointer user_data )
+{
+	GtkWidget *label = gtk_label_new( NULL );
+	gtk_label_set_xalign( GTK_LABEL(label), 0.0 );
+	gtk_list_item_set_child( list_item, label );
+}
+
+/* Factory bind for text-only columns */
+static void
+clist_text_bind_cb( GtkListItemFactory *factory, GtkListItem *list_item, G_GNUC_UNUSED gpointer user_data )
+{
+	GtkWidget *label = gtk_list_item_get_child( list_item );
+	FsvListRow *row = FSV_LIST_ROW(gtk_list_item_get_item( list_item ));
+	int col = GPOINTER_TO_INT(g_object_get_data( G_OBJECT(factory), "col_index" ));
+
+	gtk_label_set_text( GTK_LABEL(label), (col >= 0 && col < 4 && row->col_text[col] != NULL) ? row->col_text[col] : "" );
+}
+
+
 /* The [multi-column] list widget (fitted into a scrolled window).
- * Returns a GtkTreeView backed by a GtkListStore.
- * Model columns: pixbuf (0), text[0..num_cols-1] (1..num_cols), pointer (num_cols+1).
- * First visible column shows pixbuf + text; remaining columns show text only.
- * Note: GtkTreeView is deprecated in GTK4 but still functional. */
+ * Returns a GtkColumnView backed by a GListStore of FsvListRow.
+ * Column 0 shows icon + text; remaining columns show text only. */
 GtkWidget *
 gui_clist_add( GtkWidget *parent_w, int num_cols, char *col_titles[] )
 {
 	GtkWidget *scrollwin_w;
-	GtkWidget *tree_view_w;
-	GtkListStore *store;
-	GtkCellRenderer *renderer;
-	GtkTreeViewColumn *column;
-	GtkTreeSelection *selection;
-	GType *col_types;
-	int total_cols;
+	GtkWidget *column_view_w;
+	GListStore *store;
+	GtkSingleSelection *sel_model;
+	GtkListItemFactory *factory;
+	GtkColumnViewColumn *column;
 	int i;
-	int *num_cols_p;
 
 	scrollwin_w = gtk_scrolled_window_new( );
 	gtk_scrolled_window_set_policy( GTK_SCROLLED_WINDOW(scrollwin_w), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC );
+	gtk_widget_add_css_class( scrollwin_w, "view" );
 	parent_child_full( parent_w, scrollwin_w, EXPAND, FILL );
 
-	/* Build column types array: pixbuf, num_cols strings, pointer */
-	total_cols = num_cols + 2;
-	col_types = g_new( GType, total_cols );
-	col_types[0] = GDK_TYPE_PIXBUF;
-	for (i = 0; i < num_cols; i++)
-		col_types[i + 1] = G_TYPE_STRING;
-	col_types[num_cols + 1] = G_TYPE_POINTER;
+	store = g_list_store_new( FSV_TYPE_LIST_ROW );
+	sel_model = gtk_single_selection_new( G_LIST_MODEL(store) );
+	gtk_single_selection_set_autoselect( sel_model, FALSE );
+	gtk_single_selection_set_can_unselect( sel_model, TRUE );
 
-	store = gtk_list_store_newv( total_cols, col_types );
-	g_free( col_types );
+	column_view_w = gtk_column_view_new( GTK_SELECTION_MODEL(sel_model) );
+	gtk_column_view_set_show_column_separators( GTK_COLUMN_VIEW(column_view_w), FALSE );
+	gtk_column_view_set_show_row_separators( GTK_COLUMN_VIEW(column_view_w), FALSE );
 
-	tree_view_w = gtk_tree_view_new_with_model( GTK_TREE_MODEL(store) );
-	g_object_unref( store );
-	gtk_tree_view_set_headers_visible( GTK_TREE_VIEW(tree_view_w), col_titles != NULL );
-
-	/* First column: pixbuf + text */
-	column = gtk_tree_view_column_new( );
-	if (col_titles != NULL && col_titles[0] != NULL)
-		gtk_tree_view_column_set_title( column, col_titles[0] );
-	renderer = gtk_cell_renderer_pixbuf_new( );
-	gtk_tree_view_column_pack_start( column, renderer, FALSE );
-	gtk_tree_view_column_add_attribute( column, renderer, "pixbuf", 0 );
-	renderer = gtk_cell_renderer_text_new( );
-	gtk_tree_view_column_pack_start( column, renderer, TRUE );
-	gtk_tree_view_column_add_attribute( column, renderer, "text", 1 );
-	gtk_tree_view_column_set_resizable( column, TRUE );
-	gtk_tree_view_append_column( GTK_TREE_VIEW(tree_view_w), column );
+	/* Column 0: icon + text */
+	factory = gtk_signal_list_item_factory_new( );
+	g_signal_connect( factory, "setup", G_CALLBACK(clist_col0_setup_cb), NULL );
+	g_signal_connect( factory, "bind", G_CALLBACK(clist_col0_bind_cb), NULL );
+	g_signal_connect( factory, "unbind", G_CALLBACK(clist_col0_unbind_cb), NULL );
+	column = gtk_column_view_column_new( (col_titles != NULL) ? col_titles[0] : NULL, factory );
+	gtk_column_view_column_set_resizable( column, TRUE );
+	gtk_column_view_column_set_expand( column, TRUE );
+	gtk_column_view_append_column( GTK_COLUMN_VIEW(column_view_w), column );
+	g_object_unref( column );
 
 	/* Additional text columns */
 	for (i = 1; i < num_cols; i++) {
-		renderer = gtk_cell_renderer_text_new( );
-		column = gtk_tree_view_column_new_with_attributes(
-			(col_titles != NULL) ? col_titles[i] : NULL,
-			renderer, "text", i + 1, NULL );
-		gtk_tree_view_column_set_resizable( column, TRUE );
-		gtk_tree_view_append_column( GTK_TREE_VIEW(tree_view_w), column );
+		factory = gtk_signal_list_item_factory_new( );
+		g_object_set_data( G_OBJECT(factory), "col_index", GINT_TO_POINTER(i) );
+		g_signal_connect( factory, "setup", G_CALLBACK(clist_text_setup_cb), NULL );
+		g_signal_connect( factory, "bind", G_CALLBACK(clist_text_bind_cb), NULL );
+		column = gtk_column_view_column_new( (col_titles != NULL) ? col_titles[i] : NULL, factory );
+		gtk_column_view_column_set_resizable( column, TRUE );
+		gtk_column_view_append_column( GTK_COLUMN_VIEW(column_view_w), column );
+		g_object_unref( column );
 	}
 
-	/* Single selection mode */
-	selection = gtk_tree_view_get_selection( GTK_TREE_VIEW(tree_view_w) );
-	gtk_tree_selection_set_mode( selection, GTK_SELECTION_SINGLE );
+	/* Show headers only if titles were provided */
+	gtk_column_view_set_show_column_separators( GTK_COLUMN_VIEW(column_view_w), col_titles != NULL );
 
-	/* Store num_cols on the widget for later use */
-	num_cols_p = g_new( int, 1 );
-	*num_cols_p = num_cols;
-	g_object_set_data_full( G_OBJECT(tree_view_w), "num_cols", num_cols_p, g_free );
+	/* Store references for callers */
+	g_object_set_data( G_OBJECT(column_view_w), "list_store", store );
+	g_object_set_data( G_OBJECT(column_view_w), "selection_model", sel_model );
 
-	gtk_scrolled_window_set_child( GTK_SCROLLED_WINDOW(scrollwin_w), tree_view_w );
+	gtk_scrolled_window_set_child( GTK_SCROLLED_WINDOW(scrollwin_w), column_view_w );
 
-	return tree_view_w;
+	return column_view_w;
 }
 
 
-/* Scrolls a tree view to a given row (-1 indicates last row). */
+/* Scrolls a list widget to a given row (-1 indicates last row). */
 void
-gui_clist_moveto_row( GtkWidget *tree_view_w, int row, double moveto_time )
+gui_clist_moveto_row( GtkWidget *widget, int row, double moveto_time )
 {
-	GtkTreeModel *model;
-	GtkTreePath *path;
 	GtkAdjustment *vadj;
 	GtkWidget *scrollwin_w;
 	double *anim_value_var;
 	float k, new_value;
 	int n_rows;
+	GListStore *store;
 
-	model = gtk_tree_view_get_model( GTK_TREE_VIEW(tree_view_w) );
-	n_rows = gtk_tree_model_iter_n_children( model, NULL );
+	store = g_object_get_data( G_OBJECT(widget), "list_store" );
+	g_return_if_fail( store != NULL );
+	n_rows = (int)g_list_model_get_n_items( G_LIST_MODEL(store) );
+
 	if (n_rows == 0)
 		return;
-
 	if (row < 0)
 		row = n_rows - 1;
 	if (row >= n_rows)
 		row = n_rows - 1;
 
-	if (moveto_time <= 0.0) {
-		path = gtk_tree_path_new_from_indices( row, -1 );
-		gtk_tree_view_scroll_to_cell( GTK_TREE_VIEW(tree_view_w), path, NULL, TRUE, 0.5, 0.0 );
-		gtk_tree_path_free( path );
-		return;
-	}
-
-	scrollwin_w = gtk_widget_get_parent( tree_view_w );
+	scrollwin_w = gtk_widget_get_parent( widget );
 	if (!GTK_IS_SCROLLED_WINDOW(scrollwin_w))
 		return;
 	vadj = gtk_scrolled_window_get_vadjustment( GTK_SCROLLED_WINDOW(scrollwin_w) );
@@ -397,6 +546,11 @@ gui_clist_moveto_row( GtkWidget *tree_view_w, int row, double moveto_time )
 	k = (double)row / (double)n_rows;
 	k = k * gtk_adjustment_get_upper( vadj ) - 0.5 * gtk_adjustment_get_page_size( vadj );
 	new_value = CLAMP(k, 0.0, gtk_adjustment_get_upper( vadj ) - gtk_adjustment_get_page_size( vadj ));
+
+	if (moveto_time <= 0.0) {
+		gtk_adjustment_set_value( vadj, new_value );
+		return;
+	}
 
 	anim_value_var = g_object_get_data( G_OBJECT(vadj), "anim_value_var" );
 	if (anim_value_var == NULL) {
@@ -410,20 +564,136 @@ gui_clist_moveto_row( GtkWidget *tree_view_w, int row, double moveto_time )
 }
 
 
-/* Internal callback for the color picker widget */
+/**** gui_clist helper functions ****/
+
+/* Removes all rows from a clist */
+void
+gui_clist_clear( GtkWidget *clist_w )
+{
+	GListStore *store = g_object_get_data( G_OBJECT(clist_w), "list_store" );
+	g_list_store_remove_all( store );
+}
+
+
+/* Appends a row to a clist. text[] must have at least num_cols entries. */
+void
+gui_clist_append( GtkWidget *clist_w, GdkTexture *icon, const char *text[], int num_text, gpointer data )
+{
+	GListStore *store = g_object_get_data( G_OBJECT(clist_w), "list_store" );
+	FsvListRow *row = g_object_new( FSV_TYPE_LIST_ROW, NULL );
+	int i;
+
+	if (icon != NULL)
+		row->icon = g_object_ref( icon );
+	for (i = 0; i < num_text && i < 4; i++)
+		row->col_text[i] = g_strdup( text[i] );
+	row->data = data;
+	g_list_store_append( store, row );
+	g_object_unref( row );
+}
+
+
+/* Returns the number of rows in a clist */
+int
+gui_clist_get_n_rows( GtkWidget *clist_w )
+{
+	GListStore *store = g_object_get_data( G_OBJECT(clist_w), "list_store" );
+	return (int)g_list_model_get_n_items( G_LIST_MODEL(store) );
+}
+
+
+/* Returns the data pointer from row at position */
+gpointer
+gui_clist_get_row_data( GtkWidget *clist_w, int position )
+{
+	GListStore *store = g_object_get_data( G_OBJECT(clist_w), "list_store" );
+	FsvListRow *row = g_list_model_get_item( G_LIST_MODEL(store), (guint)position );
+	gpointer data;
+
+	if (row == NULL)
+		return NULL;
+	data = row->data;
+	g_object_unref( row );
+	return data;
+}
+
+
+/* Sets a text column value on an existing row and forces the view to update */
+void
+gui_clist_set_row_text( GtkWidget *clist_w, int position, int col, const char *text )
+{
+	GListStore *store = g_object_get_data( G_OBJECT(clist_w), "list_store" );
+	FsvListRow *row = g_list_model_get_item( G_LIST_MODEL(store), (guint)position );
+	gpointer items[1];
+
+	if (row == NULL || col < 0 || col >= 4)
+		return;
+	g_free( row->col_text[col] );
+	row->col_text[col] = g_strdup( text );
+	/* Replace item at same position to trigger items-changed and rebind */
+	items[0] = row;
+	g_list_store_splice( store, (guint)position, 1, items, 1 );
+	g_object_unref( row );
+}
+
+
+/* Finds a row by its data pointer, returns position or -1 */
+int
+gui_clist_find_by_data( GtkWidget *clist_w, gpointer data )
+{
+	GListStore *store = g_object_get_data( G_OBJECT(clist_w), "list_store" );
+	guint n = g_list_model_get_n_items( G_LIST_MODEL(store) );
+	guint i;
+
+	for (i = 0; i < n; i++) {
+		FsvListRow *row = g_list_model_get_item( G_LIST_MODEL(store), i );
+		gpointer row_data = row->data;
+		g_object_unref( row );
+		if (row_data == data)
+			return (int)i;
+	}
+	return -1;
+}
+
+
+/* Selects a row by position (-1 to unselect all) */
+void
+gui_clist_select_row( GtkWidget *clist_w, int position )
+{
+	GtkSingleSelection *sel = g_object_get_data( G_OBJECT(clist_w), "selection_model" );
+	if (position < 0)
+		gtk_single_selection_set_selected( sel, GTK_INVALID_LIST_POSITION );
+	else
+		gtk_single_selection_set_selected( sel, (guint)position );
+}
+
+
+/* Returns the selected row position, or -1 if none */
+int
+gui_clist_get_selected( GtkWidget *clist_w )
+{
+	GtkSingleSelection *sel = g_object_get_data( G_OBJECT(clist_w), "selection_model" );
+	guint pos = gtk_single_selection_get_selected( sel );
+	if (pos == GTK_INVALID_LIST_POSITION)
+		return -1;
+	return (int)pos;
+}
+
+
+/* Internal callback for the color dialog button "notify::rgba" signal */
 static void
-color_picker_cb( GtkColorButton *colorbutton, gpointer data )
+color_picker_cb( GObject *object, G_GNUC_UNUSED GParamSpec *pspec, gpointer data )
 {
 	void (*user_callback)( RGBcolor *, void * );
 	RGBcolor color;
-	GdkRGBA rgba;
+	const GdkRGBA *rgba;
 
-	gtk_color_chooser_get_rgba( GTK_COLOR_CHOOSER(colorbutton), &rgba );
-	color.r = (float)rgba.red;
-	color.g = (float)rgba.green;
-	color.b = (float)rgba.blue;
+	rgba = gtk_color_dialog_button_get_rgba( GTK_COLOR_DIALOG_BUTTON(object) );
+	color.r = (float)rgba->red;
+	color.g = (float)rgba->green;
+	color.b = (float)rgba->blue;
 
-	user_callback = (void (*)( RGBcolor *, void * ))g_object_get_data( G_OBJECT(colorbutton), "user_callback" );
+	user_callback = (void (*)( RGBcolor *, void * ))g_object_get_data( object, "user_callback" );
 	(user_callback)( &color, data );
 }
 
@@ -433,13 +703,15 @@ GtkWidget *
 gui_colorpicker_add( GtkWidget *parent_w, RGBcolor *init_color, const char *title, GCallback callback, void *callback_data )
 {
 	GtkWidget *colorbutton_w;
+	GtkColorDialog *dialog;
 
-	colorbutton_w = gtk_color_button_new();
-	gui_colorpicker_set_color(colorbutton_w, init_color);
-	gtk_color_button_set_title(GTK_COLOR_BUTTON(colorbutton_w), title);
-	g_signal_connect(G_OBJECT(colorbutton_w), "color-set", G_CALLBACK(color_picker_cb), callback_data);
-	g_object_set_data(G_OBJECT(colorbutton_w), "user_callback", (void *)callback);
-	parent_child(parent_w, colorbutton_w);
+	dialog = gtk_color_dialog_new( );
+	gtk_color_dialog_set_title( dialog, title );
+	colorbutton_w = gtk_color_dialog_button_new( dialog );
+	gui_colorpicker_set_color( colorbutton_w, init_color );
+	g_signal_connect( G_OBJECT(colorbutton_w), "notify::rgba", G_CALLBACK(color_picker_cb), callback_data );
+	g_object_set_data( G_OBJECT(colorbutton_w), "user_callback", (void *)callback );
+	parent_child( parent_w, colorbutton_w );
 
 	return colorbutton_w;
 }
@@ -456,86 +728,129 @@ gui_colorpicker_set_color( GtkWidget *colorbutton_w, RGBcolor *color )
 		.alpha	= 1.0,
 	};
 
-	gtk_color_chooser_set_rgba( GTK_COLOR_CHOOSER(colorbutton_w), &rgba );
+	gtk_color_dialog_button_set_rgba( GTK_COLOR_DIALOG_BUTTON(colorbutton_w), &rgba );
 }
 
 
-/* Column indices for the tree (ctree replacement) model */
-enum {
-	CTREE_COL_PIXBUF,
-	CTREE_COL_NAME,
-	CTREE_COL_DATA,
-	CTREE_NUM_COLS
+/* FsvDirItem — GObject wrapping a GNode* for the directory tree model */
+
+struct _FsvDirItem {
+	GObject parent_instance;
+	GNode *dnode;
 };
 
+G_DEFINE_TYPE(FsvDirItem, fsv_dir_item, G_TYPE_OBJECT)
 
-/* The tree widget (fitted into a scrolled window).
- * Returns a GtkTreeView backed by a GtkTreeStore. */
+static void
+fsv_dir_item_class_init( G_GNUC_UNUSED FsvDirItemClass *klass )
+{
+}
+
+static void
+fsv_dir_item_init( FsvDirItem *self )
+{
+	self->dnode = NULL;
+}
+
+FsvDirItem *
+fsv_dir_item_new( GNode *dnode )
+{
+	FsvDirItem *item = g_object_new( FSV_TYPE_DIR_ITEM, NULL );
+	item->dnode = dnode;
+	return item;
+}
+
+GNode *
+fsv_dir_item_get_dnode( FsvDirItem *item )
+{
+	g_return_val_if_fail( FSV_IS_DIR_ITEM(item), NULL );
+	return item->dnode;
+}
+
+
+/* Callback for GtkTreeListModel: create child model for a directory item */
+static GListModel *
+ctree_create_child_model( gpointer item_ptr, G_GNUC_UNUSED gpointer user_data )
+{
+	FsvDirItem *item = FSV_DIR_ITEM(item_ptr);
+	GNode *dnode = fsv_dir_item_get_dnode( item );
+	GNode *child;
+	GListStore *store;
+	boolean has_dir_children = FALSE;
+
+	if (dnode == NULL)
+		return NULL;
+
+	/* Check if this directory has any directory children */
+	child = dnode->children;
+	while (child != NULL) {
+		if (NODE_IS_DIR(child)) {
+			has_dir_children = TRUE;
+			break;
+		}
+		child = child->next;
+	}
+
+	if (!has_dir_children)
+		return NULL;
+
+	/* Create a GListStore of FsvDirItem for each directory child */
+	store = g_list_store_new( FSV_TYPE_DIR_ITEM );
+	child = dnode->children;
+	while (child != NULL) {
+		if (NODE_IS_DIR(child)) {
+			FsvDirItem *child_item = fsv_dir_item_new( child );
+			g_list_store_append( store, child_item );
+			g_object_unref( child_item );
+		}
+		child = child->next;
+	}
+
+	return G_LIST_MODEL(store);
+}
+
+
+/* The directory tree widget (fitted into a scrolled window).
+ * Returns a GtkListView backed by GtkTreeListModel + GtkSingleSelection. */
 GtkWidget *
 gui_ctree_add( GtkWidget *parent_w )
 {
 	GtkWidget *scrollwin_w;
-	GtkWidget *tree_view_w;
-	GtkTreeStore *store;
-	GtkCellRenderer *renderer;
-	GtkTreeViewColumn *column;
-	GtkTreeSelection *selection;
+	GtkWidget *list_view_w;
+	GListStore *root_store;
+	GtkTreeListModel *tree_model;
+	GtkSingleSelection *sel;
+	GtkListItemFactory *factory;
 
 	scrollwin_w = gtk_scrolled_window_new( );
 	gtk_scrolled_window_set_policy( GTK_SCROLLED_WINDOW(scrollwin_w), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC );
+	gtk_widget_add_css_class( scrollwin_w, "view" );
 	parent_child_full( parent_w, scrollwin_w, EXPAND, FILL );
 
-	store = gtk_tree_store_new( CTREE_NUM_COLS, GDK_TYPE_PIXBUF, G_TYPE_STRING, G_TYPE_POINTER );
-	tree_view_w = gtk_tree_view_new_with_model( GTK_TREE_MODEL(store) );
-	g_object_unref( store );
+	root_store = g_list_store_new( FSV_TYPE_DIR_ITEM );
+	tree_model = gtk_tree_list_model_new(
+		G_LIST_MODEL(root_store),
+		FALSE,		/* passthrough = FALSE (wrap in GtkTreeListRow) */
+		FALSE,		/* autoexpand = FALSE */
+		ctree_create_child_model,
+		NULL, NULL );
 
-	column = gtk_tree_view_column_new( );
-	renderer = gtk_cell_renderer_pixbuf_new( );
-	gtk_tree_view_column_pack_start( column, renderer, FALSE );
-	gtk_tree_view_column_add_attribute( column, renderer, "pixbuf", CTREE_COL_PIXBUF );
-	renderer = gtk_cell_renderer_text_new( );
-	gtk_tree_view_column_pack_start( column, renderer, TRUE );
-	gtk_tree_view_column_add_attribute( column, renderer, "text", CTREE_COL_NAME );
-	gtk_tree_view_append_column( GTK_TREE_VIEW(tree_view_w), column );
+	sel = gtk_single_selection_new( G_LIST_MODEL(tree_model) );
+	gtk_single_selection_set_autoselect( sel, FALSE );
+	gtk_single_selection_set_can_unselect( sel, TRUE );
 
-	gtk_tree_view_set_headers_visible( GTK_TREE_VIEW(tree_view_w), FALSE );
-	gtk_tree_view_set_enable_tree_lines( GTK_TREE_VIEW(tree_view_w), TRUE );
+	factory = gtk_signal_list_item_factory_new( );
+	/* Factory setup/bind signals are connected in dirtree_pass_widget */
 
-	selection = gtk_tree_view_get_selection( GTK_TREE_VIEW(tree_view_w) );
-	gtk_tree_selection_set_mode( selection, GTK_SELECTION_BROWSE );
+	list_view_w = gtk_list_view_new( GTK_SELECTION_MODEL(sel), factory );
+	gtk_scrolled_window_set_child( GTK_SCROLLED_WINDOW(scrollwin_w), list_view_w );
 
-	gtk_scrolled_window_set_child( GTK_SCROLLED_WINDOW(scrollwin_w), tree_view_w );
+	/* Store references for dirtree.c to retrieve */
+	g_object_set_data( G_OBJECT(list_view_w), "root_store", root_store );
+	g_object_set_data( G_OBJECT(list_view_w), "tree_list_model", tree_model );
+	g_object_set_data( G_OBJECT(list_view_w), "selection_model", sel );
 
-	return tree_view_w;
-}
-
-
-/* Adds a new node to a tree view backed by a GtkTreeStore */
-GtkTreeIter *
-gui_ctree_node_add( GtkWidget *tree_w, GtkTreeIter *parent, Icon icon_pair[2], const char *text, boolean expanded, void *data )
-{
-	GtkTreeStore *store;
-	GtkTreeIter *iter;
-	GdkPixbuf *icon;
-
-	store = GTK_TREE_STORE(gtk_tree_view_get_model( GTK_TREE_VIEW(tree_w) ));
-	iter = g_new( GtkTreeIter, 1 );
-	gtk_tree_store_append( store, iter, parent );
-
-	icon = expanded ? icon_pair[1].pixbuf : icon_pair[0].pixbuf;
-	gtk_tree_store_set( store, iter,
-		CTREE_COL_PIXBUF, icon,
-		CTREE_COL_NAME, text,
-		CTREE_COL_DATA, data,
-		-1 );
-
-	if (expanded) {
-		GtkTreePath *path = gtk_tree_model_get_path( GTK_TREE_MODEL(store), iter );
-		gtk_tree_view_expand_row( GTK_TREE_VIEW(tree_w), path, FALSE );
-		gtk_tree_path_free( path );
-	}
-
-	return iter;
+	return list_view_w;
 }
 
 
@@ -689,48 +1004,52 @@ static struct OptionMenuItem optmenu_items[16];
 static int optmenu_item_count = 0;
 
 
-/* Callback dispatcher for combo box "changed" signal */
+/* Callback dispatcher for GtkDropDown "notify::selected" signal */
 static void
-option_menu_changed_cb( GtkComboBox *combo, G_GNUC_UNUSED gpointer data )
+option_menu_selected_cb( GObject *object, G_GNUC_UNUSED GParamSpec *pspec, G_GNUC_UNUSED gpointer data )
 {
 	struct OptionMenuItem *items;
 	int count;
-	int active;
+	guint active;
 
-	active = gtk_combo_box_get_active( combo );
-	items = (struct OptionMenuItem *)g_object_get_data( G_OBJECT(combo), "optmenu_items" );
-	count = GPOINTER_TO_INT(g_object_get_data( G_OBJECT(combo), "optmenu_item_count" ));
-	if (active >= 0 && active < count && items[active].callback != NULL) {
+	active = gtk_drop_down_get_selected( GTK_DROP_DOWN(object) );
+	items = (struct OptionMenuItem *)g_object_get_data( object, "optmenu_items" );
+	count = GPOINTER_TO_INT(g_object_get_data( object, "optmenu_item_count" ));
+	if (active < (guint)count && items[active].callback != NULL) {
 		void (*cb)( GtkWidget *, void * ) = (void (*)( GtkWidget *, void * ))items[active].callback;
-		cb( GTK_WIDGET(combo), items[active].callback_data );
+		cb( GTK_WIDGET(object), items[active].callback_data );
 	}
 }
 
 
-/* The combo box widget */
+/* The drop-down selection widget */
 GtkWidget *
 gui_option_menu_add( GtkWidget *parent_w, int init_selected )
 {
-	GtkWidget *combo_w;
+	GtkWidget *dropdown_w;
+	GtkStringList *string_list;
 	struct OptionMenuItem *items_copy;
 	int i;
 
-	combo_w = gtk_combo_box_text_new( );
+	/* Build string list from accumulated items */
+	string_list = gtk_string_list_new( NULL );
 	for (i = 0; i < optmenu_item_count; i++)
-		gtk_combo_box_text_append_text( GTK_COMBO_BOX_TEXT(combo_w), optmenu_items[i].label );
+		gtk_string_list_append( string_list, optmenu_items[i].label );
+
+	dropdown_w = gtk_drop_down_new( G_LIST_MODEL(string_list), NULL );
 
 	items_copy = g_new( struct OptionMenuItem, optmenu_item_count );
 	memcpy( items_copy, optmenu_items, optmenu_item_count * sizeof(struct OptionMenuItem) );
-	g_object_set_data_full( G_OBJECT(combo_w), "optmenu_items", items_copy, g_free );
-	g_object_set_data( G_OBJECT(combo_w), "optmenu_item_count", GINT_TO_POINTER(optmenu_item_count) );
+	g_object_set_data_full( G_OBJECT(dropdown_w), "optmenu_items", items_copy, g_free );
+	g_object_set_data( G_OBJECT(dropdown_w), "optmenu_item_count", GINT_TO_POINTER(optmenu_item_count) );
 
-	gtk_combo_box_set_active( GTK_COMBO_BOX(combo_w), init_selected );
-	g_signal_connect( G_OBJECT(combo_w), "changed", G_CALLBACK(option_menu_changed_cb), NULL );
+	gtk_drop_down_set_selected( GTK_DROP_DOWN(dropdown_w), init_selected );
+	g_signal_connect( G_OBJECT(dropdown_w), "notify::selected", G_CALLBACK(option_menu_selected_cb), NULL );
 
-	parent_child( parent_w, combo_w );
+	parent_child( parent_w, dropdown_w );
 	optmenu_item_count = 0;
 
-	return combo_w;
+	return dropdown_w;
 }
 
 
@@ -800,18 +1119,38 @@ gui_vpaned_add( GtkWidget *parent_w, int divider_y_pos )
 }
 
 
+/* Helper: convert XPM data to GdkTexture via PNG encoding */
+static GdkTexture *
+texture_from_xpm( char **xpm_data )
+{
+	GdkPixbuf *pixbuf;
+	GdkTexture *texture;
+	char *png_buf = NULL;
+	gsize png_len = 0;
+	GBytes *bytes;
+
+	pixbuf = gdk_pixbuf_new_from_xpm_data( (const char **)xpm_data );
+	gdk_pixbuf_save_to_buffer( pixbuf, &png_buf, &png_len, "png", NULL, NULL );
+	g_object_unref( pixbuf );
+
+	bytes = g_bytes_new_take( png_buf, png_len );
+	texture = gdk_texture_new_from_bytes( bytes, NULL );
+	g_bytes_unref( bytes );
+
+	return texture;
+}
+
+
 /* The image widget (created from XPM data) */
 GtkWidget *
 gui_pixmap_xpm_add( GtkWidget *parent_w, char **xpm_data )
 {
 	GtkWidget *image_w;
-	GdkPixbuf *pixbuf;
+	GdkTexture *texture;
 
-	pixbuf = gdk_pixbuf_new_from_xpm_data( (const char **)xpm_data );
-G_GNUC_BEGIN_IGNORE_DEPRECATIONS
-	image_w = gtk_image_new_from_pixbuf( pixbuf );
-G_GNUC_END_IGNORE_DEPRECATIONS
-	g_object_unref( pixbuf );
+	texture = texture_from_xpm( xpm_data );
+	image_w = gtk_image_new_from_paintable( GDK_PAINTABLE(texture) );
+	g_object_unref( texture );
 	parent_child( parent_w, image_w );
 
 	return image_w;
@@ -1027,52 +1366,59 @@ gui_widget_packing( GtkWidget *widget, boolean expand, boolean fill, G_GNUC_UNUS
 }
 
 
-/* Internal callback for the color chooser dialog response */
+/* Data passed to the async color dialog completion callback */
+struct ColorSelData {
+	GCallback callback;
+	void *callback_data;
+};
+
+/* Async completion callback for the color dialog */
 static void
-colorsel_window_response_cb( GtkDialog *dialog, gint response_id, G_GNUC_UNUSED gpointer user_data )
+colorsel_dialog_done_cb( GObject *source, GAsyncResult *result, gpointer user_data )
 {
+	GtkColorDialog *dialog = GTK_COLOR_DIALOG(source);
+	struct ColorSelData *csd = (struct ColorSelData *)user_data;
+	GdkRGBA *rgba;
 	RGBcolor color;
-	GdkRGBA rgba;
 	void (*user_callback)( const RGBcolor *, void * );
-	void *user_callback_data;
 
-	user_callback = (void (*)( const RGBcolor *, void * ))g_object_get_data( G_OBJECT(dialog), "user_callback" );
-	user_callback_data = g_object_get_data( G_OBJECT(dialog), "user_callback_data" );
-
-	if (response_id == GTK_RESPONSE_OK) {
-		gtk_color_chooser_get_rgba( GTK_COLOR_CHOOSER(dialog), &rgba );
-		color.r = (float)rgba.red;
-		color.g = (float)rgba.green;
-		color.b = (float)rgba.blue;
-		gtk_window_destroy( GTK_WINDOW(dialog) );
-		(user_callback)( &color, user_callback_data );
+	rgba = gtk_color_dialog_choose_rgba_finish( dialog, result, NULL );
+	if (rgba != NULL) {
+		color.r = (float)rgba->red;
+		color.g = (float)rgba->green;
+		color.b = (float)rgba->blue;
+		user_callback = (void (*)( const RGBcolor *, void * ))csd->callback;
+		(user_callback)( &color, csd->callback_data );
+		gdk_rgba_free( rgba );
 	}
-	else {
-		gtk_window_destroy( GTK_WINDOW(dialog) );
-	}
+	g_free( csd );
 }
 
 
-/* Creates a color chooser window */
+/* Opens a color chooser dialog (async) */
 GtkWidget *
 gui_colorsel_window( const char *title, RGBcolor *init_color, GCallback ok_callback, void *ok_callback_data )
 {
-	GtkWidget *colorsel_window_w;
+	GtkColorDialog *dialog;
 	GdkRGBA rgba;
+	struct ColorSelData *csd;
 
-	colorsel_window_w = gtk_color_chooser_dialog_new( title, NULL );
+	dialog = gtk_color_dialog_new( );
+	gtk_color_dialog_set_title( dialog, title );
 	rgba.red = init_color->r;
 	rgba.green = init_color->g;
 	rgba.blue = init_color->b;
 	rgba.alpha = 1.0;
-	gtk_color_chooser_set_rgba( GTK_COLOR_CHOOSER(colorsel_window_w), &rgba );
-	g_object_set_data( G_OBJECT(colorsel_window_w), "user_callback", (void *)ok_callback );
-	g_object_set_data( G_OBJECT(colorsel_window_w), "user_callback_data", ok_callback_data );
-	g_signal_connect( G_OBJECT(colorsel_window_w), "response", G_CALLBACK(colorsel_window_response_cb), NULL );
-	gtk_window_set_modal( GTK_WINDOW(colorsel_window_w), TRUE );
-	gtk_window_present( GTK_WINDOW(colorsel_window_w) );
 
-	return colorsel_window_w;
+	csd = g_new( struct ColorSelData, 1 );
+	csd->callback = ok_callback;
+	csd->callback_data = ok_callback_data;
+
+	gtk_color_dialog_choose_rgba( dialog,
+		GTK_WINDOW(gtk_application_get_active_window( GTK_APPLICATION(g_application_get_default( )) )),
+		&rgba, NULL, colorsel_dialog_done_cb, csd );
+
+	return NULL;
 }
 
 
@@ -1166,55 +1512,69 @@ gui_entry_window( const char *title, const char *init_text, GCallback ok_callbac
 }
 
 
-/* Internal callback for the file chooser dialog response */
+/* Data passed to the async file dialog completion callback */
+struct FileSelData {
+	GCallback callback;
+	void *callback_data;
+};
+
+/* Async completion callback for the file/folder dialog */
 static void
-filesel_window_response_cb( GtkDialog *dialog, gint response_id, G_GNUC_UNUSED gpointer data )
+filesel_dialog_done_cb( GObject *source, GAsyncResult *result, gpointer user_data )
 {
+	GtkFileDialog *dialog = GTK_FILE_DIALOG(source);
+	struct FileSelData *fsd = (struct FileSelData *)user_data;
 	GFile *file;
 	char *filename;
 	void (*user_callback)( const char *, void * );
-	void *user_callback_data;
 
-	if (response_id == GTK_RESPONSE_ACCEPT) {
-		file = gtk_file_chooser_get_file( GTK_FILE_CHOOSER(dialog) );
+	/* Try select_folder_finish first, then open_finish */
+	file = gtk_file_dialog_select_folder_finish( dialog, result, NULL );
+	if (file == NULL)
+		file = gtk_file_dialog_open_finish( dialog, result, NULL );
+	if (file != NULL) {
 		filename = g_file_get_path( file );
 		g_object_unref( file );
-		user_callback = (void (*)( const char *, void * ))g_object_get_data( G_OBJECT(dialog), "user_callback" );
-		user_callback_data = g_object_get_data( G_OBJECT(dialog), "user_callback_data" );
-		gtk_window_destroy( GTK_WINDOW(dialog) );
-
-		(user_callback)( filename, user_callback_data );
-
+		user_callback = (void (*)( const char *, void * ))fsd->callback;
+		(user_callback)( filename, fsd->callback_data );
 		g_free( filename );
 	}
-	else {
-		gtk_window_destroy( GTK_WINDOW(dialog) );
-	}
+	g_free( fsd );
 }
 
 
-/* Creates a file chooser window */
-GtkWidget *
-gui_filesel_window( const char *title, const char *init_filename, GCallback ok_callback, void *ok_callback_data )
+/* Opens a file/folder chooser dialog (async).
+ * If select_folder is TRUE, opens a folder chooser instead. */
+void
+gui_filesel_window( const char *title, const char *init_filename, GCallback ok_callback, void *ok_callback_data, boolean select_folder )
 {
-	GtkWidget *filesel_window_w;
+	GtkFileDialog *dialog;
+	GtkWindow *parent;
+	struct FileSelData *fsd;
+	GFile *init_folder = NULL;
 
-	filesel_window_w = gtk_file_chooser_dialog_new( title, NULL,
-		GTK_FILE_CHOOSER_ACTION_OPEN,
-		_("_Cancel"), GTK_RESPONSE_CANCEL,
-		_("_OK"), GTK_RESPONSE_ACCEPT,
-		NULL );
+	dialog = gtk_file_dialog_new( );
+	gtk_file_dialog_set_title( dialog, title );
+	gtk_file_dialog_set_modal( dialog, TRUE );
+
 	if (init_filename != NULL) {
-		GFile *file = g_file_new_for_path( init_filename );
-		gtk_file_chooser_set_file( GTK_FILE_CHOOSER(filesel_window_w), file, NULL );
-		g_object_unref( file );
+		init_folder = g_file_new_for_path( init_filename );
+		gtk_file_dialog_set_initial_folder( dialog, init_folder );
 	}
-	g_object_set_data( G_OBJECT(filesel_window_w), "user_callback", (void *)ok_callback );
-	g_object_set_data( G_OBJECT(filesel_window_w), "user_callback_data", ok_callback_data );
-	g_signal_connect( G_OBJECT(filesel_window_w), "response", G_CALLBACK(filesel_window_response_cb), NULL );
-	gtk_window_set_modal( GTK_WINDOW(filesel_window_w), TRUE );
 
-	return filesel_window_w;
+	parent = GTK_WINDOW(gtk_application_get_active_window( GTK_APPLICATION(g_application_get_default( )) ));
+
+	fsd = g_new( struct FileSelData, 1 );
+	fsd->callback = ok_callback;
+	fsd->callback_data = ok_callback_data;
+
+	if (select_folder)
+		gtk_file_dialog_select_folder( dialog, parent, NULL, filesel_dialog_done_cb, fsd );
+	else
+		gtk_file_dialog_open( dialog, parent, NULL, filesel_dialog_done_cb, fsd );
+
+	if (init_folder != NULL)
+		g_object_unref( init_folder );
 }
 
 

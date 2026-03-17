@@ -36,78 +36,273 @@
 #include "gui.h"
 #include "window.h"
 
-/* Mini collapsed/expanded directory icon XPM's */
-#define mini_folder_xpm mini_folder_closed_xpm
-#include "xmaps/mini-folder.xpm"
-#include "xmaps/mini-folder-open.xpm"
-
 
 /* Time for the directory tree to scroll to a given entry (in seconds) */
 #define DIRTREE_SCROLL_TIME 0.5
 
-/* Column indices in the TreeStore (must match gui.c CTREE_COL_* enum) */
-enum {
-	COL_PIXBUF = 0,
-	COL_NAME   = 1,
-	COL_DATA   = 2
-};
+/* Indentation per tree depth level (pixels) */
+#define INDENT_PER_LEVEL 16
 
 
-/* The directory tree widget (GtkTreeView) */
+/* The directory tree widget (GtkListView) */
 static GtkWidget *dir_tree_w;
 
-/* Mini collapsed/expanded directory icons (GdkPixbuf) */
-static Icon dir_colexp_mini_icons[2];
+/* Model references (retrieved from list view widget data) */
+static GListStore *root_store;
+static GtkTreeListModel *tree_list_model;
+static GtkSingleSelection *selection_model;
 
 /* Current directory */
 static GNode *dirtree_current_dnode;
 
+/* TRUE while programmatic expand/collapse is in progress —
+ * the notify::expanded handler still fires (updating icons)
+ * but arrow click handler ignores clicks */
+static boolean colexp_blocked = FALSE;
 
-/* Helper: get the TreeStore model from the tree view */
-static GtkTreeStore *
-get_tree_store( void )
+
+/* Find the flat-model position and GtkTreeListRow for a given dnode.
+ * Returns the row (caller must g_object_unref) or NULL.
+ * If out_position is non-NULL, stores the flat position. */
+static GtkTreeListRow *
+find_tree_list_row( GNode *dnode, guint *out_position )
 {
-	return GTK_TREE_STORE(gtk_tree_view_get_model( GTK_TREE_VIEW(dir_tree_w) ));
+	guint n = g_list_model_get_n_items( G_LIST_MODEL(tree_list_model) );
+	guint i;
+
+	for (i = 0; i < n; i++) {
+		GtkTreeListRow *row = gtk_tree_list_model_get_row( tree_list_model, i );
+		if (row == NULL)
+			continue;
+		gpointer item = gtk_tree_list_row_get_item( row );
+		if (item != NULL && FSV_IS_DIR_ITEM(item)) {
+			GNode *row_dnode = fsv_dir_item_get_dnode( FSV_DIR_ITEM(item) );
+			g_object_unref( item );
+			if (row_dnode == dnode) {
+				if (out_position != NULL)
+					*out_position = i;
+				return row; /* caller must unref */
+			}
+		} else if (item != NULL) {
+			g_object_unref( item );
+		}
+		g_object_unref( row );
+	}
+	return NULL;
 }
 
 
-/* Helper: get GNode from a tree path */
-static GNode *
-dnode_from_path( GtkTreePath *path )
-{
-	GtkTreeStore *store = get_tree_store( );
-	GtkTreeIter iter;
-	GNode *dnode = NULL;
-
-	if (gtk_tree_model_get_iter( GTK_TREE_MODEL(store), &iter, path ))
-		gtk_tree_model_get( GTK_TREE_MODEL(store), &iter, COL_DATA, &dnode, -1 );
-
-	return dnode;
-}
-
-
-/* Helper: get GNode from a tree iter */
-static GNode *
-dnode_from_iter( GtkTreeIter *iter )
-{
-	GtkTreeStore *store = get_tree_store( );
-	GNode *dnode = NULL;
-
-	gtk_tree_model_get( GTK_TREE_MODEL(store), iter, COL_DATA, &dnode, -1 );
-	return dnode;
-}
-
-
-/* Callback for click in the directory tree area (GtkGestureClick) */
+/* Callback for click on the expand/collapse arrow button */
 static void
-dirtree_select_cb( GtkGestureClick *gesture, int n_press, double x, double y, G_GNUC_UNUSED gpointer user_data )
+arrow_clicked_cb( GtkButton *button, G_GNUC_UNUSED gpointer user_data )
 {
-	GtkWidget *tree_w = gtk_event_controller_get_widget( GTK_EVENT_CONTROLLER(gesture) );
 	GNode *dnode;
-	GtkTreePath *path;
-	GtkTreeViewColumn *column;
-	GtkTreeSelection *sel;
-	int button;
+
+	if (colexp_blocked)
+		return;
+
+	if (globals.fsv_mode == FSV_SPLASH)
+		return;
+
+	dnode = g_object_get_data( G_OBJECT(button), "dnode" );
+	if (dnode == NULL)
+		return;
+
+	/* Toggle: if expanded, collapse; if collapsed, expand */
+	if (DIR_NODE_DESC(dnode)->tree_expanded)
+		colexp( dnode, COLEXP_COLLAPSE_RECURSIVE );
+	else
+		colexp( dnode, COLEXP_EXPAND );
+}
+
+
+/* Factory setup: create the per-row widget structure */
+static void
+factory_setup_cb( G_GNUC_UNUSED GtkSignalListItemFactory *factory,
+                  GtkListItem *list_item,
+                  G_GNUC_UNUSED gpointer user_data )
+{
+	GtkWidget *box, *arrow_btn, *icon_img, *label;
+
+	box = gtk_box_new( GTK_ORIENTATION_HORIZONTAL, 4 );
+
+	arrow_btn = gtk_button_new_from_icon_name( "pan-end-symbolic" );
+	gtk_button_set_has_frame( GTK_BUTTON(arrow_btn), FALSE );
+	gtk_widget_set_focusable( arrow_btn, FALSE );
+	gtk_widget_set_visible( arrow_btn, FALSE );
+	gtk_box_append( GTK_BOX(box), arrow_btn );
+
+	icon_img = gtk_image_new_from_icon_name( "folder" );
+	gtk_image_set_pixel_size( GTK_IMAGE(icon_img), 16 );
+	gtk_box_append( GTK_BOX(box), icon_img );
+
+	label = gtk_label_new( "" );
+	gtk_label_set_xalign( GTK_LABEL(label), 0.0f );
+	gtk_widget_set_hexpand( label, TRUE );
+	gtk_box_append( GTK_BOX(box), label );
+
+	gtk_list_item_set_child( list_item, box );
+}
+
+
+/* Update arrow and folder icons based on expansion state */
+static void
+update_row_icons( GtkWidget *box, boolean expanded, boolean expandable )
+{
+	GtkWidget *arrow_btn, *icon_img;
+
+	arrow_btn = gtk_widget_get_first_child( box );
+	icon_img = gtk_widget_get_next_sibling( arrow_btn );
+
+	if (expandable) {
+		gtk_widget_set_visible( arrow_btn, TRUE );
+		gtk_button_set_icon_name( GTK_BUTTON(arrow_btn),
+			expanded ? "pan-down-symbolic" : "pan-end-symbolic" );
+	} else {
+		gtk_widget_set_visible( arrow_btn, FALSE );
+	}
+
+	gtk_image_set_from_icon_name( GTK_IMAGE(icon_img),
+		expanded ? "folder-open" : "folder" );
+}
+
+
+/* Callback for notify::expanded on a GtkTreeListRow — icon updates only */
+static void
+row_expanded_notify_cb( GtkTreeListRow *row,
+                        G_GNUC_UNUSED GParamSpec *pspec,
+                        GtkWidget *box )
+{
+	boolean expanded = gtk_tree_list_row_get_expanded( row );
+	boolean expandable = gtk_tree_list_row_is_expandable( row );
+	gpointer item = gtk_tree_list_row_get_item( row );
+
+	/* Update the tree_expanded flag on the node */
+	if (item != NULL && FSV_IS_DIR_ITEM(item)) {
+		GNode *dnode = fsv_dir_item_get_dnode( FSV_DIR_ITEM(item) );
+		if (dnode != NULL)
+			DIR_NODE_DESC(dnode)->tree_expanded = expanded;
+	}
+	if (item != NULL)
+		g_object_unref( item );
+
+	update_row_icons( box, expanded, expandable );
+}
+
+
+/* Factory bind: populate widgets with data from the item */
+static void
+factory_bind_cb( G_GNUC_UNUSED GtkSignalListItemFactory *factory,
+                 GtkListItem *list_item,
+                 G_GNUC_UNUSED gpointer user_data )
+{
+	GtkWidget *box, *arrow_btn, *icon_img, *label;
+	GtkTreeListRow *row;
+	gpointer item;
+	GNode *dnode;
+	const char *name;
+	guint depth;
+	boolean expanded, expandable;
+
+	box = gtk_list_item_get_child( list_item );
+	row = GTK_TREE_LIST_ROW(gtk_list_item_get_item( list_item ));
+
+	item = gtk_tree_list_row_get_item( row );
+	if (item == NULL || !FSV_IS_DIR_ITEM(item)) {
+		if (item != NULL)
+			g_object_unref( item );
+		return;
+	}
+
+	dnode = fsv_dir_item_get_dnode( FSV_DIR_ITEM(item) );
+	g_object_unref( item );
+	if (dnode == NULL)
+		return;
+
+	/* Set indentation based on tree depth */
+	depth = gtk_tree_list_row_get_depth( row );
+	gtk_widget_set_margin_start( box, depth * INDENT_PER_LEVEL );
+
+	/* Set name */
+	if (strlen( NODE_DESC(dnode)->name ) > 0)
+		name = NODE_DESC(dnode)->name;
+	else
+		name = _("/. (root)");
+
+	arrow_btn = gtk_widget_get_first_child( box );
+	icon_img = gtk_widget_get_next_sibling( arrow_btn );
+	label = gtk_widget_get_next_sibling( icon_img );
+	gtk_label_set_text( GTK_LABEL(label), name );
+
+	/* Set arrow and icon state */
+	expanded = gtk_tree_list_row_get_expanded( row );
+	expandable = gtk_tree_list_row_is_expandable( row );
+	update_row_icons( box, expanded, expandable );
+
+	/* Connect notify::expanded for icon updates */
+	g_signal_connect( row, "notify::expanded",
+		G_CALLBACK(row_expanded_notify_cb), box );
+
+	/* Store dnode on the arrow button and connect click handler */
+	g_object_set_data( G_OBJECT(arrow_btn), "dnode", dnode );
+	g_signal_connect( arrow_btn, "clicked",
+		G_CALLBACK(arrow_clicked_cb), NULL );
+}
+
+
+/* Factory unbind: disconnect signals */
+static void
+factory_unbind_cb( G_GNUC_UNUSED GtkSignalListItemFactory *factory,
+                   GtkListItem *list_item,
+                   G_GNUC_UNUSED gpointer user_data )
+{
+	GtkTreeListRow *row;
+
+	row = GTK_TREE_LIST_ROW(gtk_list_item_get_item( list_item ));
+	if (row != NULL) {
+		GtkWidget *box = gtk_list_item_get_child( list_item );
+		GtkWidget *arrow_btn = gtk_widget_get_first_child( box );
+
+		g_signal_handlers_disconnect_by_func( row,
+			G_CALLBACK(row_expanded_notify_cb), box );
+		g_signal_handlers_disconnect_by_func( arrow_btn,
+			G_CALLBACK(arrow_clicked_cb), NULL );
+		g_object_set_data( G_OBJECT(arrow_btn), "dnode", NULL );
+	}
+}
+
+
+/* Helper: get GNode* from a flat-model position */
+static GNode *
+dnode_at_position( guint position )
+{
+	GtkTreeListRow *row;
+	gpointer item;
+	GNode *dnode = NULL;
+
+	row = gtk_tree_list_model_get_row( tree_list_model, position );
+	if (row == NULL)
+		return NULL;
+
+	item = gtk_tree_list_row_get_item( row );
+	if (item != NULL && FSV_IS_DIR_ITEM(item))
+		dnode = fsv_dir_item_get_dnode( FSV_DIR_ITEM(item) );
+	if (item != NULL)
+		g_object_unref( item );
+	g_object_unref( row );
+
+	return dnode;
+}
+
+
+/* Callback for single-click selection change */
+static void
+dirtree_selection_changed_cb( GtkSingleSelection *sel,
+                              G_GNUC_UNUSED GParamSpec *pspec,
+                              G_GNUC_UNUSED gpointer user_data )
+{
+	guint position;
+	GNode *dnode;
 
 	/* If About presentation is up, end it */
 	about( ABOUT_END );
@@ -115,117 +310,68 @@ dirtree_select_cb( GtkGestureClick *gesture, int n_press, double x, double y, G_
 	if (globals.fsv_mode == FSV_SPLASH)
 		return;
 
-	button = gtk_gesture_single_get_current_button( GTK_GESTURE_SINGLE(gesture) );
-
-	/* Find which row was clicked */
-	if (!gtk_tree_view_get_path_at_pos( GTK_TREE_VIEW(tree_w),
-			(int)x, (int)y,
-			&path, &column, NULL, NULL ))
+	position = gtk_single_selection_get_selected( sel );
+	if (position == GTK_INVALID_LIST_POSITION)
 		return;
 
-	dnode = dnode_from_path( path );
-	if (dnode == NULL) {
-		gtk_tree_path_free( path );
+	dnode = dnode_at_position( position );
+	if (dnode == NULL)
 		return;
-	}
 
-	/* A single-click from button 1 highlights the node, shows the
-	 * name, and updates the file list if necessary */
-	if ((button == 1) && (n_press == 1)) {
-		geometry_highlight_node( dnode, FALSE );
-		window_statusbar( SB_RIGHT, node_absname( dnode ) );
-		if (dnode != dirtree_current_dnode)
-			filelist_populate( dnode );
-		dirtree_current_dnode = dnode;
-		gtk_tree_path_free( path );
+	geometry_highlight_node( dnode, FALSE );
+	window_statusbar( SB_RIGHT, node_absname( dnode ) );
+	if (dnode != dirtree_current_dnode)
+		filelist_populate( dnode );
+	dirtree_current_dnode = dnode;
+}
+
+
+/* Callback for double-click / Enter (activate) */
+static void
+dirtree_activate_cb( GtkListView *list_view, guint position,
+                     G_GNUC_UNUSED gpointer user_data )
+{
+	GNode *dnode;
+
+	(void)list_view;
+
+	if (globals.fsv_mode == FSV_SPLASH)
 		return;
-	}
 
-	/* A double-click from button 1 gets the camera moving */
-	if ((button == 1) && (n_press == 2)) {
+	dnode = dnode_at_position( position );
+	if (dnode != NULL)
 		camera_look_at( dnode );
-		/* Claim the gesture to preempt tree expand/collapse */
-		gtk_gesture_set_state( GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED );
-		gtk_tree_path_free( path );
-		return;
-	}
-
-	/* A click from button 3 selects the row, highlights the node,
-	 * shows the name, updates the file list if necessary, and brings
-	 * up a context-sensitive menu */
-	if (button == 3) {
-		sel = gtk_tree_view_get_selection( GTK_TREE_VIEW(tree_w) );
-		gtk_tree_selection_select_path( sel, path );
-		geometry_highlight_node( dnode, FALSE );
-		window_statusbar( SB_RIGHT, node_absname( dnode ) );
-		if (dnode != dirtree_current_dnode)
-			filelist_populate( dnode );
-		dirtree_current_dnode = dnode;
-		context_menu( dnode, tree_w, x, y );
-		gtk_tree_path_free( path );
-		return;
-	}
-
-	gtk_tree_path_free( path );
 }
 
 
-/* Callback for collapse of a directory tree entry */
+/* Callback for right-click context menu */
 static void
-dirtree_collapse_cb( G_GNUC_UNUSED GtkTreeView *tree_view, GtkTreeIter *iter, G_GNUC_UNUSED GtkTreePath *path, G_GNUC_UNUSED gpointer user_data )
+dirtree_right_click_cb( GtkGestureClick *gesture,
+                        G_GNUC_UNUSED int n_press,
+                        double x, double y,
+                        G_GNUC_UNUSED gpointer user_data )
 {
-	GtkTreeStore *store;
+	GtkWidget *widget = gtk_event_controller_get_widget( GTK_EVENT_CONTROLLER(gesture) );
+	guint position;
 	GNode *dnode;
 
 	if (globals.fsv_mode == FSV_SPLASH)
 		return;
 
-	dnode = dnode_from_iter( iter );
+	position = gtk_single_selection_get_selected( selection_model );
+	if (position == GTK_INVALID_LIST_POSITION)
+		return;
+
+	dnode = dnode_at_position( position );
 	if (dnode == NULL)
 		return;
 
-	/* Update the icon to collapsed */
-	store = get_tree_store( );
-	gtk_tree_store_set( store, iter, COL_PIXBUF, dir_colexp_mini_icons[0].pixbuf, -1 );
-
-	colexp( dnode, COLEXP_COLLAPSE_RECURSIVE );
-}
-
-
-/* Callback for expand of a directory tree entry */
-static void
-dirtree_expand_cb( G_GNUC_UNUSED GtkTreeView *tree_view, GtkTreeIter *iter, G_GNUC_UNUSED GtkTreePath *path, G_GNUC_UNUSED gpointer user_data )
-{
-	GtkTreeStore *store;
-	GNode *dnode;
-
-	if (globals.fsv_mode == FSV_SPLASH)
-		return;
-
-	dnode = dnode_from_iter( iter );
-	if (dnode == NULL)
-		return;
-
-	/* Update the icon to expanded */
-	store = get_tree_store( );
-	gtk_tree_store_set( store, iter, COL_PIXBUF, dir_colexp_mini_icons[1].pixbuf, -1 );
-
-	colexp( dnode, COLEXP_EXPAND );
-}
-
-
-/* Loads the mini collapsed/expanded directory icons (from XPM data) */
-static void
-dirtree_icons_init( void )
-{
-	static char **dir_colexp_mini_xpms[] = {
-		mini_folder_closed_xpm,
-		mini_folder_open_xpm
-	};
-	int i;
-
-	for (i = 0; i < 2; i++)
-		dir_colexp_mini_icons[i].pixbuf = gdk_pixbuf_new_from_xpm_data( (const char **)dir_colexp_mini_xpms[i] );
+	geometry_highlight_node( dnode, FALSE );
+	window_statusbar( SB_RIGHT, node_absname( dnode ) );
+	if (dnode != dirtree_current_dnode)
+		filelist_populate( dnode );
+	dirtree_current_dnode = dnode;
+	context_menu( dnode, widget, x, y );
 }
 
 
@@ -233,19 +379,36 @@ dirtree_icons_init( void )
 void
 dirtree_pass_widget( GtkWidget *tree_w )
 {
+	GtkListItemFactory *factory;
+	GtkGesture *click;
+
 	dir_tree_w = tree_w;
 
-	/* Connect signal handlers */
-	{
-		GtkGesture *click = gtk_gesture_click_new( );
-		gtk_gesture_single_set_button( GTK_GESTURE_SINGLE(click), 0 ); /* all buttons */
-		g_signal_connect( click, "pressed", G_CALLBACK(dirtree_select_cb), NULL );
-		gtk_widget_add_controller( dir_tree_w, GTK_EVENT_CONTROLLER(click) );
-	}
-	g_signal_connect( G_OBJECT(dir_tree_w), "row-collapsed", G_CALLBACK(dirtree_collapse_cb), NULL );
-	g_signal_connect( G_OBJECT(dir_tree_w), "row-expanded", G_CALLBACK(dirtree_expand_cb), NULL );
+	/* Retrieve model references stored by gui_ctree_add */
+	root_store = g_object_get_data( G_OBJECT(dir_tree_w), "root_store" );
+	tree_list_model = g_object_get_data( G_OBJECT(dir_tree_w), "tree_list_model" );
+	selection_model = g_object_get_data( G_OBJECT(dir_tree_w), "selection_model" );
 
-	dirtree_icons_init( );
+	/* Connect factory signals */
+	factory = gtk_list_view_get_factory( GTK_LIST_VIEW(dir_tree_w) );
+	g_signal_connect( factory, "setup", G_CALLBACK(factory_setup_cb), NULL );
+	g_signal_connect( factory, "bind", G_CALLBACK(factory_bind_cb), NULL );
+	g_signal_connect( factory, "unbind", G_CALLBACK(factory_unbind_cb), NULL );
+
+	/* Connect selection change for single-click highlight */
+	g_signal_connect( selection_model, "notify::selected",
+		G_CALLBACK(dirtree_selection_changed_cb), NULL );
+
+	/* Connect activate for double-click / Enter */
+	g_signal_connect( dir_tree_w, "activate",
+		G_CALLBACK(dirtree_activate_cb), NULL );
+
+	/* Connect right-click gesture for context menu */
+	click = gtk_gesture_click_new( );
+	gtk_gesture_single_set_button( GTK_GESTURE_SINGLE(click), 3 );
+	g_signal_connect( click, "pressed",
+		G_CALLBACK(dirtree_right_click_cb), NULL );
+	gtk_widget_add_controller( dir_tree_w, GTK_EVENT_CONTROLLER(click) );
 }
 
 
@@ -253,51 +416,34 @@ dirtree_pass_widget( GtkWidget *tree_w )
 void
 dirtree_clear( void )
 {
-	GtkTreeStore *store = get_tree_store( );
-
-	gtk_tree_store_clear( store );
+	g_list_store_remove_all( root_store );
 	dirtree_current_dnode = NULL;
 }
 
 
-/* Adds a new entry to the directory tree */
+/* Adds a new entry to the directory tree.
+ * During scan, we just track the expansion state — the model is
+ * populated in dirtree_no_more_entries after the scan completes. */
 void
 dirtree_entry_new( GNode *dnode )
 {
-	GtkTreeIter *parent_iter = NULL;
-	GtkTreeIter *new_iter;
-	const char *name;
-	boolean expanded;
-
 	g_assert( NODE_IS_DIR(dnode) );
 
-	parent_iter = DIR_NODE_DESC(dnode->parent)->ctnode;
-	if (strlen( NODE_DESC(dnode)->name ) > 0)
-		name = NODE_DESC(dnode)->name;
-	else
-		name = _("/. (root)");
-	expanded = g_node_depth( dnode ) <= 2;
-
-	new_iter = gui_ctree_node_add( dir_tree_w, parent_iter, dir_colexp_mini_icons, name, expanded, dnode );
-	DIR_NODE_DESC(dnode)->ctnode = new_iter;
-
-	if (parent_iter != NULL && dirtree_entry_expanded( dnode->parent )) {
-		/* Select the new entry */
-		GtkTreeSelection *sel = gtk_tree_view_get_selection( GTK_TREE_VIEW(dir_tree_w) );
-		gtk_tree_selection_select_iter( sel, new_iter );
-		/* Scroll to the new entry */
-		GtkTreePath *path = gtk_tree_model_get_path( GTK_TREE_MODEL(get_tree_store( )), new_iter );
-		gtk_tree_view_scroll_to_cell( GTK_TREE_VIEW(dir_tree_w), path, NULL, FALSE, 0.0, 0.0 );
-		gtk_tree_path_free( path );
-	}
+	DIR_NODE_DESC(dnode)->tree_expanded = FALSE;
 }
 
 
-/* Call this after the last call to dirtree_entry_new( ) */
+/* Call this after the last call to dirtree_entry_new( ).
+ * Populates the tree model from the GNode tree. */
 void
 dirtree_no_more_entries( void )
 {
-	/* No freeze/thaw needed with GtkTreeView */
+	FsvDirItem *root_item;
+
+	/* Add root directory to the model — starts collapsed */
+	root_item = fsv_dir_item_new( root_dnode );
+	g_list_store_append( root_store, root_item );
+	g_object_unref( root_item );
 }
 
 
@@ -307,9 +453,8 @@ dirtree_no_more_entries( void )
 void
 dirtree_entry_show( GNode *dnode )
 {
-	GtkTreeIter *iter;
-	GtkTreePath *path;
-	GtkTreeSelection *sel;
+	guint position;
+	GtkTreeListRow *row;
 
 	g_assert( NODE_IS_DIR(dnode) );
 
@@ -319,22 +464,16 @@ dirtree_entry_show( GNode *dnode )
 		gui_update( );
 	}
 
-	iter = DIR_NODE_DESC(dnode)->ctnode;
-	if (iter != NULL) {
-		path = gtk_tree_model_get_path( GTK_TREE_MODEL(get_tree_store( )), iter );
-		if (path != NULL) {
-			/* Select the entry */
-			sel = gtk_tree_view_get_selection( GTK_TREE_VIEW(dir_tree_w) );
-			gtk_tree_selection_select_iter( sel, iter );
-			/* Scroll to the entry */
-			gtk_tree_view_scroll_to_cell( GTK_TREE_VIEW(dir_tree_w), path, NULL, TRUE, 0.5, 0.0 );
-			gtk_tree_path_free( path );
-		}
+	/* Find the row and select it */
+	row = find_tree_list_row( dnode, &position );
+	if (row != NULL) {
+		gtk_single_selection_set_selected( selection_model, position );
+		/* Scroll to the row */
+		gtk_widget_activate_action( dir_tree_w, "list.scroll-to-item", "u", position );
+		g_object_unref( row );
 	}
 	else {
-		/* No iter - unselect all */
-		GtkTreeSelection *sel = gtk_tree_view_get_selection( GTK_TREE_VIEW(dir_tree_w) );
-		gtk_tree_selection_unselect_all( sel );
+		gtk_single_selection_set_selected( selection_model, GTK_INVALID_LIST_POSITION );
 	}
 
 	dirtree_current_dnode = dnode;
@@ -345,97 +484,53 @@ dirtree_entry_show( GNode *dnode )
 boolean
 dirtree_entry_expanded( GNode *dnode )
 {
-	GtkTreeIter *iter;
-	GtkTreePath *path;
-	boolean expanded;
-
 	g_assert( NODE_IS_DIR(dnode) );
-
-	iter = DIR_NODE_DESC(dnode)->ctnode;
-	if (iter == NULL)
-		return FALSE;
-
-	path = gtk_tree_model_get_path( GTK_TREE_MODEL(get_tree_store( )), iter );
-	if (path == NULL)
-		return FALSE;
-
-	expanded = gtk_tree_view_row_expanded( GTK_TREE_VIEW(dir_tree_w), path );
-	gtk_tree_path_free( path );
-
-	return expanded;
+	return DIR_NODE_DESC(dnode)->tree_expanded;
 }
 
 
-/* Helper function */
+/* Helper: recursively set tree_expanded = FALSE on a GNode subtree */
 static void
-block_colexp_handlers( void )
+clear_tree_expanded_recursive( GNode *dnode )
 {
-	g_signal_handlers_block_by_func( G_OBJECT(dir_tree_w), G_CALLBACK(dirtree_collapse_cb), NULL );
-	g_signal_handlers_block_by_func( G_OBJECT(dir_tree_w), G_CALLBACK(dirtree_expand_cb), NULL );
-}
+	GNode *child;
 
-
-/* Helper function */
-static void
-unblock_colexp_handlers( void )
-{
-	g_signal_handlers_unblock_by_func( G_OBJECT(dir_tree_w), G_CALLBACK(dirtree_collapse_cb), NULL );
-	g_signal_handlers_unblock_by_func( G_OBJECT(dir_tree_w), G_CALLBACK(dirtree_expand_cb), NULL );
-}
-
-
-/* Helper: recursively collapse a row and all its children */
-static void
-collapse_recursive( GtkTreeView *tree_view, GtkTreeIter *iter )
-{
-	GtkTreeModel *model = gtk_tree_view_get_model( tree_view );
-	GtkTreeIter child;
-	GtkTreePath *path;
-
-	/* Collapse children first (depth-first) */
-	if (gtk_tree_model_iter_children( model, &child, iter )) {
-		do {
-			collapse_recursive( tree_view, &child );
-		} while (gtk_tree_model_iter_next( model, &child ));
+	DIR_NODE_DESC(dnode)->tree_expanded = FALSE;
+	child = dnode->children;
+	while (child != NULL) {
+		if (NODE_IS_DIR(child))
+			clear_tree_expanded_recursive( child );
+		else
+			break;
+		child = child->next;
 	}
-
-	/* Collapse this row */
-	path = gtk_tree_model_get_path( model, iter );
-	gtk_tree_view_collapse_row( tree_view, path );
-	/* Update icon to collapsed */
-	gtk_tree_store_set( GTK_TREE_STORE(model), iter, COL_PIXBUF, dir_colexp_mini_icons[0].pixbuf, -1 );
-	gtk_tree_path_free( path );
 }
 
 
-/* Recursively collapses the directory tree entry of the given directory */
+/* Recursively collapses the directory tree entry of the given directory.
+ * Collapsing the root of the subtree automatically removes all descendant
+ * rows from the flat model, so we only need one set_expanded(FALSE) call
+ * plus a GNode-tree walk to clear the flags. */
 void
 dirtree_entry_collapse_recursive( GNode *dnode )
 {
-	GtkTreeIter *iter;
+	GtkTreeListRow *row;
 
 	g_assert( NODE_IS_DIR(dnode) );
 
-	iter = DIR_NODE_DESC(dnode)->ctnode;
-	if (iter == NULL)
-		return;
+	colexp_blocked = TRUE;
 
-	block_colexp_handlers( );
-	collapse_recursive( GTK_TREE_VIEW(dir_tree_w), iter );
-	unblock_colexp_handlers( );
-}
+	/* Clear all tree_expanded flags in the subtree */
+	clear_tree_expanded_recursive( dnode );
 
+	/* Collapse the root — all descendants disappear from the model */
+	row = find_tree_list_row( dnode, NULL );
+	if (row != NULL) {
+		gtk_tree_list_row_set_expanded( row, FALSE );
+		g_object_unref( row );
+	}
 
-/* Helper: expand a row and update its icon */
-static void
-expand_row( GtkTreeView *tree_view, GtkTreeIter *iter )
-{
-	GtkTreeModel *model = gtk_tree_view_get_model( tree_view );
-	GtkTreePath *path = gtk_tree_model_get_path( model, iter );
-
-	gtk_tree_view_expand_row( tree_view, path, FALSE );
-	gtk_tree_store_set( GTK_TREE_STORE(model), iter, COL_PIXBUF, dir_colexp_mini_icons[1].pixbuf, -1 );
-	gtk_tree_path_free( path );
+	colexp_blocked = FALSE;
 }
 
 
@@ -445,39 +540,68 @@ expand_row( GtkTreeView *tree_view, GtkTreeIter *iter )
 void
 dirtree_entry_expand( GNode *dnode )
 {
+	GNode *ancestors[128];
+	int n = 0;
 	GNode *up_node;
+	int i;
 
 	g_assert( NODE_IS_DIR(dnode) );
 
-	block_colexp_handlers( );
+	colexp_blocked = TRUE;
+
+	/* Build list of ancestors (bottom-up) that need expanding */
 	up_node = dnode;
 	while (NODE_IS_DIR(up_node)) {
-		if (!dirtree_entry_expanded( up_node )) {
-			GtkTreeIter *iter = DIR_NODE_DESC(up_node)->ctnode;
-			if (iter != NULL)
-				expand_row( GTK_TREE_VIEW(dir_tree_w), iter );
-		}
+		ancestors[n++] = up_node;
 		up_node = up_node->parent;
+		if (n >= 128)
+			break;
 	}
-	unblock_colexp_handlers( );
+
+	/* Expand top-down (reverse order) so that child rows become visible */
+	for (i = n - 1; i >= 0; i--) {
+		if (!DIR_NODE_DESC(ancestors[i])->tree_expanded) {
+			GtkTreeListRow *row = find_tree_list_row( ancestors[i], NULL );
+			if (row != NULL) {
+				gtk_tree_list_row_set_expanded( row, TRUE );
+				g_object_unref( row );
+			}
+			DIR_NODE_DESC(ancestors[i])->tree_expanded = TRUE;
+		}
+	}
+
+	colexp_blocked = FALSE;
 }
 
 
-/* Helper: recursively expand a row and all its children */
+/* Helper: recursively expand a row and all its children.
+ * Uses gtk_tree_list_row_get_child_row for O(1) child lookup
+ * instead of scanning the flat model. */
 static void
-expand_recursive( GtkTreeView *tree_view, GtkTreeIter *iter )
+expand_recursive_via_row( GtkTreeListRow *row, GNode *dnode )
 {
-	GtkTreeModel *model = gtk_tree_view_get_model( tree_view );
-	GtkTreeIter child;
+	GNode *child;
+	guint child_idx;
 
-	/* Expand this row */
-	expand_row( tree_view, iter );
+	/* Expand this row first (making children visible in the model) */
+	gtk_tree_list_row_set_expanded( row, TRUE );
+	DIR_NODE_DESC(dnode)->tree_expanded = TRUE;
 
-	/* Expand children */
-	if (gtk_tree_model_iter_children( model, &child, iter )) {
-		do {
-			expand_recursive( tree_view, &child );
-		} while (gtk_tree_model_iter_next( model, &child ));
+	/* Then expand each directory child via O(1) child_row lookup */
+	child = dnode->children;
+	child_idx = 0;
+	while (child != NULL) {
+		if (NODE_IS_DIR(child)) {
+			GtkTreeListRow *child_row = gtk_tree_list_row_get_child_row( row, child_idx );
+			if (child_row != NULL) {
+				expand_recursive_via_row( child_row, child );
+				g_object_unref( child_row );
+			}
+			child_idx++;
+		}
+		else
+			break;
+		child = child->next;
 	}
 }
 
@@ -487,7 +611,7 @@ expand_recursive( GtkTreeView *tree_view, GtkTreeIter *iter )
 void
 dirtree_entry_expand_recursive( GNode *dnode )
 {
-	GtkTreeIter *iter;
+	GtkTreeListRow *row;
 
 	g_assert( NODE_IS_DIR(dnode) );
 
@@ -497,13 +621,13 @@ dirtree_entry_expand_recursive( GNode *dnode )
 		g_assert( dirtree_entry_expanded( dnode->parent ) );
 #endif
 
-	iter = DIR_NODE_DESC(dnode)->ctnode;
-	if (iter == NULL)
-		return;
-
-	block_colexp_handlers( );
-	expand_recursive( GTK_TREE_VIEW(dir_tree_w), iter );
-	unblock_colexp_handlers( );
+	colexp_blocked = TRUE;
+	row = find_tree_list_row( dnode, NULL );
+	if (row != NULL) {
+		expand_recursive_via_row( row, dnode );
+		g_object_unref( row );
+	}
+	colexp_blocked = FALSE;
 }
 
 

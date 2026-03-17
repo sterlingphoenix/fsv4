@@ -284,6 +284,85 @@ Step 6.3 - Final verification
   Checkpoint: User tests everything. The migration is complete.
 
 
+PHASE 7: REMOVE DEPRECATED GTK 4 APIs
+=======================================
+
+Replace all deprecated GTK 4 widget APIs so the build produces zero
+deprecation warnings. Each step replaces one category of deprecated
+API, leaving the program buildable and runnable.
+
+Step 7.1 - GtkComboBoxText → GtkDropDown
+  [x] Replace gui_option_menu_add / gui_option_menu_item with
+      GtkDropDown + GtkStringList
+  [x] Update dialog.c callers (color setup uses option menus)
+  [x] Verify: builds with no GtkComboBox deprecation warnings,
+      color setup dialog works correctly
+
+Step 7.2 - GtkColorChooser → GtkColorDialog
+  [x] Replace GtkColorChooserDialog with GtkColorDialog +
+      gtk_color_dialog_choose_rgba (async)
+  [x] Replace GtkColorButton with GtkColorDialogButton
+  [x] Update gui.c (gui_colorsel_window, gui_colorpicker_add,
+      gui_colorpicker_set_color) and dialog.c callers
+  [x] Verify: builds with no GtkColorChooser deprecation warnings,
+      color picker and color setup dialog work correctly
+
+Step 7.3 - GtkFileChooserDialog → GtkFileDialog
+  [x] Replace GtkFileChooserDialog with GtkFileDialog +
+      gtk_file_dialog_open (async)
+  [x] Update gui.c (gui_filesel_window) and dialog.c callers
+  [x] Verify: builds with no GtkFileChooser deprecation warnings,
+      Change Root dialog works correctly
+
+Step 7.4 - File list (GtkTreeView → GtkColumnView)
+  [x] Replace gui_clist_add with GtkColumnView + GtkColumnViewColumn
+      + GtkSignalListItemFactory backed by a GListStore
+  [x] Replace GtkListStore row operations (append, set, clear) with
+      GListStore equivalents in filelist.c
+  [x] Replace GtkTreeSelection usage with GtkSingleSelection
+  [x] Replace GtkCellRenderer (pixbuf + text) with factory-created
+      widgets (GtkImage + GtkLabel in a GtkBox)
+  [x] Update gui_clist_moveto_row for the new model
+  [x] Verify: builds with no GtkListStore/GtkCellRenderer deprecation
+      warnings in filelist.c, file list displays and selects correctly
+
+  Checkpoint: User tests file list — columns display correctly,
+  clicking selects nodes, double-click navigates, right-click context
+  menu works.
+
+Step 7.5 - Directory tree (GtkTreeView → GtkListView + GtkTreeListModel)
+  [x] Replace gui_ctree_add with GtkListView + GtkTreeListModel +
+      GtkSignalListItemFactory backed by a GListStore-per-level
+  [x] Replace GtkTreeStore operations (append, set, clear) with
+      GListStore equivalents in dirtree.c
+  [x] Replace GtkTreeSelection with GtkSingleSelection
+  [x] Implement expand/collapse via GtkTreeListRow
+  [x] Replace gui_ctree_node_add with GListStore item insertion
+  [x] Update dirtree_entry_expand, dirtree_entry_collapse,
+      dirtree_entry_expand_recursive, dirtree_select for new model
+  [x] Verify: builds with no GtkTreeView/GtkTreeStore deprecation
+      warnings in dirtree.c, directory tree displays, expands,
+      collapses, and selects correctly
+
+  Checkpoint: User tests directory tree — expand/collapse works,
+  clicking selects and navigates, tree stays in sync with 3D view.
+
+Step 7.6 - Dialog lists (remaining GtkTreeView usage)
+  [x] Replace any remaining GtkTreeView/GtkListStore usage in
+      dialog.c (color setup wildcard pattern list, node properties)
+  [x] Verify: builds with no remaining deprecation warnings,
+      all dialogs work correctly
+
+Step 7.7 - Final cleanup
+  [x] Remove any remaining GdkPixbuf usage where GdkTexture/
+      GdkPaintable is the GTK 4 replacement
+  [x] Remove G_GNUC_BEGIN_IGNORE_DEPRECATIONS guards
+  [x] Verify: ninja -C builddir produces zero deprecation warnings
+  [x] Verify: program runs, all features work
+
+  Checkpoint: User tests everything. Build is warning-free.
+
+
 NOTES
 =====
 - Each step should leave the code compilable and runnable

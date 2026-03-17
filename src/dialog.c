@@ -79,7 +79,6 @@ change_root_cb( const char *dir )
 void
 dialog_change_root( void )
 {
-	GtkWidget *filesel_window_w;
 	const char *root_name;
 	char *dir;
 
@@ -95,24 +94,17 @@ dialog_change_root( void )
 	gui_cursor( main_window_w, "wait" );
 	gui_update( );
 
-	filesel_window_w = gui_filesel_window( _("Change Root Directory"), dir, G_CALLBACK(change_root_cb), NULL );
+	gui_filesel_window( _("Change Root Directory"), dir, G_CALLBACK(change_root_cb), NULL, TRUE );
 	xfree( dir );
 
 	gui_cursor( main_window_w, NULL );
 	gui_update( );
-
-	/* Make it a directory chooser */
-	gtk_file_chooser_set_action( GTK_FILE_CHOOSER(filesel_window_w), GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER );
-	gui_window_modalize( filesel_window_w, main_window_w );
-
-	gtk_window_present( GTK_WINDOW(filesel_window_w) );
 }
 
 
 /**** Colors -> Setup... ****/
 
-/* Types of rows in the wildcard pattern list
- * (for "row_type" field in struct WPListRowData) */
+/* Types of rows in the wildcard pattern list */
 enum {
 	WPLIST_HEADER_ROW,
 	WPLIST_WPATTERN_ROW,
@@ -121,22 +113,60 @@ enum {
 	WPLIST_DEFAULT_ROW
 };
 
-/* Data associated with each row of the wildcard pattern list */
-struct WPListRowData {
+/* GObject item for the wildcard pattern list model */
+#define FSV_TYPE_WP_LIST_ITEM (fsv_wp_list_item_get_type())
+G_DECLARE_FINAL_TYPE(FsvWPListItem, fsv_wp_list_item, FSV, WP_LIST_ITEM, GObject)
+
+struct _FsvWPListItem {
+	GObject parent_instance;
 	int row_type;
 	struct WPatternGroup *wpgroup;
 	char *wpattern;
 	char *hex_color;
 };
 
-/* Model columns for the wildcard pattern list */
-enum {
-	WPCOL_BG_COLOR,	/* G_TYPE_STRING - hex color for background */
-	WPCOL_PATTERN,	/* G_TYPE_STRING - display text */
-	WPCOL_ROW_TYPE,	/* G_TYPE_INT - row type enum */
-	WPCOL_WPGROUP,	/* G_TYPE_POINTER - WPatternGroup* */
-	WPCOL_WPATTERN,	/* G_TYPE_POINTER - wpattern string */
-	WPCOL_NUM
+G_DEFINE_TYPE(FsvWPListItem, fsv_wp_list_item, G_TYPE_OBJECT)
+
+static void
+fsv_wp_list_item_finalize( GObject *obj )
+{
+	FsvWPListItem *item = FSV_WP_LIST_ITEM(obj);
+	g_free( item->hex_color );
+	G_OBJECT_CLASS(fsv_wp_list_item_parent_class)->finalize( obj );
+}
+
+static void
+fsv_wp_list_item_class_init( FsvWPListItemClass *klass )
+{
+	G_OBJECT_CLASS(klass)->finalize = fsv_wp_list_item_finalize;
+}
+
+static void
+fsv_wp_list_item_init( FsvWPListItem *self )
+{
+	self->row_type = 0;
+	self->wpgroup = NULL;
+	self->wpattern = NULL;
+	self->hex_color = NULL;
+}
+
+static FsvWPListItem *
+fsv_wp_list_item_new( int row_type, struct WPatternGroup *wpgroup, char *wpattern, const char *hex_color )
+{
+	FsvWPListItem *item = g_object_new( FSV_TYPE_WP_LIST_ITEM, NULL );
+	item->row_type = row_type;
+	item->wpgroup = wpgroup;
+	item->wpattern = wpattern;
+	item->hex_color = g_strdup( hex_color );
+	return item;
+}
+
+/* Data passed to callbacks that need row context (same fields as old WPListRowData) */
+struct WPListRowData {
+	int row_type;
+	struct WPatternGroup *wpgroup;
+	char *wpattern;
+	char *hex_color;
 };
 
 static struct ColorSetupDialog {
@@ -165,7 +195,7 @@ static struct ColorSetupDialog {
 
 	/* Wildcard pattern configuration page */
 	struct {
-		/* Wildcard pattern list widget (GtkTreeView) */
+		/* Wildcard pattern list widget (GtkListView) */
 		GtkWidget *clist_w;
 
 		/* Action buttons */
@@ -236,11 +266,11 @@ csdialog_time_edit_cb( GtkWidget *dateedit_w )
 
 /* Callback for the "Color by:" timestamp combo box */
 static void
-csdialog_time_timestamp_option_menu_cb( GtkWidget *combo_w )
+csdialog_time_timestamp_option_menu_cb( GtkWidget *dropdown_w )
 {
-	int active = gtk_combo_box_get_active( GTK_COMBO_BOX(combo_w) );
+	guint active = gtk_drop_down_get_selected( GTK_DROP_DOWN(dropdown_w) );
 
-	/* Combo box indices match TimeStampType enum values */
+	/* Drop-down indices match TimeStampType enum values */
 	csdialog.color_config.by_timestamp.timestamp_type = (TimeStampType)active;
 }
 
@@ -294,9 +324,9 @@ csdialog_time_color_picker_set_access( boolean enabled )
 
 /* Callback for the spectrum type combo box */
 static void
-csdialog_time_spectrum_option_menu_cb( GtkWidget *combo_w )
+csdialog_time_spectrum_option_menu_cb( GtkWidget *dropdown_w )
 {
-	int active = gtk_combo_box_get_active( GTK_COMBO_BOX(combo_w) );
+	guint active = gtk_drop_down_get_selected( GTK_DROP_DOWN(dropdown_w) );
 	SpectrumType type = (SpectrumType)active;
 
 	/* Set new spectrum type and draw it */
@@ -334,43 +364,22 @@ solid_color_hex( RGBcolor *color )
 }
 
 
-/* Helper function for csdialog_wpattern_clist_populate( ). This appends
- * a new row to the wildcard pattern list */
+/* Helper: append a new item to the wildcard pattern list store */
 static void
-wplist_row( GtkListStore *store, struct WPListRowData *row_data )
+wplist_row( GListStore *store, int row_type, struct WPatternGroup *wpgroup,
+            char *wpattern, const char *hex_color )
 {
-	GtkTreeIter iter;
-	const char *text = "";
+	FsvWPListItem *item = fsv_wp_list_item_new( row_type, wpgroup, wpattern, hex_color );
+	g_list_store_append( store, item );
+	g_object_unref( item );
+}
 
-	/* Determine textual content of new row */
-	switch (row_data->row_type) {
-		case WPLIST_WPATTERN_ROW:
-		text = row_data->wpattern;
-		break;
 
-		case WPLIST_NEW_WPATTERN_ROW:
-		text = _("(New pattern)");
-		break;
-
-		case WPLIST_DEFAULT_ROW:
-		text = _("(Default color)");
-		break;
-
-		default:
-		/* Row has no text */
-		break;
-	}
-
-	gtk_list_store_append( store, &iter );
-	gtk_list_store_set( store, &iter,
-		WPCOL_BG_COLOR, row_data->hex_color,
-		WPCOL_PATTERN, text,
-		WPCOL_ROW_TYPE, row_data->row_type,
-		WPCOL_WPGROUP, row_data->wpgroup,
-		WPCOL_WPATTERN, row_data->wpattern,
-		-1 );
-
-	xfree( row_data );
+/* Helper: get the GListStore backing the wildcard pattern list */
+static GListStore *
+wplist_get_store( void )
+{
+	return g_object_get_data( G_OBJECT(csdialog.wpattern.clist_w), "list_store" );
 }
 
 
@@ -380,14 +389,13 @@ static void
 csdialog_wpattern_clist_populate( void )
 {
 	struct WPatternGroup *wpgroup;
-	struct WPListRowData *row_data;
-	char *hex_color = NULL;
+	const char *hex_color;
 	GList *wpgroup_llink, *wp_llink;
 	char *wpattern;
-	GtkListStore *store;
+	GListStore *store;
 
-	store = GTK_LIST_STORE(gtk_tree_view_get_model( GTK_TREE_VIEW(csdialog.wpattern.clist_w) ));
-	gtk_list_store_clear( store );
+	store = wplist_get_store( );
+	g_list_store_remove_all( store );
 
 	/* Iterate through all the wildcard pattern color groups */
 	wpgroup_llink = csdialog.color_config.by_wpattern.wpgroup_list;
@@ -396,59 +404,27 @@ csdialog_wpattern_clist_populate( void )
 		hex_color = solid_color_hex( &wpgroup->color );
 
 		/* Add header row */
-		row_data = NEW(struct WPListRowData);
-		row_data->row_type = WPLIST_HEADER_ROW;
-		row_data->wpgroup = wpgroup;
-		row_data->wpattern = NULL;
-		row_data->hex_color = hex_color;
-		wplist_row( store, row_data );
+		wplist_row( store, WPLIST_HEADER_ROW, wpgroup, NULL, hex_color );
 
 		/* Iterate through all the patterns in this group */
 		wp_llink = wpgroup->wp_list;
 		while (wp_llink != NULL) {
 			wpattern = (char *)wp_llink->data;
-
-			/* Add wildcard pattern row */
-			row_data = NEW(struct WPListRowData);
-			row_data->row_type = WPLIST_WPATTERN_ROW;
-			row_data->wpgroup = wpgroup;
-			row_data->wpattern = wpattern;
-			row_data->hex_color = g_strdup( hex_color );
-			wplist_row( store, row_data );
-
+			wplist_row( store, WPLIST_WPATTERN_ROW, wpgroup, wpattern, hex_color );
 			wp_llink = wp_llink->next;
 		}
 
 		/* Add a "New pattern" row for adding new patterns
 		 * to this color group */
-		row_data = NEW(struct WPListRowData);
-		row_data->row_type = WPLIST_NEW_WPATTERN_ROW;
-		row_data->wpgroup = wpgroup;
-		row_data->wpattern = NULL;
-		row_data->hex_color = g_strdup( hex_color );
-		wplist_row( store, row_data );
+		wplist_row( store, WPLIST_NEW_WPATTERN_ROW, wpgroup, NULL, hex_color );
 
 		wpgroup_llink = wpgroup_llink->next;
 	}
 
 	/* Default color */
 	hex_color = solid_color_hex( &csdialog.color_config.by_wpattern.default_color );
-
-	/* Add default-color header row */
-	row_data = NEW(struct WPListRowData);
-	row_data->row_type = WPLIST_DEFAULT_HEADER_ROW;
-	row_data->wpgroup = NULL;
-	row_data->wpattern = NULL;
-	row_data->hex_color = hex_color;
-	wplist_row( store, row_data );
-
-	/* Add default-color row */
-	row_data = NEW(struct WPListRowData);
-	row_data->row_type = WPLIST_DEFAULT_ROW;
-	row_data->wpgroup = NULL;
-	row_data->wpattern = NULL;
-	row_data->hex_color = g_strdup( hex_color );
-	wplist_row( store, row_data );
+	wplist_row( store, WPLIST_DEFAULT_HEADER_ROW, NULL, NULL, hex_color );
+	wplist_row( store, WPLIST_DEFAULT_ROW, NULL, NULL, hex_color );
 }
 
 
@@ -468,69 +444,32 @@ csdialog_wpattern_color_selection_cb( RGBcolor *selected_color, RGBcolor *wpatte
 }
 
 
-/* Callback for click in the wildcard pattern list (GtkGestureClick) */
+/* Callback for click on a color swatch in the wildcard pattern list.
+ * The swatch widget is a GtkDrawingArea inside each row. For header rows,
+ * the swatch fills the entire width. */
 static void
-csdialog_wpattern_clist_click_cb( GtkGestureClick *gesture, G_GNUC_UNUSED int n_press,
-                                  double x, double y, G_GNUC_UNUSED gpointer user_data )
+wp_swatch_click_cb( GtkGestureClick *gesture, G_GNUC_UNUSED int n_press,
+                    G_GNUC_UNUSED double x, G_GNUC_UNUSED double y,
+                    G_GNUC_UNUSED gpointer user_data )
 {
-	GtkWidget *tree_w = gtk_event_controller_get_widget( GTK_EVENT_CONTROLLER(gesture) );
+	GtkWidget *swatch = gtk_event_controller_get_widget( GTK_EVENT_CONTROLLER(gesture) );
+	FsvWPListItem *item = g_object_get_data( G_OBJECT(swatch), "wp_item" );
 	RGBcolor *color;
-	int row_type;
-	struct WPatternGroup *wpgroup;
 	const char *title;
-	GtkTreePath *path;
-	GtkTreeViewColumn *column;
-	GtkTreeModel *model;
-	GtkTreeIter iter;
-	GList *col_list;
-	int col_index;
-	int button;
 
-	button = gtk_gesture_single_get_current_button( GTK_GESTURE_SINGLE(gesture) );
-
-	/* Respond only to mouse button 1 (left button) */
-	if (button != 1)
+	if (item == NULL)
 		return;
 
-	if (!gtk_tree_view_get_path_at_pos( GTK_TREE_VIEW(tree_w),
-			(int)x, (int)y,
-			&path, &column, NULL, NULL ))
-		return;
-
-	model = gtk_tree_view_get_model( GTK_TREE_VIEW(tree_w) );
-	if (!gtk_tree_model_get_iter( model, &iter, path )) {
-		gtk_tree_path_free( path );
-		return;
-	}
-
-	/* Determine which column was clicked */
-	col_list = gtk_tree_view_get_columns( GTK_TREE_VIEW(tree_w) );
-	col_index = g_list_index( col_list, column );
-	g_list_free( col_list );
-
-	gtk_tree_model_get( model, &iter,
-		WPCOL_ROW_TYPE, &row_type,
-		WPCOL_WPGROUP, &wpgroup,
-		-1 );
-
-	gtk_tree_path_free( path );
-
-	switch (row_type) {
+	switch (item->row_type) {
+		case WPLIST_HEADER_ROW:
 		case WPLIST_WPATTERN_ROW:
 		case WPLIST_NEW_WPATTERN_ROW:
-		if (col_index != 0)
-			return;
-		/* fall through */
-		case WPLIST_HEADER_ROW:
 		title = _("Group Color");
-		color = &wpgroup->color;
+		color = &item->wpgroup->color;
 		break;
 
-		case WPLIST_DEFAULT_ROW:
-		if (col_index != 0)
-			return;
-		/* fall through */
 		case WPLIST_DEFAULT_HEADER_ROW:
+		case WPLIST_DEFAULT_ROW:
 		title = _("Default Color");
 		color = &csdialog.color_config.by_wpattern.default_color;
 		break;
@@ -538,79 +477,82 @@ csdialog_wpattern_clist_click_cb( GtkGestureClick *gesture, G_GNUC_UNUSED int n_
 		SWITCH_FAIL
 	}
 
-	/* Bring up color selection dialog */
 	gui_colorsel_window( title, color, G_CALLBACK(csdialog_wpattern_color_selection_cb), color );
 }
 
 
-/* Callback for selection change in the wildcard pattern list */
+/* Previous valid selection position (for header row rejection) */
+static guint wp_prev_selection = GTK_INVALID_LIST_POSITION;
+static boolean wp_selection_guard = FALSE;
+
+
+/* Update button sensitivity based on current selection */
 static void
-csdialog_wpattern_clist_selection_changed_cb( GtkTreeSelection *sel, G_GNUC_UNUSED gpointer user_data )
+csdialog_wpattern_update_buttons( boolean row_selected, FsvWPListItem *item )
 {
-	GtkTreeModel *model;
-	GtkTreeIter iter;
-	int row_type;
-	struct WPatternGroup *wpgroup;
-	boolean newwp_row;
-	boolean defcolor_row;
+	boolean newwp_row = FALSE;
+	boolean defcolor_row = FALSE;
 	boolean empty_wpgroup = FALSE;
-	boolean row_selected;
 	boolean new_color_allow;
 	boolean edit_pattern_allow;
 	boolean delete_allow;
 
-	row_selected = gtk_tree_selection_get_selected( sel, &model, &iter );
-
-	if (row_selected) {
-		gtk_tree_model_get( model, &iter,
-			WPCOL_ROW_TYPE, &row_type,
-			WPCOL_WPGROUP, &wpgroup,
-			-1 );
-
-		/* Set some flags */
-		newwp_row = row_type == WPLIST_NEW_WPATTERN_ROW;
-		defcolor_row = (row_type == WPLIST_DEFAULT_ROW) || (row_type == WPLIST_DEFAULT_HEADER_ROW);
-		if (!defcolor_row)
-			empty_wpgroup = wpgroup->wp_list == NULL;
-	}
-	else {
-		newwp_row = FALSE;
-		defcolor_row = FALSE;
+	if (row_selected && item != NULL) {
+		newwp_row = item->row_type == WPLIST_NEW_WPATTERN_ROW;
+		defcolor_row = (item->row_type == WPLIST_DEFAULT_ROW) || (item->row_type == WPLIST_DEFAULT_HEADER_ROW);
+		if (!defcolor_row && item->wpgroup != NULL)
+			empty_wpgroup = item->wpgroup->wp_list == NULL;
 	}
 
-	/* Decide which actions are allowable */
 	new_color_allow = !row_selected || !defcolor_row;
 	edit_pattern_allow = row_selected && !defcolor_row;
 	delete_allow = row_selected && !defcolor_row && (!newwp_row || empty_wpgroup);
 
-	/* Enable/disable the buttons accordingly */
 	gtk_widget_set_sensitive( csdialog.wpattern.new_color_button_w, new_color_allow );
 	gtk_widget_set_sensitive( csdialog.wpattern.edit_pattern_button_w, edit_pattern_allow );
 	gtk_widget_set_sensitive( csdialog.wpattern.delete_button_w, delete_allow );
 }
 
 
-/* Selection function: prevent header rows from being selected */
-static gboolean
-csdialog_wpattern_selection_func( G_GNUC_UNUSED GtkTreeSelection *sel, GtkTreeModel *model,
-	GtkTreePath *path, gboolean currently_selected, G_GNUC_UNUSED gpointer data )
+/* Callback for selection change in the wildcard pattern list */
+static void
+csdialog_wpattern_selection_changed_cb( GtkSingleSelection *sel,
+                                        G_GNUC_UNUSED GParamSpec *pspec,
+                                        G_GNUC_UNUSED gpointer user_data )
 {
-	GtkTreeIter iter;
-	int row_type;
+	guint pos;
+	gpointer obj;
+	FsvWPListItem *item;
 
-	if (currently_selected)
-		return TRUE; /* always allow deselection */
+	if (wp_selection_guard)
+		return;
 
-	if (!gtk_tree_model_get_iter( model, &iter, path ))
-		return FALSE;
+	pos = gtk_single_selection_get_selected( sel );
+	if (pos == GTK_INVALID_LIST_POSITION) {
+		csdialog_wpattern_update_buttons( FALSE, NULL );
+		return;
+	}
 
-	gtk_tree_model_get( model, &iter, WPCOL_ROW_TYPE, &row_type, -1 );
+	obj = g_list_model_get_item( gtk_single_selection_get_model( sel ), pos );
+	if (obj == NULL) {
+		csdialog_wpattern_update_buttons( FALSE, NULL );
+		return;
+	}
 
-	/* Header rows are not selectable */
-	if (row_type == WPLIST_HEADER_ROW || row_type == WPLIST_DEFAULT_HEADER_ROW)
-		return FALSE;
+	item = FSV_WP_LIST_ITEM(obj);
 
-	return TRUE;
+	/* Reject selection of header rows */
+	if (item->row_type == WPLIST_HEADER_ROW || item->row_type == WPLIST_DEFAULT_HEADER_ROW) {
+		g_object_unref( obj );
+		wp_selection_guard = TRUE;
+		gtk_single_selection_set_selected( sel, wp_prev_selection );
+		wp_selection_guard = FALSE;
+		return;
+	}
+
+	wp_prev_selection = pos;
+	csdialog_wpattern_update_buttons( TRUE, item );
+	g_object_unref( obj );
 }
 
 
@@ -642,8 +584,6 @@ csdialog_wpattern_new_color_selection_cb( RGBcolor *selected_color, struct WPLis
 	}
 	else {
 		G_LIST_APPEND(WPGROUP_LIST, wpgroup);
-		/* Scroll clist to bottom (to make new group visible) */
-		gui_clist_moveto_row( csdialog.wpattern.clist_w, -1, 0.0 );
 	}
 #undef WPGROUP_LIST
 
@@ -696,25 +636,33 @@ csdialog_wpattern_edit_cb( const char *input_text, struct WPListRowData *row_dat
 }
 
 
-/* Helper: get the selected row's data from the wildcard pattern tree view.
+/* Helper: get the selected row's data from the wildcard pattern list.
  * Returns TRUE if a row is selected, filling out the provided fields. */
 static boolean
 wplist_get_selected( int *row_type_out, struct WPatternGroup **wpgroup_out, char **wpattern_out )
 {
-	GtkTreeSelection *sel;
-	GtkTreeModel *model;
-	GtkTreeIter iter;
+	GtkSingleSelection *sel;
+	guint pos;
+	gpointer obj;
+	FsvWPListItem *item;
 
-	sel = gtk_tree_view_get_selection( GTK_TREE_VIEW(csdialog.wpattern.clist_w) );
-	if (!gtk_tree_selection_get_selected( sel, &model, &iter ))
+	sel = g_object_get_data( G_OBJECT(csdialog.wpattern.clist_w), "selection_model" );
+	pos = gtk_single_selection_get_selected( sel );
+	if (pos == GTK_INVALID_LIST_POSITION)
 		return FALSE;
 
+	obj = g_list_model_get_item( gtk_single_selection_get_model( sel ), pos );
+	if (obj == NULL)
+		return FALSE;
+
+	item = FSV_WP_LIST_ITEM(obj);
 	if (row_type_out)
-		gtk_tree_model_get( model, &iter, WPCOL_ROW_TYPE, row_type_out, -1 );
+		*row_type_out = item->row_type;
 	if (wpgroup_out)
-		gtk_tree_model_get( model, &iter, WPCOL_WPGROUP, wpgroup_out, -1 );
+		*wpgroup_out = item->wpgroup;
 	if (wpattern_out)
-		gtk_tree_model_get( model, &iter, WPCOL_WPATTERN, wpattern_out, -1 );
+		*wpattern_out = item->wpattern;
+	g_object_unref( obj );
 
 	return TRUE;
 }
@@ -826,6 +774,131 @@ csdialog_destroy_cb( G_GNUC_UNUSED GObject *unused )
 }
 
 
+/* Draw function for GtkDrawingArea color swatches in the wildcard pattern list */
+static void
+wp_swatch_draw_func( GtkDrawingArea *area, cairo_t *cr,
+                     int width, int height, G_GNUC_UNUSED gpointer user_data )
+{
+	const char *hex = g_object_get_data( G_OBJECT(area), "hex_color" );
+	GdkRGBA rgba = { 0.5, 0.5, 0.5, 1.0 };
+
+	if (hex != NULL)
+		gdk_rgba_parse( &rgba, hex );
+
+	gdk_cairo_set_source_rgba( cr, &rgba );
+	cairo_rectangle( cr, 0, 0, width, height );
+	cairo_fill( cr );
+}
+
+
+/* Factory setup: create the row widget structure */
+static void
+wp_factory_setup_cb( G_GNUC_UNUSED GtkSignalListItemFactory *factory,
+                     GtkListItem *list_item,
+                     G_GNUC_UNUSED gpointer user_data )
+{
+	GtkWidget *box_w, *swatch_w, *label_w;
+	GtkGesture *click;
+
+	box_w = gtk_box_new( GTK_ORIENTATION_HORIZONTAL, 4 );
+
+	/* Color swatch (GtkDrawingArea) */
+	swatch_w = gtk_drawing_area_new( );
+	gtk_drawing_area_set_draw_func( GTK_DRAWING_AREA(swatch_w), wp_swatch_draw_func, NULL, NULL );
+	gtk_widget_set_size_request( swatch_w, 40, 20 );
+
+	/* Click gesture on swatch to change color */
+	click = gtk_gesture_click_new( );
+	gtk_gesture_single_set_button( GTK_GESTURE_SINGLE(click), 1 );
+	g_signal_connect( click, "released", G_CALLBACK(wp_swatch_click_cb), NULL );
+	gtk_widget_add_controller( swatch_w, GTK_EVENT_CONTROLLER(click) );
+
+	gtk_box_append( GTK_BOX(box_w), swatch_w );
+
+	/* Pattern label */
+	label_w = gtk_label_new( "" );
+	gtk_label_set_xalign( GTK_LABEL(label_w), 0.0 );
+	gtk_widget_set_hexpand( label_w, TRUE );
+	gtk_box_append( GTK_BOX(box_w), label_w );
+
+	gtk_list_item_set_child( list_item, box_w );
+}
+
+
+/* Factory bind: populate row with data from FsvWPListItem */
+static void
+wp_factory_bind_cb( G_GNUC_UNUSED GtkSignalListItemFactory *factory,
+                    GtkListItem *list_item,
+                    G_GNUC_UNUSED gpointer user_data )
+{
+	GtkWidget *box_w = gtk_list_item_get_child( list_item );
+	GtkWidget *swatch_w = gtk_widget_get_first_child( box_w );
+	GtkWidget *label_w = gtk_widget_get_next_sibling( swatch_w );
+	FsvWPListItem *item = gtk_list_item_get_item( list_item );
+	const char *text = "";
+
+	/* Store item reference on swatch for click handler */
+	g_object_set_data( G_OBJECT(swatch_w), "wp_item", item );
+
+	/* Store hex color string on swatch for draw function */
+	g_object_set_data_full( G_OBJECT(swatch_w), "hex_color",
+	                        g_strdup( item->hex_color ), g_free );
+
+	/* Set label text and style based on row type */
+	switch (item->row_type) {
+		case WPLIST_HEADER_ROW:
+		text = _("(color group)");
+		break;
+
+		case WPLIST_WPATTERN_ROW:
+		text = item->wpattern;
+		break;
+
+		case WPLIST_NEW_WPATTERN_ROW:
+		text = _("(new pattern)");
+		break;
+
+		case WPLIST_DEFAULT_HEADER_ROW:
+		text = _("Default color");
+		break;
+
+		case WPLIST_DEFAULT_ROW:
+		text = _("(all other files)");
+		break;
+	}
+
+	gtk_label_set_text( GTK_LABEL(label_w), text );
+
+	/* Make header rows bold */
+	if (item->row_type == WPLIST_HEADER_ROW || item->row_type == WPLIST_DEFAULT_HEADER_ROW) {
+		PangoAttrList *attrs = pango_attr_list_new( );
+		pango_attr_list_insert( attrs, pango_attr_weight_new( PANGO_WEIGHT_BOLD ) );
+		gtk_label_set_attributes( GTK_LABEL(label_w), attrs );
+		pango_attr_list_unref( attrs );
+	}
+	else {
+		gtk_label_set_attributes( GTK_LABEL(label_w), NULL );
+	}
+
+	/* Redraw swatch */
+	gtk_widget_queue_draw( swatch_w );
+}
+
+
+/* Factory unbind: clear data from row */
+static void
+wp_factory_unbind_cb( G_GNUC_UNUSED GtkSignalListItemFactory *factory,
+                      GtkListItem *list_item,
+                      G_GNUC_UNUSED gpointer user_data )
+{
+	GtkWidget *box_w = gtk_list_item_get_child( list_item );
+	GtkWidget *swatch_w = gtk_widget_get_first_child( box_w );
+
+	g_object_set_data( G_OBJECT(swatch_w), "wp_item", NULL );
+	g_object_set_data( G_OBJECT(swatch_w), "hex_color", NULL );
+}
+
+
 void
 dialog_color_setup( void )
 {
@@ -842,11 +915,7 @@ dialog_color_setup( void )
         RGBcolor *color;
         ColorMode color_mode;
 	int i;
-	char *clist_col_titles[2];
 	char strbuf[256];
-
-	clist_col_titles[0] = _("Color ");
-	clist_col_titles[1] = _("Wildcard pattern");
 
 	window_w = gui_dialog_window( _("Color Setup"), NULL );
 	gui_window_modalize( window_w, main_window_w );
@@ -863,68 +932,42 @@ dialog_color_setup( void )
 	hbox_w = gui_hbox_add( NULL, 10 );
 	gui_notebook_page_add( csdialog.notebook_w, _("By wildcards"), hbox_w );
 
-	/* Create a scrolled window with a custom TreeView for the pattern list */
+	/* Create a scrolled window with a GtkListView for the pattern list */
 	{
 		GtkWidget *scroll_w;
-		GtkListStore *wp_store;
-		GtkTreeView *wp_tree;
-		GtkCellRenderer *renderer;
-		GtkTreeViewColumn *column;
-		GtkTreeSelection *sel;
+		GListStore *wp_store;
+		GtkSingleSelection *sel;
+		GtkListItemFactory *factory;
+		GtkWidget *list_view_w;
 
-		wp_store = gtk_list_store_new( WPCOL_NUM,
-			G_TYPE_STRING,		/* WPCOL_BG_COLOR */
-			G_TYPE_STRING,		/* WPCOL_PATTERN */
-			G_TYPE_INT,		/* WPCOL_ROW_TYPE */
-			G_TYPE_POINTER,		/* WPCOL_WPGROUP */
-			G_TYPE_POINTER );	/* WPCOL_WPATTERN */
+		wp_store = g_list_store_new( FSV_TYPE_WP_LIST_ITEM );
 
-		wp_tree = GTK_TREE_VIEW(gtk_tree_view_new_with_model( GTK_TREE_MODEL(wp_store) ));
-		g_object_unref( wp_store );
+		sel = gtk_single_selection_new( G_LIST_MODEL(wp_store) );
+		gtk_single_selection_set_autoselect( sel, FALSE );
+		gtk_single_selection_set_can_unselect( sel, TRUE );
+		g_signal_connect( sel, "notify::selected", G_CALLBACK(csdialog_wpattern_selection_changed_cb), NULL );
 
-		/* Column 0: Color swatch */
-		renderer = gtk_cell_renderer_text_new( );
-		g_object_set( renderer, "width", 40, NULL );
-		column = gtk_tree_view_column_new_with_attributes(
-			clist_col_titles[0], renderer,
-			"cell-background", WPCOL_BG_COLOR,
-			NULL );
-		gtk_tree_view_append_column( wp_tree, column );
+		factory = gtk_signal_list_item_factory_new( );
+		g_signal_connect( factory, "setup", G_CALLBACK(wp_factory_setup_cb), NULL );
+		g_signal_connect( factory, "bind", G_CALLBACK(wp_factory_bind_cb), NULL );
+		g_signal_connect( factory, "unbind", G_CALLBACK(wp_factory_unbind_cb), NULL );
 
-		/* Column 1: Pattern text */
-		renderer = gtk_cell_renderer_text_new( );
-		column = gtk_tree_view_column_new_with_attributes(
-			clist_col_titles[1], renderer,
-			"text", WPCOL_PATTERN,
-			NULL );
-		gtk_tree_view_column_set_expand( column, TRUE );
-		gtk_tree_view_append_column( wp_tree, column );
+		list_view_w = gtk_list_view_new( GTK_SELECTION_MODEL(sel), factory );
+		gtk_list_view_set_show_separators( GTK_LIST_VIEW(list_view_w), TRUE );
 
-		gtk_tree_view_set_headers_visible( wp_tree, TRUE );
-
-		/* Selection: single, with filter to block header rows */
-		sel = gtk_tree_view_get_selection( wp_tree );
-		gtk_tree_selection_set_mode( sel, GTK_SELECTION_SINGLE );
-		gtk_tree_selection_set_select_function( sel, csdialog_wpattern_selection_func, NULL, NULL );
-		g_signal_connect( G_OBJECT(sel), "changed", G_CALLBACK(csdialog_wpattern_clist_selection_changed_cb), NULL );
-
-		/* Click handler for color editing (GtkGestureClick) */
-		{
-			GtkGesture *click = gtk_gesture_click_new( );
-			gtk_gesture_single_set_button( GTK_GESTURE_SINGLE(click), 0 );
-			g_signal_connect( click, "pressed", G_CALLBACK(csdialog_wpattern_clist_click_cb), NULL );
-			gtk_widget_add_controller( GTK_WIDGET(wp_tree), GTK_EVENT_CONTROLLER(click) );
-		}
+		/* Store references for later access */
+		g_object_set_data( G_OBJECT(list_view_w), "list_store", wp_store );
+		g_object_set_data( G_OBJECT(list_view_w), "selection_model", sel );
 
 		/* Put inside a scrolled window */
 		scroll_w = gtk_scrolled_window_new( );
 		gtk_scrolled_window_set_policy( GTK_SCROLLED_WINDOW(scroll_w), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC );
-		gtk_scrolled_window_set_child( GTK_SCROLLED_WINDOW(scroll_w), GTK_WIDGET(wp_tree) );
+		gtk_scrolled_window_set_child( GTK_SCROLLED_WINDOW(scroll_w), list_view_w );
 		gtk_widget_set_hexpand( scroll_w, TRUE );
 		gtk_widget_set_vexpand( scroll_w, TRUE );
 		gtk_box_append( GTK_BOX(hbox_w), scroll_w );
 
-		csdialog.wpattern.clist_w = GTK_WIDGET(wp_tree);
+		csdialog.wpattern.clist_w = list_view_w;
 	}
 
 	/* Action buttons */

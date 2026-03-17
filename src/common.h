@@ -226,8 +226,8 @@ struct _DirNodeDesc {
 		int64		size;	/* Total subtree size (bytes) */
 		unsigned int	counts[NUM_NODE_TYPES]; /* Node type totals */
 	} subtree;
-	/* Following pointer should be of type GtkTreeIter* (heap-allocated) */
-	void		*ctnode;	/* Directory tree entry */
+	/* Whether this directory's tree entry is expanded */
+	boolean		tree_expanded;
 	/* Flag: TRUE if directory geometry is being drawn expanded */
 	bitfield	geom_expanded : 1;
 };
