@@ -61,26 +61,15 @@ draw_fsv( void )
 	/* Set up modelview matrix */
 	glmath_push_modelview( );
 	glmath_load_identity_modelview( );
-	if (about_part < 0.5) {
-		/* Spinning and approaching fast */
-		p = INTERVAL_PART(about_part, 0.0, 0.5);
+	if (about_part < 0.2) {
+		/* Zooming in to final position (no spinning) */
+		p = INTERVAL_PART(about_part, 0.0, 0.2);
 		q = pow( 1.0 - p, 1.5 );
-		glmath_translated( 0.0, 0.0, -150.0 - 1800.0 * q );
-		glmath_rotated( 900.0 * q, 0.0, 1.0, 0.0 );
-	}
-	else if (about_part < 0.625) {
-		/* Holding still for a moment */
-		glmath_translated( 0.0, 0.0, -150.0 );
-	}
-	else if (about_part < 0.75) {
-		/* Flipping up and back */
-		p = INTERVAL_PART(about_part, 0.625, 0.75);
-		q = 1.0 - SQR(1.0 - p);
-		glmath_translated( 0.0, 40.0 * q, -150.0 - 50.0 * q );
-		glmath_rotated( 365.0 * q, 1.0, 0.0, 0.0 );
+		glmath_translated( 0.0, 40.0 * (1.0 - q), -200.0 - 1000.0 * q );
+		glmath_rotated( 5.0, 1.0, 0.0, 0.0 );
 	}
 	else {
-		/* Holding still again */
+		/* Holding at final position */
 		glmath_translated( 0.0, 40.0, -200.0 );
 		glmath_rotated( 5.0, 1.0, 0.0, 0.0 );
 	}
@@ -102,7 +91,7 @@ draw_text( void )
 	XYvec tdims;
 	double dy, p, q;
 
-	if (about_part < 0.625)
+	if (about_part < 0.2)
 		return;
 
 	/* Set up projection matrix */
@@ -115,8 +104,8 @@ draw_text( void )
 	glmath_push_modelview( );
 	glmath_load_identity_modelview( );
 
-        if (about_part < 0.75)
-		p = INTERVAL_PART(about_part, 0.625, 0.75);
+	if (about_part < 0.4)
+		p = INTERVAL_PART(about_part, 0.2, 0.4);
 	else
 		p = 1.0;
 	q = (1.0 - SQR(1.0 - p));
@@ -160,7 +149,7 @@ about( AboutMesg mesg )
 		/* Begin the presentation */
 		morph_break( &about_part );
 		about_part = 0.0;
-		morph_full( &about_part, MORPH_LINEAR, 1.0, 8.0, about_progress_cb, about_progress_cb, NULL );
+		morph_full( &about_part, MORPH_LINEAR, 1.0, 4.0, about_progress_cb, about_progress_cb, NULL );
 		about_active = TRUE;
 		break;
 
