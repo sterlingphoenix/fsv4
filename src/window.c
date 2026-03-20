@@ -85,12 +85,12 @@ build_menu_model( void )
 	g_menu_append_submenu( menubar, _("File"), G_MENU_MODEL(menu) );
 	g_object_unref( menu );
 
-	/* Vis menu */
+	/* Visualisation menu */
 	menu = g_menu_new( );
-	g_menu_append( menu, _("DiscV"), "win.vis-mode::discv" );
 	g_menu_append( menu, _("MapV"), "win.vis-mode::mapv" );
+	g_menu_append( menu, _("DiscV"), "win.vis-mode::discv" );
 	g_menu_append( menu, _("TreeV"), "win.vis-mode::treev" );
-	g_menu_append_submenu( menubar, _("Vis"), G_MENU_MODEL(menu) );
+	g_menu_append_submenu( menubar, _("Visualisation"), G_MENU_MODEL(menu) );
 	g_object_unref( menu );
 
 	/* Colors menu */
@@ -221,6 +221,19 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 	menu_bar_w = gtk_popover_menu_bar_new_from_model( menu_model );
 	g_object_unref( menu_model );
 	gtk_box_append( GTK_BOX(main_vbox_w), menu_bar_w );
+
+	/* Tighten popover menu padding so short menus don't show
+	 * a blank-looking gap at the bottom */
+	{
+		GtkCssProvider *css = gtk_css_provider_new( );
+		gtk_css_provider_load_from_string( css,
+			"popover.menu contents { padding-top: 0; padding-bottom: 0; }" );
+		gtk_style_context_add_provider_for_display(
+			gdk_display_get_default( ),
+			GTK_STYLE_PROVIDER(css),
+			GTK_STYLE_PROVIDER_PRIORITY_APPLICATION );
+		g_object_unref( css );
+	}
 
 	/* Main horizontal paned widget */
 	hpaned_w = gui_hpaned_add( main_vbox_w, window_width / 5 );
