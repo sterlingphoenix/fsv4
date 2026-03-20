@@ -171,6 +171,7 @@ setup_actions( GtkWindow *window, FsvMode fsv_mode )
 }
 
 
+
 /* Constructs the main program window */
 void
 window_init( GtkApplication *app, FsvMode fsv_mode )
@@ -222,17 +223,34 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 	g_object_unref( menu_model );
 	gtk_box_append( GTK_BOX(main_vbox_w), menu_bar_w );
 
-	/* Tighten popover menu padding so short menus don't show
-	 * a blank-looking gap at the bottom */
+	/* Fix Help menu popover minimum height.
+	 * GtkPopoverMenuBar's internal GtkScrolledWindow has a minimum
+	 * height of ~46px (from its scrollbar).  For single-item menus
+	 * this creates visible blank space.  Find the last menu's
+	 * popover and disable its scrollbars since it doesn't need them. */
 	{
-		GtkCssProvider *css = gtk_css_provider_new( );
-		gtk_css_provider_load_from_string( css,
-			"popover.menu contents { padding-top: 0; padding-bottom: 0; }" );
-		gtk_style_context_add_provider_for_display(
-			gdk_display_get_default( ),
-			GTK_STYLE_PROVIDER(css),
-			GTK_STYLE_PROVIDER_PRIORITY_APPLICATION );
-		g_object_unref( css );
+		GtkWidget *bar_item, *last_item = NULL;
+		for (bar_item = gtk_widget_get_first_child( menu_bar_w );
+		     bar_item != NULL;
+		     bar_item = gtk_widget_get_next_sibling( bar_item ))
+			last_item = bar_item;
+
+		if (last_item) {
+			GtkWidget *item_child;
+			for (item_child = gtk_widget_get_first_child( last_item );
+			     item_child != NULL;
+			     item_child = gtk_widget_get_next_sibling( item_child )) {
+				if (GTK_IS_POPOVER(item_child)) {
+					GtkWidget *content = gtk_widget_get_first_child( item_child );
+					if (content) {
+						GtkWidget *sw = gtk_widget_get_first_child( content );
+						if (sw && GTK_IS_SCROLLED_WINDOW(sw))
+							gtk_scrolled_window_set_policy( GTK_SCROLLED_WINDOW(sw),
+								GTK_POLICY_NEVER, GTK_POLICY_NEVER );
+					}
+				}
+			}
+		}
 	}
 
 	/* Main horizontal paned widget */

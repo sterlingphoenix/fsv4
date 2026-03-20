@@ -1,12 +1,17 @@
-* Input is suspended during expand/initial animation but not collapse animation.
-* DiscV expand/collapse animations should be faster.
-In DiscV, discs render underneath other discs. 
-* since MapV is the default, it should be the first option in the visualisation menu
-* In TreeV mode, initial animation doesn't show. If switching when already expandedd, animation is very very slow and sometimes random.
-* In TreeV, initial block is very high which leads to the top "vanishing".
-* In TreeV, text often blinks and is partially visible.
-* About page should render a lot faster. 
-* Help menu seems to be too big.
-* Expand All has major slowdowns in mapv and discv. TreeV doesn't have any animation.
-* Color setup dialog is terrible. 
-* Arch/Red Hat instructions
+  * Input is suspended during expand/initial animation but not collapse animation.
+  * DiscV expand/collapse animations should be faster.
+  * In DiscV, discs render underneath other discs. 
+  * In TreeV mode, initial animation doesn't show. If switching when already expandedd, animation is very very slow and sometimes random.
+  * In TreeV, initial block is very high which leads to the top "vanishing".
+  * In TreeV, text often blinks and is partially visible.
+  * Color setup dialog is terrible. 
+  * Arch/Red Hat instructions
+  * When closing using the window close button, there is no cleanup.
+
+
+
+Done
+
+ * About page should render a lot faster. 
+ * Help menu seems to be too big.
+ * since MapV is the default, it should be the first option in the visualisation menu
