@@ -1,6 +1,5 @@
 
  * Logarithmic sizes in treev should be a toggle.
- * Tool tips
  * Color setup dialog is terrible. 
 
 Done
@@ -14,6 +13,7 @@ Done
  * In TreeV mode, initial animation doesn't show. If switching when already expandedd, animation is very very slow and sometimes random.
  * Arch/Red Hat instructions
  * When closing using the window close button, there is no cleanup.
+ * Tool tips
 
 
 Unsolvable for now
