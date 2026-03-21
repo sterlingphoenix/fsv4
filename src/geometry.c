@@ -1722,7 +1722,7 @@ mapv_draw( boolean high_detail )
 #define TREEV_CURVE_GRANULARITY		5.0
 #define TREEV_PLATFORM_HEIGHT		158.2
 #define TREEV_PLATFORM_SPACING_WIDTH	512.0
-#define TREEV_LEAF_HEIGHT_MULTIPLIER	1.0
+#define TREEV_LEAF_HEIGHT_MULTIPLIER	10
 #define TREEV_LEAF_PADDING		(0.125 * TREEV_LEAF_NODE_EDGE)
 #define TREEV_PLATFORM_PADDING		(0.5 * TREEV_PLATFORM_SPACING_WIDTH)
 
@@ -2160,7 +2160,8 @@ treev_init_recursive( GNode *dnode )
 			TREEV_GEOM_PARAMS(node)->platform.height = TREEV_PLATFORM_HEIGHT;
 			treev_init_recursive( node );
 		}
-		TREEV_GEOM_PARAMS(node)->leaf.height = sqrt( (double)size ) * TREEV_LEAF_HEIGHT_MULTIPLIER;
+		double lsize = log( (double)size );
+		TREEV_GEOM_PARAMS(node)->leaf.height = lsize * lsize * TREEV_LEAF_HEIGHT_MULTIPLIER;
 		node = node->next;
 	}
 }
