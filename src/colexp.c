@@ -31,6 +31,7 @@
 #include "filelist.h"
 #include "geometry.h"
 #include "gui.h" /* gui_update( ) */
+#include "window.h"
 
 
 /* Duration of a single collapse/expansion (in seconds) */
@@ -139,6 +140,15 @@ colexp_progress_cb( Morph *morph )
 
 	if (scrollbars_colexp_adjust)
 		camera_update_scrollbars( ABS(*(morph->var) - morph->end_value) < EPSILON );
+}
+
+
+/* Timeout callback to re-enable access after collapse animation */
+static gboolean
+colexp_reenable_access( G_GNUC_UNUSED gpointer data )
+{
+	window_set_access( TRUE );
+	return G_SOURCE_REMOVE;
 }
 
 
@@ -348,16 +358,25 @@ colexp( GNode *dnode, ColExpMesg mesg )
 		curnode_is_equal = globals.current_node == dnode;
 		curnode_is_descendant = g_node_is_ancestor( dnode, globals.current_node );
 
+		/* Show busy cursor during the animation */
+		window_set_access( FALSE );
+
 		/* Handle the camera semi-intelligently if it is not under
-		 * manual control */
+		 * manual control.  camera_look_at_full() will re-enable
+		 * access when the pan finishes. */
+		boolean camera_panning = FALSE;
 		if (!camera->manual_control) {
 			switch (mesg) {
 				case COLEXP_COLLAPSE_RECURSIVE:
 				pan_time = (double)(max_depth + 1) * colexp_time;
-				if (curnode_is_ancestor || curnode_is_equal)
+				if (curnode_is_ancestor || curnode_is_equal) {
 					camera_look_at_full( globals.current_node, MORPH_LINEAR, pan_time );
-				else if (curnode_is_descendant)
+					camera_panning = TRUE;
+				}
+				else if (curnode_is_descendant) {
 					camera_look_at_full( dnode, MORPH_LINEAR, pan_time );
+					camera_panning = TRUE;
+				}
 				break;
 
 				case COLEXP_EXPAND:
@@ -365,6 +384,7 @@ colexp( GNode *dnode, ColExpMesg mesg )
 				if (curnode_is_ancestor || curnode_is_equal) {
 					pan_time = (double)(max_depth + 1) * colexp_time;
 					camera_look_at_full( globals.current_node, MORPH_LINEAR, pan_time );
+					camera_panning = TRUE;
 				}
 				break;
 
@@ -376,6 +396,14 @@ colexp( GNode *dnode, ColExpMesg mesg )
 
 				SWITCH_FAIL
 			}
+		}
+
+		/* If no camera pan was started, re-enable access after
+		 * the collapse/expand animation completes */
+		if (!camera_panning) {
+			double anim_time = (double)(max_depth + 1) * colexp_time;
+			g_timeout_add( (guint)(anim_time * 1000.0),
+				colexp_reenable_access, NULL );
 		}
 
 		/* If, in TreeV mode, the current node is an ancestor of
