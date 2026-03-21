@@ -1,5 +1,5 @@
 project('fsv', 'c',
-  version : '4.7.7',
+  version : '4.8.0',
   default_options : ['warning_level=2', 'buildtype=debugoptimized'],
   meson_version : '>= 0.55',
 )
@@ -57,6 +57,15 @@ if opt_debug
   subdir('debug')
 endif
 
+# Compiled GResource (icon PNGs)
+gnome = import('gnome')
+fsv_resources = gnome.compile_resources(
+  'fsv-resources',
+  'src/icons/fsv.gresource.xml',
+  source_dir : 'src/icons',
+  c_name : 'fsv',
+)
+
 # Main binary
 src_sources = files(
   'src/about.c',
@@ -93,7 +102,7 @@ if opt_debug
 endif
 
 executable('fsv',
-  src_sources,
+  src_sources, fsv_resources,
   dependencies : fsv_deps,
   link_with : fsv_link,
   include_directories : fsv_inc,

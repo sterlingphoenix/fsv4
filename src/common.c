@@ -31,54 +31,34 @@
 
 #include "gui.h" /* gui_update( ) */
 
-/* Node type icon XPM files */
-#include "xmaps/folder.xpm"
-#include "xmaps/regfile.xpm"
-#include "xmaps/symlink.xpm"
-#include "xmaps/fifo.xpm"
-#include "xmaps/socket.xpm"
-#include "xmaps/chardev.xpm"
-#include "xmaps/blockdev.xpm"
-#include "xmaps/unknown.xpm"
-
-/* Mini node type icon XPM files */
-#include "xmaps/mini-folder.xpm"
-#include "xmaps/mini-regfile.xpm"
-#include "xmaps/mini-symlink.xpm"
-#include "xmaps/mini-fifo.xpm"
-#include "xmaps/mini-socket.xpm"
-#include "xmaps/mini-chardev.xpm"
-#include "xmaps/mini-blockdev.xpm"
-#include "xmaps/mini-unknown.xpm"
-
 
 /* The global variables live here */
 struct Globals globals;
 
-/* Node type icon XPM table */
-char **node_type_xpms[NUM_NODE_TYPES] = {
+/* Node type icon resource paths */
+const char *node_type_icon_paths[NUM_NODE_TYPES] = {
 	NULL,
-	folder_xpm,
-	regfile_xpm,
-	symlink_xpm,
-	fifo_xpm,
-	socket_xpm,
-	chardev_xpm,
-	blockdev_xpm,
-	unknown_xpm
+	"/org/fsv/icons/folder.png",
+	"/org/fsv/icons/regfile.png",
+	"/org/fsv/icons/symlink.png",
+	"/org/fsv/icons/fifo.png",
+	"/org/fsv/icons/socket.png",
+	"/org/fsv/icons/chardev.png",
+	"/org/fsv/icons/blockdev.png",
+	"/org/fsv/icons/unknown.png"
 };
 
-/* Mini node type icon XPM table */
-char **node_type_mini_xpms[NUM_NODE_TYPES] = {
+/* Mini node type icon resource paths */
+const char *node_type_mini_icon_paths[NUM_NODE_TYPES] = {
 	NULL,
-	mini_folder_xpm,
-	mini_regfile_xpm,
-	mini_symlink_xpm,
-	mini_fifo_xpm,
-	mini_socket_xpm,
-	mini_chardev_xpm,
-	mini_blockdev_xpm,
-	mini_unknown_xpm
+	"/org/fsv/icons/mini-folder.png",
+	"/org/fsv/icons/mini-regfile.png",
+	"/org/fsv/icons/mini-symlink.png",
+	"/org/fsv/icons/mini-fifo.png",
+	"/org/fsv/icons/mini-socket.png",
+	"/org/fsv/icons/mini-chardev.png",
+	"/org/fsv/icons/mini-blockdev.png",
+	"/org/fsv/icons/mini-unknown.png"
 };
 
 /* Full node type names */

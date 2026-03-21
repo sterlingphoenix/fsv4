@@ -39,9 +39,9 @@
 #include "gui.h"
 #include "window.h"
 
-/* OK/Cancel button XPM's */
-#include "xmaps/button_ok.xpm"
-#include "xmaps/button_cancel.xpm"
+/* OK/Cancel button icon resource paths */
+#define ICON_BUTTON_OK		"/org/fsv/icons/button_ok.png"
+#define ICON_BUTTON_CANCEL	"/org/fsv/icons/button_cancel.png"
 
 
 /* Main window widget */
@@ -1017,7 +1017,7 @@ dialog_color_setup( void )
 		gui_colorpicker_add( hbox_w, color, strbuf, G_CALLBACK(csdialog_node_type_color_picker_cb), color );
 
 		/* Node type icon */
-		gui_pixmap_xpm_add( hbox_w, node_type_xpms[i] );
+		gui_resource_image_add( hbox_w, node_type_icon_paths[i] );
 		/* Node type label */
 		gui_label_add( hbox_w, _(node_type_names[i]) );
 	}
@@ -1099,9 +1099,9 @@ dialog_color_setup( void )
 	gui_box_set_packing( hbox_w, EXPAND, FILL, AT_START );
 
 	/* OK and Cancel buttons */
-	gui_button_with_pixmap_xpm_add( hbox_w, button_ok_xpm, _("OK"), G_CALLBACK(csdialog_ok_button_cb), window_w );
+	gui_button_with_icon_add( hbox_w, ICON_BUTTON_OK, _("OK"), G_CALLBACK(csdialog_ok_button_cb), window_w );
 	gui_hbox_add( hbox_w, 0 ); /* spacer */
-	gui_button_with_pixmap_xpm_add( hbox_w, button_cancel_xpm, _("Cancel"), G_CALLBACK(close_cb), window_w );
+	gui_button_with_icon_add( hbox_w, ICON_BUTTON_CANCEL, _("Cancel"), G_CALLBACK(close_cb), window_w );
 
 	/* Set page to current color mode */
 	gtk_notebook_set_current_page( GTK_NOTEBOOK(csdialog.notebook_w), color_mode );
@@ -1171,7 +1171,7 @@ dialog_node_properties( GNode *node )
 	/* Node type icon */
 	hbox_w = gui_hbox_add( NULL, 8 );
 	gui_table_attach( table_w, hbox_w, 0, 1, 0, 1 );
-	pixmap_w = gui_pixmap_xpm_add( hbox_w, node_type_xpms[NODE_DESC(node)->type] );
+	pixmap_w = gui_resource_image_add( hbox_w, node_type_icon_paths[NODE_DESC(node)->type] );
 	gui_widget_packing( pixmap_w, NO_EXPAND, NO_FILL, AT_END );
 	/* Name */
 	hbox_w = gui_hbox_add( NULL, 8 );
