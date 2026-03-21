@@ -31,10 +31,11 @@
 #include "filelist.h"
 #include "geometry.h"
 #include "gui.h" /* gui_update( ) */
+#include "window.h"
 
 
 /* Duration of a single collapse/expansion (in seconds) */
-#define DISCV_COLEXP_TIME	1.5
+#define DISCV_COLEXP_TIME	0.5
 #define MAPV_COLEXP_TIME	0.375
 #define TREEV_COLEXP_TIME	0.5
 
@@ -47,6 +48,13 @@ static boolean scrollbars_colexp_adjust;
  * gui_update() can process events that trigger tree expand/collapse
  * signals, which would re-enter colexp() */
 static boolean colexp_in_progress = FALSE;
+
+/* TreeV expand-all: lock camera angles, tether radial position */
+static boolean treev_camera_locked = FALSE;
+static double treev_saved_theta, treev_saved_phi;
+static double treev_saved_distance, treev_saved_fov;
+static double treev_saved_near_clip, treev_saved_far_clip;
+static double treev_saved_r_offset; /* camera target.r minus node r0 */
 
 
 /* This returns the number of collapsed directory levels above the
@@ -68,29 +76,6 @@ collapsed_depth( GNode *dnode )
 	return depth;
 }
 
-
-/* Returns the maximum directory depth of a subtree (regardless of
- * expansion state). Used to compute animation timing for expand-all */
-static int
-max_dir_depth( GNode *dnode )
-{
-	GNode *node;
-	int max_depth = 0;
-	int child_depth;
-
-	node = dnode->children;
-	while (node != NULL) {
-		if (NODE_IS_DIR(node)) {
-			child_depth = 1 + max_dir_depth( node );
-			max_depth = MAX(max_depth, child_depth);
-		}
-		else
-			break;
-		node = node->next;
-	}
-
-	return max_depth;
-}
 
 
 /* This returns the maximum depth to which a certain directory's
@@ -139,7 +124,40 @@ colexp_progress_cb( Morph *morph )
 
 	if (scrollbars_colexp_adjust)
 		camera_update_scrollbars( ABS(*(morph->var) - morph->end_value) < EPSILON );
+
+	/* During TreeV expand-all: preserve camera angles and
+	 * tether radial position to track expanding geometry */
+	if (treev_camera_locked) {
+		camera->theta = treev_saved_theta;
+		camera->phi = treev_saved_phi;
+		camera->distance = treev_saved_distance;
+		camera->fov = treev_saved_fov;
+		camera->near_clip = treev_saved_near_clip;
+		camera->far_clip = treev_saved_far_clip;
+		TREEV_CAMERA(camera)->target.r =
+			geometry_treev_platform_r0( root_dnode ) + treev_saved_r_offset;
+	}
 }
+
+
+/* Timeout callback to re-enable access after collapse animation */
+static gboolean
+colexp_reenable_access( G_GNUC_UNUSED gpointer data )
+{
+	window_set_access( TRUE );
+	return G_SOURCE_REMOVE;
+}
+
+
+/* Timeout callback to unlock camera after TreeV expand-all */
+static gboolean
+treev_expand_all_finished( G_GNUC_UNUSED gpointer data )
+{
+	treev_camera_locked = FALSE;
+	window_set_access( TRUE );
+	return G_SOURCE_REMOVE;
+}
+
 
 
 /* This keeps the directory tree and the map geometry in sync
@@ -225,34 +243,21 @@ colexp( GNode *dnode, ColExpMesg mesg )
                         SWITCH_FAIL
 		}
 
-		/* TreeV expand-all uses an instant geometry rebuild
-		 * rather than per-directory morph animations.
-		 * Per-directory morphs cause the treev_arrange resize
-		 * loop to shift geometry under the camera mid-animation,
-		 * resulting in the camera losing its target. Instead,
-		 * rebuild all geometry in one pass and animate only
-		 * the camera pan, timed to the subtree depth */
+		/* TreeV expand-all: save camera angles and radial
+		 * offset so camera can track expanding geometry */
 		if (mesg == COLEXP_EXPAND_RECURSIVE
-		    && globals.fsv_mode == FSV_TREEV
-		    && DIR_NODE_DESC(dnode)->subtree.counts[NODE_DIRECTORY] > 0) {
-			double old_r0, delta_r;
-			int tree_depth = max_dir_depth( dnode );
-			double pan_time = (double)(tree_depth + 1) * colexp_time;
-			/* Save root platform radius before reinit so we
-			 * can track how much the geometry shifted outward
-			 * (treev_core_radius grows but never shrinks) */
-			old_r0 = geometry_treev_platform_r0( root_dnode );
-			geometry_treev_reinit( );
-			/* Shift camera target radially to track the
-			 * geometry movement, keeping the camera in the
-			 * same relative position on the first frame */
-			delta_r = geometry_treev_platform_r0( root_dnode ) - old_r0;
-			if (delta_r > EPSILON)
-				TREEV_CAMERA(camera)->target.r += delta_r;
-			camera_look_at_full( globals.current_node, MORPH_INV_QUADRATIC, pan_time );
-			colexp_in_progress = FALSE;
-			return;
+		    && globals.fsv_mode == FSV_TREEV) {
+			treev_saved_theta = camera->theta;
+			treev_saved_phi = camera->phi;
+			treev_saved_distance = camera->distance;
+			treev_saved_fov = camera->fov;
+			treev_saved_near_clip = camera->near_clip;
+			treev_saved_far_clip = camera->far_clip;
+			treev_saved_r_offset = TREEV_CAMERA(camera)->target.r
+				- geometry_treev_platform_r0( root_dnode );
+			treev_camera_locked = TRUE;
 		}
+
 	}
 
 	morph_break( &DIR_NODE_DESC(dnode)->deployment );
@@ -348,23 +353,49 @@ colexp( GNode *dnode, ColExpMesg mesg )
 		curnode_is_equal = globals.current_node == dnode;
 		curnode_is_descendant = g_node_is_ancestor( dnode, globals.current_node );
 
+		/* Show busy cursor during the animation */
+		window_set_access( FALSE );
+
 		/* Handle the camera semi-intelligently if it is not under
-		 * manual control */
+		 * manual control.  camera_look_at_full() will re-enable
+		 * access when the pan finishes. */
+		boolean camera_panning = FALSE;
 		if (!camera->manual_control) {
 			switch (mesg) {
 				case COLEXP_COLLAPSE_RECURSIVE:
 				pan_time = (double)(max_depth + 1) * colexp_time;
-				if (curnode_is_ancestor || curnode_is_equal)
+				if (curnode_is_ancestor || curnode_is_equal) {
 					camera_look_at_full( globals.current_node, MORPH_LINEAR, pan_time );
-				else if (curnode_is_descendant)
+					camera_panning = TRUE;
+				}
+				else if (curnode_is_descendant) {
 					camera_look_at_full( dnode, MORPH_LINEAR, pan_time );
+					camera_panning = TRUE;
+				}
 				break;
 
 				case COLEXP_EXPAND:
-				case COLEXP_EXPAND_RECURSIVE:
 				if (curnode_is_ancestor || curnode_is_equal) {
 					pan_time = (double)(max_depth + 1) * colexp_time;
 					camera_look_at_full( globals.current_node, MORPH_LINEAR, pan_time );
+					camera_panning = TRUE;
+				}
+				break;
+
+				case COLEXP_EXPAND_RECURSIVE:
+				if (globals.fsv_mode == FSV_TREEV) {
+					/* Freeze/lock already set before morph
+					 * setup. Schedule cleanup timer */
+					double anim_time = (double)(max_depth + 1) * colexp_time;
+					g_timeout_add( (guint)(anim_time * 1000.0),
+						treev_expand_all_finished, NULL );
+					camera_panning = TRUE; /* suppress reenable_access */
+					break;
+				}
+				if (curnode_is_ancestor || curnode_is_equal) {
+					pan_time = (double)(max_depth + 1) * colexp_time;
+					camera_look_at_full( globals.current_node, MORPH_LINEAR, pan_time );
+					camera_panning = TRUE;
 				}
 				break;
 
@@ -376,6 +407,14 @@ colexp( GNode *dnode, ColExpMesg mesg )
 
 				SWITCH_FAIL
 			}
+		}
+
+		/* If no camera pan was started, re-enable access after
+		 * the collapse/expand animation completes */
+		if (!camera_panning) {
+			double anim_time = (double)(max_depth + 1) * colexp_time;
+			g_timeout_add( (guint)(anim_time * 1000.0),
+				colexp_reenable_access, NULL );
 		}
 
 		/* If, in TreeV mode, the current node is an ancestor of

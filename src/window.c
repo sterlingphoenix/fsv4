@@ -56,6 +56,18 @@ static GtkWidget *birdseye_view_tbutton_w;
 /* List of widgets that can be enabled or disabled on the fly */
 static GList *sw_widget_list = NULL;
 
+/* Handler for window close button (X).  Quit the application cleanly
+ * so that idle/animation callbacks don't fire against destroyed widgets. */
+static gboolean
+on_close_request( G_GNUC_UNUSED GtkWindow *window, G_GNUC_UNUSED gpointer data )
+{
+	GApplication *app = g_application_get_default( );
+	if (app != NULL)
+		g_application_quit( app );
+	return TRUE; /* we handled it — don't let GTK destroy piecemeal */
+}
+
+
 /* Main window widget (for busy cursor) */
 static GtkWidget *main_window_w_saved;
 
@@ -85,12 +97,12 @@ build_menu_model( void )
 	g_menu_append_submenu( menubar, _("File"), G_MENU_MODEL(menu) );
 	g_object_unref( menu );
 
-	/* Vis menu */
+	/* Visualisation menu */
 	menu = g_menu_new( );
-	g_menu_append( menu, _("DiscV"), "win.vis-mode::discv" );
 	g_menu_append( menu, _("MapV"), "win.vis-mode::mapv" );
+	g_menu_append( menu, _("DiscV"), "win.vis-mode::discv" );
 	g_menu_append( menu, _("TreeV"), "win.vis-mode::treev" );
-	g_menu_append_submenu( menubar, _("Vis"), G_MENU_MODEL(menu) );
+	g_menu_append_submenu( menubar, _("Visualisation"), G_MENU_MODEL(menu) );
 	g_object_unref( menu );
 
 	/* Colors menu */
@@ -171,6 +183,7 @@ setup_actions( GtkWindow *window, FsvMode fsv_mode )
 }
 
 
+
 /* Constructs the main program window */
 void
 window_init( GtkApplication *app, FsvMode fsv_mode )
@@ -194,6 +207,21 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 	GMenuModel *menu_model;
 	int window_width, window_height;
 
+	/* Custom CSS for bird's-eye toggle button */
+	{
+		GtkCssProvider *css = gtk_css_provider_new( );
+		gtk_css_provider_load_from_string( css,
+			"button.birdseye-toggle:checked { "
+			"  background: alpha(@accent_color, 0.3); "
+			"  border-color: @accent_color; "
+			"}" );
+		gtk_style_context_add_provider_for_display(
+			gdk_display_get_default( ),
+			GTK_STYLE_PROVIDER(css),
+			GTK_STYLE_PROVIDER_PRIORITY_APPLICATION );
+		g_object_unref( css );
+	}
+
 	/* Main window widget */
 	main_window_w = gtk_application_window_new( app );
 	gtk_window_set_title( GTK_WINDOW(main_window_w), "fsv" );
@@ -210,6 +238,10 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 	window_height = 2584 * window_width / 4181;
 	gtk_window_set_default_size( GTK_WINDOW(main_window_w), window_width, window_height );
 
+	/* Clean shutdown when user clicks the window close button */
+	g_signal_connect( main_window_w, "close-request",
+		G_CALLBACK(on_close_request), NULL );
+
 	/* Set up actions */
 	setup_actions( GTK_WINDOW(main_window_w), fsv_mode );
 
@@ -221,6 +253,36 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 	menu_bar_w = gtk_popover_menu_bar_new_from_model( menu_model );
 	g_object_unref( menu_model );
 	gtk_box_append( GTK_BOX(main_vbox_w), menu_bar_w );
+
+	/* Fix Help menu popover minimum height.
+	 * GtkPopoverMenuBar's internal GtkScrolledWindow has a minimum
+	 * height of ~46px (from its scrollbar).  For single-item menus
+	 * this creates visible blank space.  Find the last menu's
+	 * popover and disable its scrollbars since it doesn't need them. */
+	{
+		GtkWidget *bar_item, *last_item = NULL;
+		for (bar_item = gtk_widget_get_first_child( menu_bar_w );
+		     bar_item != NULL;
+		     bar_item = gtk_widget_get_next_sibling( bar_item ))
+			last_item = bar_item;
+
+		if (last_item) {
+			GtkWidget *item_child;
+			for (item_child = gtk_widget_get_first_child( last_item );
+			     item_child != NULL;
+			     item_child = gtk_widget_get_next_sibling( item_child )) {
+				if (GTK_IS_POPOVER(item_child)) {
+					GtkWidget *content = gtk_widget_get_first_child( item_child );
+					if (content) {
+						GtkWidget *sw = gtk_widget_get_first_child( content );
+						if (sw && GTK_IS_SCROLLED_WINDOW(sw))
+							gtk_scrolled_window_set_policy( GTK_SCROLLED_WINDOW(sw),
+								GTK_POLICY_NEVER, GTK_POLICY_NEVER );
+					}
+				}
+			}
+		}
+	}
 
 	/* Main horizontal paned widget */
 	hpaned_w = gui_hpaned_add( main_vbox_w, window_width / 5 );
@@ -236,21 +298,26 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 	/* Horizontal box for toolbar buttons */
 	hbox_w = gui_hbox_add( left_vbox_w, 2 );
 
-	/* "back" button */
-	button_w = gui_button_add( hbox_w, NULL, G_CALLBACK(on_back_button_clicked), NULL );
-	gui_pixmap_xpm_add( button_w, back_xpm );
-	G_LIST_APPEND(sw_widget_list, button_w);
 	/* "cd /" button */
 	button_w = gui_button_add( hbox_w, NULL, G_CALLBACK(on_cd_root_button_clicked), NULL );
 	gui_pixmap_xpm_add( button_w, cd_root_xpm );
+	gtk_widget_set_tooltip_text( button_w, "Root View" );
+	G_LIST_APPEND(sw_widget_list, button_w);
+	/* "back" button */
+	button_w = gui_button_add( hbox_w, NULL, G_CALLBACK(on_back_button_clicked), NULL );
+	gui_pixmap_xpm_add( button_w, back_xpm );
+	gtk_widget_set_tooltip_text( button_w, "Back" );
 	G_LIST_APPEND(sw_widget_list, button_w);
 	/* "cd .." button */
 	button_w = gui_button_add( hbox_w, NULL, G_CALLBACK(on_cd_up_button_clicked), NULL );
 	gui_pixmap_xpm_add( button_w, cd_up_xpm );
+	gtk_widget_set_tooltip_text( button_w, "Up" );
 	G_LIST_APPEND(sw_widget_list, button_w);
 	/* "bird's-eye view" toggle button */
 	button_w = gui_toggle_button_add( hbox_w, NULL, FALSE, G_CALLBACK(on_birdseye_view_togglebutton_toggled), NULL );
 	gui_pixmap_xpm_add( button_w, birdseye_view_xpm );
+	gtk_widget_set_tooltip_text( button_w, "Bird's Eye View" );
+	gtk_widget_add_css_class( button_w, "birdseye-toggle" );
 	G_LIST_APPEND(sw_widget_list, button_w);
 	birdseye_view_tbutton_w = button_w;
 

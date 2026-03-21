@@ -96,6 +96,18 @@ static union AnyCamera pre_birdseye_view_camera;
 static boolean birdseye_view_active = FALSE;
 
 
+/* If bird's-eye view is active, deactivate it (called when user
+ * takes manual control of the camera) */
+static void
+leave_birdseye_if_active( void )
+{
+	if (birdseye_view_active) {
+		window_birdseye_view_off( );
+		birdseye_view_active = FALSE;
+	}
+}
+
+
 /* External interface to check if camera is in motion */
 boolean
 camera_moving( void )
@@ -354,6 +366,7 @@ camera_scrollbar_move_cb( GtkAdjustment *adj, const char *mesg )
 	}
 
 	/* Camera is under user control */
+	leave_birdseye_if_active( );
 	camera->manual_control = TRUE;
 
 	redraw( );
@@ -1437,6 +1450,7 @@ camera_dolly( double dk )
 	camera->far_clip = FAR_TO_NEAR_RATIO * camera->near_clip;
 
 	/* Camera is under user control */
+	leave_birdseye_if_active( );
 	camera->manual_control = TRUE;
 
 	/* Soft scrollbar update: scroll events are not compressed like
@@ -1473,6 +1487,7 @@ camera_revolve( double dtheta, double dphi )
 	}
 
 	/* Camera is under user control */
+	leave_birdseye_if_active( );
 	camera->manual_control = TRUE;
 
 	camera_update_scrollbars( TRUE );
@@ -1543,6 +1558,7 @@ camera_pan( double dx, double dy )
 	}
 
 	/* Camera is under user control */
+	leave_birdseye_if_active( );
 	camera->manual_control = TRUE;
 
 	camera_update_scrollbars( TRUE );

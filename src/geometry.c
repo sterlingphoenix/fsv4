@@ -211,6 +211,7 @@ static boolean treev_needs_arrange = FALSE;
 
 
 
+
 /* Forward declarations */
 static void flat_draw_lines( const float *positions, int vertex_count,
                              GLenum mode, float r, float g, float b, float a );
@@ -1722,7 +1723,7 @@ mapv_draw( boolean high_detail )
 #define TREEV_CURVE_GRANULARITY		5.0
 #define TREEV_PLATFORM_HEIGHT		158.2
 #define TREEV_PLATFORM_SPACING_WIDTH	512.0
-#define TREEV_LEAF_HEIGHT_MULTIPLIER	1.0
+#define TREEV_LEAF_HEIGHT_MULTIPLIER	10
 #define TREEV_LEAF_PADDING		(0.125 * TREEV_LEAF_NODE_EDGE)
 #define TREEV_PLATFORM_PADDING		(0.5 * TREEV_PLATFORM_SPACING_WIDTH)
 
@@ -2131,6 +2132,7 @@ treev_arrange( boolean initial_arrange )
 }
 
 
+
 /* Helper function for treev_init( ) */
 static void
 treev_init_recursive( GNode *dnode )
@@ -2160,7 +2162,8 @@ treev_init_recursive( GNode *dnode )
 			TREEV_GEOM_PARAMS(node)->platform.height = TREEV_PLATFORM_HEIGHT;
 			treev_init_recursive( node );
 		}
-		TREEV_GEOM_PARAMS(node)->leaf.height = sqrt( (double)size ) * TREEV_LEAF_HEIGHT_MULTIPLIER;
+		double lsize = log( (double)size );
+		TREEV_GEOM_PARAMS(node)->leaf.height = lsize * lsize * TREEV_LEAF_HEIGHT_MULTIPLIER;
 		node = node->next;
 	}
 }
@@ -3717,30 +3720,23 @@ treev_draw( boolean high_detail )
 	treev_rebuild_batch( );
 
 	/* Draw solid geometry from VBO batch.
-	 * Disable polygon offset so VBO geometry sits at true depth,
-	 * preventing the outline wireframe from overwriting it. */
+	 * Keep polygon offset enabled so filled geometry is pushed
+	 * slightly back in depth, preventing Z-fighting with text
+	 * labels (which are drawn without offset via text_pre/post). */
 	if (treev_solid_batch.vertex_count > 0) {
-		glDisable( GL_POLYGON_OFFSET_FILL );
 		if (picking_mode)
 			treev_setup_pick_shader( );
 		else
 			treev_setup_lit_shader( );
 		vbo_batch_draw( &treev_solid_batch );
-		if (picking_mode)
-			shader_program_unuse( );
-		else {
-			shader_program_unuse( );
-		}
-		glEnable( GL_POLYGON_OFFSET_FILL );
+		shader_program_unuse( );
 	}
 
 	/* Draw branches from VBO batch */
 	if (!picking_mode && treev_branch_batch.vertex_count > 0) {
-		glDisable( GL_POLYGON_OFFSET_FILL );
 		treev_setup_lit_shader( );
 		vbo_batch_draw( &treev_branch_batch );
 		shader_program_unuse( );
-		glEnable( GL_POLYGON_OFFSET_FILL );
 	}
 
 	if (high_detail) {
@@ -4244,6 +4240,7 @@ geometry_colexp_initiated( GNode *dnode )
 
 	/* A newly expanding directory in TreeV mode will probably
 	 * need (re)shaping (it may be appearing for the first time,
+	 * or its inner radius may have changed).
 	 * or its inner radius may have changed) */
 	if (DIR_COLLAPSED(dnode) && (globals.fsv_mode == FSV_TREEV))
 		treev_reshape_platform( dnode, geometry_treev_platform_r0( dnode ) );
