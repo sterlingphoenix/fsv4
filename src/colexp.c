@@ -35,7 +35,7 @@
 
 
 /* Duration of a single collapse/expansion (in seconds) */
-#define DISCV_COLEXP_TIME	1.5
+#define DISCV_COLEXP_TIME	0.5
 #define MAPV_COLEXP_TIME	0.375
 #define TREEV_COLEXP_TIME	0.5
 
