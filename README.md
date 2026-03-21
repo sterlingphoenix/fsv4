@@ -1,25 +1,17 @@
 ## FSV
 
-NOTE: this project **is** actively maintained! However, it is a stepping stone to a complete modernisation. 
+FSV is a 3D filesystem visualiser. It is derived from a program known as FSN (pronounced "Fusion") which was written for SGI IRIX, and is featured in the movie _Jurassic Park_. The latest version of FSN was released in 1996, and was written by Joel Tesler and Steve Strasnick. Franly it's pretty cool. 
 
-This is the fork that updates to GTK 4 with a modern OpenGL 3.3 core profile rendering pipeline. This enables building on a modern Linux system (test case was Ubuntu 25.10).
+FSN was forked and ported to Linux by [Daniel Richard G.](http://fox.mit.edu/skunk/), a former student of Computer Science at the MIT. That version is [available here](http://fsv.sourceforge.net/).
 
+That version was later forked by Maurus Cuelenaere. That version is [also available](https://github.com/mcuelenaere/fsv).
 
-This repo is a fork of [fsv](https://github.com/mcuelenaere/fsv), which is itself a fork of [fsv](http://fsv.sourceforge.net/).
+That version used GTK1 and very outdated OpenGL code, and would not build on modern Linux systems. It was also missing many features that I believe the original Linux port was supposed to implement. 
 
-The original author is [Daniel Richard G.](http://fox.mit.edu/skunk/), a former student of Computer Science at the MIT.
+This version updates the code to use GTK4 and updated OpenGL calls. It also re-implements the Disc Visualisation and the settings options. 
 
-The version I forked form includes patches by (apparently) Maurus Cuelenaere. 
+Claude Code did a lot of heavy lifting. I really feel more like a project manager... 
 
-I did use generative ai to help me get this done in a timely manner. Also I was curious. 
-
-**About fsv**
-
-> fsv (pronounced eff-ess-vee) is a 3D file system visualizer. It lays out files and directories in three dimensions, geometrically representing the file system hierarchy to allow visual overview and analysis. fsv can visualize a modest home directory, a workstation's hard drive, or any arbitrarily large collection of files, limited only by the host computer's memory and graphics hardware. Note that this was originally written in the 1990s when 9.1GB harddrvies were considered "large". It still works, but some of the visualisations can be hard to grasp. 
-
-Its ancestor, SGI's `fsn` (pronounced "fusion") originated on IRIX and was prominently featured in Jurassic Park. 
-
-~Useful info and screenshots of the original SGI IRIX implementation are available on [siliconbunny](http://www.siliconbunny.com/fsn-the-irix-3d-file-system-tool-from-jurassic-park/).~ Apparently not.
 
 **Requirements**
 
