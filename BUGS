@@ -1,14 +1,7 @@
 
-
-
-
-
-
+ * Logarithmic sizes in treev should be a toggle.
+ * Tool tips
  * Color setup dialog is terrible. 
- * Arch/Red Hat instructions
- * When closing using the window close button, there is no cleanup.
-
-
 
 Done
 
@@ -19,6 +12,8 @@ Done
  * DiscV expand/collapse animations should be faster.
  * In TreeV, text often blinks and is partially visible.
  * In TreeV mode, initial animation doesn't show. If switching when already expandedd, animation is very very slow and sometimes random.
+ * Arch/Red Hat instructions
+ * When closing using the window close button, there is no cleanup.
 
 
 Unsolvable for now

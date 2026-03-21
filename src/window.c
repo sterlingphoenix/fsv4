@@ -207,6 +207,21 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 	GMenuModel *menu_model;
 	int window_width, window_height;
 
+	/* Custom CSS for bird's-eye toggle button */
+	{
+		GtkCssProvider *css = gtk_css_provider_new( );
+		gtk_css_provider_load_from_string( css,
+			"button.birdseye-toggle:checked { "
+			"  background: alpha(@accent_color, 0.3); "
+			"  border-color: @accent_color; "
+			"}" );
+		gtk_style_context_add_provider_for_display(
+			gdk_display_get_default( ),
+			GTK_STYLE_PROVIDER(css),
+			GTK_STYLE_PROVIDER_PRIORITY_APPLICATION );
+		g_object_unref( css );
+	}
+
 	/* Main window widget */
 	main_window_w = gtk_application_window_new( app );
 	gtk_window_set_title( GTK_WINDOW(main_window_w), "fsv" );
@@ -283,21 +298,26 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 	/* Horizontal box for toolbar buttons */
 	hbox_w = gui_hbox_add( left_vbox_w, 2 );
 
-	/* "back" button */
-	button_w = gui_button_add( hbox_w, NULL, G_CALLBACK(on_back_button_clicked), NULL );
-	gui_pixmap_xpm_add( button_w, back_xpm );
-	G_LIST_APPEND(sw_widget_list, button_w);
 	/* "cd /" button */
 	button_w = gui_button_add( hbox_w, NULL, G_CALLBACK(on_cd_root_button_clicked), NULL );
 	gui_pixmap_xpm_add( button_w, cd_root_xpm );
+	gtk_widget_set_tooltip_text( button_w, "Root View" );
+	G_LIST_APPEND(sw_widget_list, button_w);
+	/* "back" button */
+	button_w = gui_button_add( hbox_w, NULL, G_CALLBACK(on_back_button_clicked), NULL );
+	gui_pixmap_xpm_add( button_w, back_xpm );
+	gtk_widget_set_tooltip_text( button_w, "Back" );
 	G_LIST_APPEND(sw_widget_list, button_w);
 	/* "cd .." button */
 	button_w = gui_button_add( hbox_w, NULL, G_CALLBACK(on_cd_up_button_clicked), NULL );
 	gui_pixmap_xpm_add( button_w, cd_up_xpm );
+	gtk_widget_set_tooltip_text( button_w, "Up" );
 	G_LIST_APPEND(sw_widget_list, button_w);
 	/* "bird's-eye view" toggle button */
 	button_w = gui_toggle_button_add( hbox_w, NULL, FALSE, G_CALLBACK(on_birdseye_view_togglebutton_toggled), NULL );
 	gui_pixmap_xpm_add( button_w, birdseye_view_xpm );
+	gtk_widget_set_tooltip_text( button_w, "Bird's Eye View" );
+	gtk_widget_add_css_class( button_w, "birdseye-toggle" );
 	G_LIST_APPEND(sw_widget_list, button_w);
 	birdseye_view_tbutton_w = button_w;
 
