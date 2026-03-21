@@ -3,7 +3,6 @@
 
 
 
- * In TreeV, initial block is very high which leads to the top "vanishing".
 
  * Color setup dialog is terrible. 
  * Arch/Red Hat instructions
@@ -25,3 +24,4 @@ Done
 Unsolvable for now
 
  * In DiscV, discs render underneath other discs. 
+ * In TreeV, Expand All can be flickery. 

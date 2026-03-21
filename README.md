@@ -30,7 +30,10 @@ Its ancestor, SGI's `fsn` (pronounced "fusion") originated on IRIX and was promi
 
 **Install**
 
-1. `sudo apt-get install libgtk-4-dev libepoxy-dev libcglm-dev meson ninja-build`
+1. Install dependencies:
+    - **Debian/Ubuntu:** `sudo apt-get install libgtk-4-dev libepoxy-dev libcglm-dev meson ninja-build`
+    - **Rocky/RHEL/Fedora:** `sudo dnf install gtk4-devel libepoxy-devel cglm-devel meson ninja-build`
+    - **Arch Linux:** `sudo pacman -S gtk4 libepoxy cglm meson ninja`
 2. Clone the repository
 3. Build:
     - `meson setup builddir`
