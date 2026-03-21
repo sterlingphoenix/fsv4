@@ -396,7 +396,7 @@ initial_camera_pan( void *data )
 
 	if (!strcmp( mesg, "new_fs" )) {
 		/* First look at new filesystem */
-		camera_look_at_full( root_dnode, MORPH_SIGMOID, 2.0 );
+		camera_look_at_full( root_dnode, MORPH_SIGMOID, 1.3 );
 	}
 	else {
 		/* Same filesystem, different visualization mode */
