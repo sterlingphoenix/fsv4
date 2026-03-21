@@ -56,6 +56,18 @@ static GtkWidget *birdseye_view_tbutton_w;
 /* List of widgets that can be enabled or disabled on the fly */
 static GList *sw_widget_list = NULL;
 
+/* Handler for window close button (X).  Quit the application cleanly
+ * so that idle/animation callbacks don't fire against destroyed widgets. */
+static gboolean
+on_close_request( G_GNUC_UNUSED GtkWindow *window, G_GNUC_UNUSED gpointer data )
+{
+	GApplication *app = g_application_get_default( );
+	if (app != NULL)
+		g_application_quit( app );
+	return TRUE; /* we handled it — don't let GTK destroy piecemeal */
+}
+
+
 /* Main window widget (for busy cursor) */
 static GtkWidget *main_window_w_saved;
 
@@ -210,6 +222,10 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 	}
 	window_height = 2584 * window_width / 4181;
 	gtk_window_set_default_size( GTK_WINDOW(main_window_w), window_width, window_height );
+
+	/* Clean shutdown when user clicks the window close button */
+	g_signal_connect( main_window_w, "close-request",
+		G_CALLBACK(on_close_request), NULL );
 
 	/* Set up actions */
 	setup_actions( GTK_WINDOW(main_window_w), fsv_mode );
