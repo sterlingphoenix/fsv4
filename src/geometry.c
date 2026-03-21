@@ -211,6 +211,7 @@ static boolean treev_needs_arrange = FALSE;
 
 
 
+
 /* Forward declarations */
 static void flat_draw_lines( const float *positions, int vertex_count,
                              GLenum mode, float r, float g, float b, float a );
@@ -2129,6 +2130,7 @@ treev_arrange( boolean initial_arrange )
 		camera_look_at_full( globals.current_node, MORPH_INV_QUADRATIC, -1.0 );
 	}
 }
+
 
 
 /* Helper function for treev_init( ) */
@@ -4238,6 +4240,7 @@ geometry_colexp_initiated( GNode *dnode )
 
 	/* A newly expanding directory in TreeV mode will probably
 	 * need (re)shaping (it may be appearing for the first time,
+	 * or its inner radius may have changed).
 	 * or its inner radius may have changed) */
 	if (DIR_COLLAPSED(dnode) && (globals.fsv_mode == FSV_TREEV))
 		treev_reshape_platform( dnode, geometry_treev_platform_r0( dnode ) );
