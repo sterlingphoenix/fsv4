@@ -3717,30 +3717,23 @@ treev_draw( boolean high_detail )
 	treev_rebuild_batch( );
 
 	/* Draw solid geometry from VBO batch.
-	 * Disable polygon offset so VBO geometry sits at true depth,
-	 * preventing the outline wireframe from overwriting it. */
+	 * Keep polygon offset enabled so filled geometry is pushed
+	 * slightly back in depth, preventing Z-fighting with text
+	 * labels (which are drawn without offset via text_pre/post). */
 	if (treev_solid_batch.vertex_count > 0) {
-		glDisable( GL_POLYGON_OFFSET_FILL );
 		if (picking_mode)
 			treev_setup_pick_shader( );
 		else
 			treev_setup_lit_shader( );
 		vbo_batch_draw( &treev_solid_batch );
-		if (picking_mode)
-			shader_program_unuse( );
-		else {
-			shader_program_unuse( );
-		}
-		glEnable( GL_POLYGON_OFFSET_FILL );
+		shader_program_unuse( );
 	}
 
 	/* Draw branches from VBO batch */
 	if (!picking_mode && treev_branch_batch.vertex_count > 0) {
-		glDisable( GL_POLYGON_OFFSET_FILL );
 		treev_setup_lit_shader( );
 		vbo_batch_draw( &treev_branch_batch );
 		shader_program_unuse( );
-		glEnable( GL_POLYGON_OFFSET_FILL );
 	}
 
 	if (high_detail) {
