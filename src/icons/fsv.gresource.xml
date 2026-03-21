@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/org/fsv/icons">
+    <file>back.png</file>
+    <file>birdseye_view.png</file>
+    <file>blockdev.png</file>
+    <file>button_cancel.png</file>
+    <file>button_ok.png</file>
+    <file>cd-root.png</file>
+    <file>cd-up.png</file>
+    <file>chardev.png</file>
+    <file>fifo.png</file>
+    <file>folder.png</file>
+    <file>fsv-icon.png</file>
+    <file>mini-blockdev.png</file>
+    <file>mini-chardev.png</file>
+    <file>mini-fifo.png</file>
+    <file>mini-folder-open.png</file>
+    <file>mini-folder.png</file>
+    <file>mini-regfile.png</file>
+    <file>mini-socket.png</file>
+    <file>mini-symlink.png</file>
+    <file>mini-unknown.png</file>
+    <file>regfile.png</file>
+    <file>socket.png</file>
+    <file>symlink.png</file>
+    <file>unknown.png</file>
+  </gresource>
+</gresources>

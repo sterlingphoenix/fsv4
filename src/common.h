@@ -285,8 +285,8 @@ struct Globals {
 /**** Global variables ****************/
 
 extern struct Globals globals;
-extern char **node_type_xpms[NUM_NODE_TYPES];
-extern char **node_type_mini_xpms[NUM_NODE_TYPES];
+extern const char *node_type_icon_paths[NUM_NODE_TYPES];
+extern const char *node_type_mini_icon_paths[NUM_NODE_TYPES];
 extern const char *node_type_names[NUM_NODE_TYPES];
 extern const char *node_type_plural_names[NUM_NODE_TYPES];
 

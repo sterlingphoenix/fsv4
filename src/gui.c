@@ -244,9 +244,9 @@ gui_button_add( GtkWidget *parent_w, const char *label, GCallback callback, void
 }
 
 
-/* Creates a button with a pixmap prepended to the label */
+/* Creates a button with an icon prepended to the label */
 GtkWidget *
-gui_button_with_pixmap_xpm_add( GtkWidget *parent_w, char **xpm_data, const char *label, GCallback callback, void *callback_data )
+gui_button_with_icon_add( GtkWidget *parent_w, const char *resource_path, const char *label, GCallback callback, void *callback_data )
 {
 	GtkWidget *button_w;
 	GtkWidget *hbox_w, *hbox2_w;
@@ -256,7 +256,7 @@ gui_button_with_pixmap_xpm_add( GtkWidget *parent_w, char **xpm_data, const char
 	hbox_w = gui_hbox_add( button_w, 0 );
 	hbox2_w = gui_hbox_add( hbox_w, 0 );
 	gui_widget_packing( hbox2_w, EXPAND, NO_FILL, AT_START );
-	gui_pixmap_xpm_add( hbox2_w, xpm_data );
+	gui_resource_image_add( hbox2_w, resource_path );
 	if (label != NULL) {
 		gui_vbox_add( hbox2_w, 2 ); /* spacer */
 		gui_label_add( hbox2_w, label );
@@ -1119,38 +1119,13 @@ gui_vpaned_add( GtkWidget *parent_w, int divider_y_pos )
 }
 
 
-/* Helper: convert XPM data to GdkTexture via PNG encoding */
-static GdkTexture *
-texture_from_xpm( char **xpm_data )
-{
-	GdkPixbuf *pixbuf;
-	GdkTexture *texture;
-	char *png_buf = NULL;
-	gsize png_len = 0;
-	GBytes *bytes;
-
-	pixbuf = gdk_pixbuf_new_from_xpm_data( (const char **)xpm_data );
-	gdk_pixbuf_save_to_buffer( pixbuf, &png_buf, &png_len, "png", NULL, NULL );
-	g_object_unref( pixbuf );
-
-	bytes = g_bytes_new_take( png_buf, png_len );
-	texture = gdk_texture_new_from_bytes( bytes, NULL );
-	g_bytes_unref( bytes );
-
-	return texture;
-}
-
-
-/* The image widget (created from XPM data) */
+/* The image widget (created from a GResource path) */
 GtkWidget *
-gui_pixmap_xpm_add( GtkWidget *parent_w, char **xpm_data )
+gui_resource_image_add( GtkWidget *parent_w, const char *resource_path )
 {
 	GtkWidget *image_w;
-	GdkTexture *texture;
 
-	texture = texture_from_xpm( xpm_data );
-	image_w = gtk_image_new_from_paintable( GDK_PAINTABLE(texture) );
-	g_object_unref( texture );
+	image_w = gtk_image_new_from_resource( resource_path );
 	parent_child( parent_w, image_w );
 
 	return image_w;

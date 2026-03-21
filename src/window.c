@@ -39,11 +39,11 @@
 #include "search.h"
 #include "viewport.h"
 
-/* Toolbar button icons */
-#include "xmaps/back.xpm"
-#include "xmaps/cd-root.xpm"
-#include "xmaps/cd-up.xpm"
-#include "xmaps/birdseye_view.xpm"
+/* Toolbar button icon resource paths */
+#define ICON_BACK		"/org/fsv/icons/back.png"
+#define ICON_CD_ROOT		"/org/fsv/icons/cd-root.png"
+#define ICON_CD_UP		"/org/fsv/icons/cd-up.png"
+#define ICON_BIRDSEYE_VIEW	"/org/fsv/icons/birdseye_view.png"
 
 
 /* GAction for vis mode and color mode radio (for state changes) */
@@ -300,23 +300,23 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 
 	/* "cd /" button */
 	button_w = gui_button_add( hbox_w, NULL, G_CALLBACK(on_cd_root_button_clicked), NULL );
-	gui_pixmap_xpm_add( button_w, cd_root_xpm );
-	gtk_widget_set_tooltip_text( button_w, "Root View" );
+	gui_resource_image_add( button_w, ICON_CD_ROOT );
+	gtk_widget_set_tooltip_text( button_w, "Reset View" );
 	G_LIST_APPEND(sw_widget_list, button_w);
 	/* "back" button */
 	button_w = gui_button_add( hbox_w, NULL, G_CALLBACK(on_back_button_clicked), NULL );
-	gui_pixmap_xpm_add( button_w, back_xpm );
-	gtk_widget_set_tooltip_text( button_w, "Back" );
+	gui_resource_image_add( button_w, ICON_BACK );
+	gtk_widget_set_tooltip_text( button_w, "Go Back" );
 	G_LIST_APPEND(sw_widget_list, button_w);
 	/* "cd .." button */
 	button_w = gui_button_add( hbox_w, NULL, G_CALLBACK(on_cd_up_button_clicked), NULL );
-	gui_pixmap_xpm_add( button_w, cd_up_xpm );
-	gtk_widget_set_tooltip_text( button_w, "Up" );
+	gui_resource_image_add( button_w, ICON_CD_UP );
+	gtk_widget_set_tooltip_text( button_w, "Directory Up" );
 	G_LIST_APPEND(sw_widget_list, button_w);
 	/* "bird's-eye view" toggle button */
 	button_w = gui_toggle_button_add( hbox_w, NULL, FALSE, G_CALLBACK(on_birdseye_view_togglebutton_toggled), NULL );
-	gui_pixmap_xpm_add( button_w, birdseye_view_xpm );
-	gtk_widget_set_tooltip_text( button_w, "Bird's Eye View" );
+	gui_resource_image_add( button_w, ICON_BIRDSEYE_VIEW );
+	gtk_widget_set_tooltip_text( button_w, "Toggle Bird's Eye/Top View" );
 	gtk_widget_add_css_class( button_w, "birdseye-toggle" );
 	G_LIST_APPEND(sw_widget_list, button_w);
 	birdseye_view_tbutton_w = button_w;

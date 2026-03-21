@@ -50,25 +50,14 @@ static GNode *filelist_current_dnode;
 static Icon node_type_mini_icons[NUM_NODE_TYPES];
 
 
-/* Loads the mini node type icons (from XPM data) */
+/* Loads the mini node type icons from GResource */
 static void
 filelist_icons_init( void )
 {
 	int i;
 
 	for (i = 1; i < NUM_NODE_TYPES; i++) {
-		GdkPixbuf *pixbuf;
-		char *png_buf = NULL;
-		gsize png_len = 0;
-		GBytes *bytes;
-
-		pixbuf = gdk_pixbuf_new_from_xpm_data( (const char **)node_type_mini_xpms[i] );
-		gdk_pixbuf_save_to_buffer( pixbuf, &png_buf, &png_len, "png", NULL, NULL );
-		g_object_unref( pixbuf );
-
-		bytes = g_bytes_new_take( png_buf, png_len );
-		node_type_mini_icons[i].texture = gdk_texture_new_from_bytes( bytes, NULL );
-		g_bytes_unref( bytes );
+		node_type_mini_icons[i].texture = gdk_texture_new_from_resource( node_type_mini_icon_paths[i] );
 	}
 }
 
