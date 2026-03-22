@@ -136,8 +136,13 @@ static struct ColorSetupDialog {
 	struct {
 		/* Container that holds all group rows */
 		GtkWidget *groups_box_w;
+		/* Scrolled window containing groups_box_w */
+		GtkWidget *scroll_w;
 		/* Default color picker */
 		GtkWidget *default_colorpicker_w;
+		/* Size groups for column alignment between header and rows */
+		GtkSizeGroup *name_sg;
+		GtkSizeGroup *color_sg;
 	} wpattern;
 } csdialog;
 
@@ -440,6 +445,20 @@ csdialog_wpgroup_patterns_changed_cb( GtkEditable *editable, G_GNUC_UNUSED gpoin
 }
 
 
+/* Deferred callback: scroll the wildcard list to the bottom and focus the widget.
+ * Uses a short timeout so GTK has completed the layout pass first. */
+static gboolean
+csdialog_wpattern_scroll_to_end( gpointer user_data )
+{
+	GtkWidget *focus_w = GTK_WIDGET(user_data);
+	GtkAdjustment *vadj = gtk_scrolled_window_get_vadjustment(
+		GTK_SCROLLED_WINDOW(csdialog.wpattern.scroll_w) );
+	gtk_adjustment_set_value( vadj, gtk_adjustment_get_upper( vadj ) );
+	gtk_widget_grab_focus( focus_w );
+	return G_SOURCE_REMOVE;
+}
+
+
 /* Build (or rebuild) the wildcard group rows in the UI.
  * If focus_last is TRUE, grabs focus on the last row's name entry. */
 static void
@@ -471,7 +490,7 @@ csdialog_wpattern_rebuild_ui_full( boolean focus_last )
 		gtk_entry_set_placeholder_text( GTK_ENTRY(name_w), _("Group name") );
 		if (wpgroup->name != NULL)
 			gtk_editable_set_text( GTK_EDITABLE(name_w), wpgroup->name );
-		gtk_editable_set_width_chars( GTK_EDITABLE(name_w), 14 );
+		gtk_size_group_add_widget( csdialog.wpattern.name_sg, name_w );
 		g_object_set_data( G_OBJECT(name_w), "wpgroup", wpgroup );
 		g_signal_connect( name_w, "changed",
 			G_CALLBACK(csdialog_wpgroup_name_changed_cb), NULL );
@@ -479,8 +498,12 @@ csdialog_wpattern_rebuild_ui_full( boolean focus_last )
 		last_name_w = name_w;
 
 		/* Color picker */
-		gui_colorpicker_add( row_w, &wpgroup->color, _("Group Color"),
-			G_CALLBACK(csdialog_wpgroup_color_cb), &wpgroup->color );
+		{
+			GtkWidget *cp = gui_colorpicker_add( row_w, &wpgroup->color,
+				_("Group Color"),
+				G_CALLBACK(csdialog_wpgroup_color_cb), &wpgroup->color );
+			gtk_size_group_add_widget( csdialog.wpattern.color_sg, cp );
+		}
 
 		/* Patterns entry */
 		patterns_str = wpgroup_patterns_to_string( wpgroup );
@@ -505,8 +528,12 @@ csdialog_wpattern_rebuild_ui_full( boolean focus_last )
 		wpgroup_llink = wpgroup_llink->next;
 	}
 
-	if (focus_last && last_name_w != NULL)
-		gtk_widget_grab_focus( last_name_w );
+	if (focus_last && last_name_w != NULL) {
+		/* Defer focus + scroll to an idle callback so the new
+		 * widgets have been allocated and the adjustment is up
+		 * to date */
+		g_timeout_add( 50, csdialog_wpattern_scroll_to_end, last_name_w );
+	}
 }
 
 
@@ -667,31 +694,24 @@ dialog_color_setup( void )
 	gtk_widget_set_margin_bottom( vbox_w, 8 );
 	gui_notebook_page_add( csdialog.notebook_w, _("By wildcards"), vbox_w );
 
-	/* Column headers — use invisible entry + color button to match row widths */
+	/* Size groups to keep header labels aligned with data row widgets */
+	csdialog.wpattern.name_sg = gtk_size_group_new( GTK_SIZE_GROUP_HORIZONTAL );
+	csdialog.wpattern.color_sg = gtk_size_group_new( GTK_SIZE_GROUP_HORIZONTAL );
+
+	/* Column headers */
 	{
 		GtkWidget *header_w = gtk_box_new( GTK_ORIENTATION_HORIZONTAL, 6 );
 		GtkWidget *lbl;
 
-		/* Name header — same width_chars as the name entries */
 		lbl = gtk_label_new( _("Name") );
 		gtk_label_set_xalign( GTK_LABEL(lbl), 0.0 );
-		gtk_widget_set_size_request( lbl, -1, -1 );
-		/* Match width of a 14-char entry by wrapping in a box */
-		{
-			GtkWidget *sizer = gtk_entry_new( );
-			gtk_editable_set_width_chars( GTK_EDITABLE(sizer), 14 );
-			gtk_editable_set_text( GTK_EDITABLE(sizer), _("Name") );
-			gtk_editable_set_editable( GTK_EDITABLE(sizer), FALSE );
-			gtk_widget_set_can_focus( sizer, FALSE );
-			gtk_widget_set_sensitive( sizer, FALSE );
-			gtk_box_append( GTK_BOX(header_w), sizer );
-		}
-
-		/* Color header — match width of a GtkColorDialogButton */
-		lbl = gtk_label_new( _("Color") );
+		gtk_size_group_add_widget( csdialog.wpattern.name_sg, lbl );
 		gtk_box_append( GTK_BOX(header_w), lbl );
 
-		/* Patterns header */
+		lbl = gtk_label_new( _("Color") );
+		gtk_size_group_add_widget( csdialog.wpattern.color_sg, lbl );
+		gtk_box_append( GTK_BOX(header_w), lbl );
+
 		lbl = gtk_label_new( _("Patterns (semicolon-separated)") );
 		gtk_widget_set_hexpand( lbl, TRUE );
 		gtk_label_set_xalign( GTK_LABEL(lbl), 0.0 );
@@ -702,15 +722,15 @@ dialog_color_setup( void )
 
 	/* Scrolled container for group rows */
 	{
-		GtkWidget *scroll_w = gtk_scrolled_window_new( );
-		gtk_scrolled_window_set_policy( GTK_SCROLLED_WINDOW(scroll_w),
+		csdialog.wpattern.scroll_w = gtk_scrolled_window_new( );
+		gtk_scrolled_window_set_policy( GTK_SCROLLED_WINDOW(csdialog.wpattern.scroll_w),
 			GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC );
-		gtk_widget_set_vexpand( scroll_w, TRUE );
+		gtk_widget_set_vexpand( csdialog.wpattern.scroll_w, TRUE );
 
 		csdialog.wpattern.groups_box_w = gtk_box_new( GTK_ORIENTATION_VERTICAL, 0 );
-		gtk_scrolled_window_set_child( GTK_SCROLLED_WINDOW(scroll_w),
+		gtk_scrolled_window_set_child( GTK_SCROLLED_WINDOW(csdialog.wpattern.scroll_w),
 			csdialog.wpattern.groups_box_w );
-		gtk_box_append( GTK_BOX(vbox_w), scroll_w );
+		gtk_box_append( GTK_BOX(vbox_w), csdialog.wpattern.scroll_w );
 	}
 
 	/* Populate group rows from config */
