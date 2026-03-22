@@ -294,22 +294,22 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 
 	/* "cd /" button */
 	button_w = gui_button_add( hbox_w, NULL, G_CALLBACK(on_cd_root_button_clicked), NULL );
-	gui_resource_image_add( button_w, ICON_CD_ROOT );
+	gtk_image_set_pixel_size( GTK_IMAGE(gui_resource_image_add( button_w, ICON_CD_ROOT )), 32 );
 	gtk_widget_set_tooltip_text( button_w, "Reset View" );
 	G_LIST_APPEND(sw_widget_list, button_w);
 	/* "back" button */
 	button_w = gui_button_add( hbox_w, NULL, G_CALLBACK(on_back_button_clicked), NULL );
-	gui_resource_image_add( button_w, ICON_BACK );
+	gtk_image_set_pixel_size( GTK_IMAGE(gui_resource_image_add( button_w, ICON_BACK )), 32 );
 	gtk_widget_set_tooltip_text( button_w, "Go Back" );
 	G_LIST_APPEND(sw_widget_list, button_w);
 	/* "cd .." button */
 	button_w = gui_button_add( hbox_w, NULL, G_CALLBACK(on_cd_up_button_clicked), NULL );
-	gui_resource_image_add( button_w, ICON_CD_UP );
+	gtk_image_set_pixel_size( GTK_IMAGE(gui_resource_image_add( button_w, ICON_CD_UP )), 32 );
 	gtk_widget_set_tooltip_text( button_w, "Directory Up" );
 	G_LIST_APPEND(sw_widget_list, button_w);
 	/* "bird's-eye view" toggle button */
 	button_w = gui_toggle_button_add( hbox_w, NULL, FALSE, G_CALLBACK(on_birdseye_view_togglebutton_toggled), NULL );
-	gui_resource_image_add( button_w, ICON_BIRDSEYE_VIEW );
+	gtk_image_set_pixel_size( GTK_IMAGE(gui_resource_image_add( button_w, ICON_BIRDSEYE_VIEW )), 32 );
 	gtk_widget_set_tooltip_text( button_w, "Toggle Bird's Eye/Top View" );
 	gtk_widget_add_css_class( button_w, "birdseye-toggle" );
 	G_LIST_APPEND(sw_widget_list, button_w);
@@ -324,17 +324,15 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 
 		button_w = gui_toggle_button_add( vis_box, NULL,
 			fsv_mode == FSV_MAPV, G_CALLBACK(on_vis_mode_toggled), "mapv" );
-		gui_resource_image_add( button_w, ICON_VIS_MAPV );
+		gtk_image_set_pixel_size( GTK_IMAGE(gui_resource_image_add( button_w, ICON_VIS_MAPV )), 32 );
 		gtk_widget_set_tooltip_text( button_w, "Map View" );
-		gtk_widget_set_size_request( button_w, 36, 28 );
 		G_LIST_APPEND(sw_widget_list, button_w);
 		vis_mapv_tbutton_w = button_w;
 
 		button_w = gui_toggle_button_add( vis_box, NULL,
 			fsv_mode == FSV_TREEV, G_CALLBACK(on_vis_mode_toggled), "treev" );
-		gui_resource_image_add( button_w, ICON_VIS_TREEV );
+		gtk_image_set_pixel_size( GTK_IMAGE(gui_resource_image_add( button_w, ICON_VIS_TREEV )), 32 );
 		gtk_widget_set_tooltip_text( button_w, "Tree View" );
-		gtk_widget_set_size_request( button_w, 36, 28 );
 		gtk_toggle_button_set_group( GTK_TOGGLE_BUTTON(button_w),
 			GTK_TOGGLE_BUTTON(vis_mapv_tbutton_w) );
 		G_LIST_APPEND(sw_widget_list, button_w);
@@ -342,9 +340,8 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 
 		button_w = gui_toggle_button_add( vis_box, NULL,
 			fsv_mode == FSV_DISCV, G_CALLBACK(on_vis_mode_toggled), "discv" );
-		gui_resource_image_add( button_w, ICON_VIS_DISCV );
+		gtk_image_set_pixel_size( GTK_IMAGE(gui_resource_image_add( button_w, ICON_VIS_DISCV )), 32 );
 		gtk_widget_set_tooltip_text( button_w, "Disc View" );
-		gtk_widget_set_size_request( button_w, 36, 28 );
 		gtk_toggle_button_set_group( GTK_TOGGLE_BUTTON(button_w),
 			GTK_TOGGLE_BUTTON(vis_mapv_tbutton_w) );
 		G_LIST_APPEND(sw_widget_list, button_w);
@@ -365,14 +362,14 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 
 		button_w = gui_toggle_button_add( color_box, NULL,
 			TRUE, G_CALLBACK(on_color_mode_toggled), "wildcards" );
-		gui_resource_image_add( button_w, ICON_COLOR_WILDCARD );
+		gtk_image_set_pixel_size( GTK_IMAGE(gui_resource_image_add( button_w, ICON_COLOR_WILDCARD )), 32 );
 		gtk_widget_set_tooltip_text( button_w, "Color by Wildcard" );
 		G_LIST_APPEND(sw_widget_list, button_w);
 		color_wildcard_tbutton_w = button_w;
 
 		button_w = gui_toggle_button_add( color_box, NULL,
 			FALSE, G_CALLBACK(on_color_mode_toggled), "nodetype" );
-		gui_resource_image_add( button_w, ICON_COLOR_NODETYPE );
+		gtk_image_set_pixel_size( GTK_IMAGE(gui_resource_image_add( button_w, ICON_COLOR_NODETYPE )), 32 );
 		gtk_widget_set_tooltip_text( button_w, "Color by Node Type" );
 		gtk_toggle_button_set_group( GTK_TOGGLE_BUTTON(button_w),
 			GTK_TOGGLE_BUTTON(color_wildcard_tbutton_w) );
@@ -381,7 +378,7 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 
 		button_w = gui_toggle_button_add( color_box, NULL,
 			FALSE, G_CALLBACK(on_color_mode_toggled), "timestamp" );
-		gui_resource_image_add( button_w, ICON_COLOR_TIMESTAMP );
+		gtk_image_set_pixel_size( GTK_IMAGE(gui_resource_image_add( button_w, ICON_COLOR_TIMESTAMP )), 32 );
 		gtk_widget_set_tooltip_text( button_w, "Color by Date/Time" );
 		gtk_toggle_button_set_group( GTK_TOGGLE_BUTTON(button_w),
 			GTK_TOGGLE_BUTTON(color_wildcard_tbutton_w) );
@@ -400,7 +397,7 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 	/* -- Scale mode toggle (TreeV only) -- */
 	button_w = gui_toggle_button_add( hbox_w, NULL,
 		TRUE, G_CALLBACK(on_scale_mode_toggled), NULL );
-	gui_resource_image_add( button_w, ICON_SCALE_LOG );
+	gtk_image_set_pixel_size( GTK_IMAGE(gui_resource_image_add( button_w, ICON_SCALE_LOG )), 32 );
 	gtk_widget_set_tooltip_text( button_w, "Logarithmic Scale (TreeV)" );
 	gtk_widget_set_sensitive( button_w, fsv_mode == FSV_TREEV );
 	G_LIST_APPEND(sw_widget_list, button_w);
