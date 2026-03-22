@@ -55,6 +55,7 @@ typedef enum {
 
 /* Used indirectly in struct ColorConfig (see below) */
 struct WPatternGroup {
+	char *name;		/* display name (e.g. "Source Code") */
 	RGBcolor color;
 	GList *wp_list; /* elements: char * */
 };

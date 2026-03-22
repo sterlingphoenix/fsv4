@@ -440,29 +440,29 @@ Step 9.5 — Add representative scale mode to TreeV
   All modes render correctly.
 
 Step 9.6 — Preferences window: General tab
-  [ ] Create a new Preferences dialog (reuse or replace the existing
+  [x] Create a new Preferences dialog (reuse or replace the existing
       color setup dialog in dialog.c)
-  [ ] Use a GtkNotebook with tabs: "General" and "Colors"
-  [ ] General tab contains:
+  [x] Use a GtkNotebook with tabs: "General" and "Colors"
+  [x] General tab contains:
       - "Remember settings from previous session" checkbox
       - Default Visualization Mode dropdown (greyed if remember is on)
       - Default Color Mode dropdown (greyed if remember is on)
       - Default TreeV Scale Mode dropdown (greyed if remember is on)
-  [ ] Verify: builds, Preferences opens from File menu, General tab
+  [x] Verify: builds, Preferences opens from File menu, General tab
       displays correctly
 
 Step 9.7 — Preferences window: Colors tab (Node Type and Date/Time)
-  [ ] Colors tab uses a sub-notebook or expandable sections for each
+  [x] Colors tab uses a sub-notebook or expandable sections for each
       color mode: "By Wildcard", "By Node Type", "By Date/Time"
-  [ ] "By Node Type" page: keep existing layout (icon + label + color
+  [x] "By Node Type" page: keep existing layout (icon + label + color
       picker per node type)
-  [ ] "By Date/Time" page: keep existing layout (spectrum type,
+  [x] "By Date/Time" page: keep existing layout (spectrum type,
       timestamp type, time range, gradient colours, spectrum preview)
-  [ ] Verify: builds, Node Type and Date/Time color pages work as
+  [x] Verify: builds, Node Type and Date/Time color pages work as
       before
 
 Step 9.8 — Preferences window: Wildcard color editor rework
-  [ ] Replace the current wildcard list UI with a new design:
+  [x] Replace the current wildcard list UI with a new design:
       - Each wildcard group is a row showing:
         - Name (editable text field, e.g. "Source Code")
         - Color picker (GtkColorDialogButton)
@@ -470,11 +470,11 @@ Step 9.8 — Preferences window: Wildcard color editor rework
       - "Add Group" button to add a new wildcard group
       - "Remove" button (or per-row delete button) to remove a group
       - Default color picker at the bottom for non-matching files
-  [ ] Pattern field accepts spaces, commas, or semicolons as
+  [x] Pattern field accepts spaces, commas, or semicolons as
       delimiters between patterns. Normalize to semicolons when saving.
-  [ ] Add a "name" field to WPatternGroup (currently has only color
+  [x] Add a "name" field to WPatternGroup (currently has only color
       and pattern list)
-  [ ] Update color_read_config / color_write_config to persist group
+  [x] Update color_read_config / color_write_config to persist group
       names (add a "name" key to each [Wildcard:N] section)
   [ ] Verify: builds, wildcard editor displays, adding/removing/editing
       groups works, patterns are saved and loaded correctly
