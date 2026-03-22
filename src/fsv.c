@@ -354,11 +354,16 @@ enum {
 /* Initial visualization mode */
 static FsvMode initial_fsv_mode = FSV_MAPV;
 
+/* Initial color mode and scale mode (determined from config) */
+static ColorMode initial_color_mode = COLOR_BY_NODETYPE;
+static boolean initial_scale_logarithmic = TRUE;
+
 /* Root directory to scan (set during command-line parsing) */
 static char *initial_root_dir = NULL;
 
 /* Token strings for config file */
 static const char *tokens_fsv_mode[] = { "discv", "mapv", "treev", NULL };
+static const char *tokens_color_mode_cfg[] = { "wildcard", "nodetype", "time", NULL };
 
 /* Command-line options */
 static struct option cli_opts[] = {
@@ -511,8 +516,12 @@ fsv_write_config( void )
 	/* Load existing file to preserve other groups */
 	g_key_file_load_from_file( kf, path, G_KEY_FILE_KEEP_COMMENTS, NULL );
 
-	/* Write visualization mode */
-	g_key_file_set_string( kf, "Settings", "mode", tokens_fsv_mode[globals.fsv_mode] );
+	/* Write last-session values (current runtime state) */
+	if (globals.fsv_mode != FSV_SPLASH && globals.fsv_mode != FSV_NONE)
+		g_key_file_set_string( kf, "Settings", "last_vis_mode", tokens_fsv_mode[globals.fsv_mode] );
+	g_key_file_set_string( kf, "Settings", "last_color_mode", tokens_color_mode_cfg[color_get_mode( )] );
+	g_key_file_set_string( kf, "Settings", "last_scale_mode",
+		geometry_treev_get_scale_logarithmic( ) ? "logarithmic" : "representative" );
 
 	/* Ensure config directory exists */
 	dir = g_path_get_dirname( path );
@@ -527,6 +536,54 @@ fsv_write_config( void )
 	g_key_file_free( kf );
 
 	color_write_config( );
+}
+
+
+/* Write general settings (remember_session, default_* values) to config.
+ * Called from the Preferences dialog OK button. */
+void
+fsv_write_general_settings( boolean remember_session,
+                            int default_vis_mode,
+                            int default_color_mode,
+                            boolean default_scale_log )
+{
+	GKeyFile *kf;
+	gchar *path, *data, *dir;
+
+	kf = g_key_file_new( );
+	path = config_file_path( );
+
+	/* Load existing file to preserve other groups */
+	g_key_file_load_from_file( kf, path, G_KEY_FILE_KEEP_COMMENTS, NULL );
+
+	g_key_file_set_boolean( kf, "Settings", "remember_session", remember_session );
+	g_key_file_set_string( kf, "Settings", "default_vis_mode", tokens_fsv_mode[default_vis_mode] );
+	g_key_file_set_string( kf, "Settings", "default_color_mode", tokens_color_mode_cfg[default_color_mode] );
+	g_key_file_set_string( kf, "Settings", "default_scale_mode",
+		default_scale_log ? "logarithmic" : "representative" );
+
+	/* Remove legacy "mode" key if present */
+	g_key_file_remove_key( kf, "Settings", "mode", NULL );
+
+	/* Ensure config directory exists */
+	dir = g_path_get_dirname( path );
+	g_mkdir_with_parents( dir, 0755 );
+	g_free( dir );
+
+	/* Write to disk */
+	data = g_key_file_to_data( kf, NULL, NULL );
+	g_file_set_contents( path, data, -1, NULL );
+	g_free( data );
+	g_free( path );
+	g_key_file_free( kf );
+}
+
+
+/* GtkApplication "shutdown" callback — save last-session state */
+static void
+app_shutdown_cb( G_GNUC_UNUSED GApplication *app, G_GNUC_UNUSED gpointer user_data )
+{
+	fsv_write_config( );
 }
 
 
@@ -547,6 +604,15 @@ app_activate_cb( GtkApplication *app, G_GNUC_UNUSED gpointer user_data )
 {
 	window_init( app, initial_fsv_mode );
 	color_init( );
+
+	/* Override color mode if settings specified a different one */
+	if (initial_color_mode != color_get_mode( )) {
+		color_set_mode( initial_color_mode );
+		window_set_color_mode( initial_color_mode );
+	}
+
+	/* Apply scale mode from settings */
+	geometry_treev_set_scale_logarithmic( initial_scale_logarithmic );
 
 	/* Schedule filesystem load after the window is realized and
 	 * the GL context is available */
@@ -581,21 +647,75 @@ main( int argc, char **argv )
 	textdomain( PACKAGE );
 #endif
 
-	/* Read saved visualization mode from config (CLI options override) */
+	/* Read settings from config (CLI options override) */
 	{
 		GKeyFile *kf = g_key_file_new( );
 		gchar *cfg_path = config_file_path( );
 		if (g_key_file_load_from_file( kf, cfg_path, G_KEY_FILE_NONE, NULL )) {
-			gchar *str = g_key_file_get_string( kf, "Settings", "mode", NULL );
-			if (str != NULL) {
-				int i;
-				for (i = 0; tokens_fsv_mode[i] != NULL; i++) {
-					if (!strcmp( str, tokens_fsv_mode[i] )) {
-						initial_fsv_mode = (FsvMode)i;
-						break;
+			gchar *str;
+			boolean remember = g_key_file_get_boolean( kf, "Settings", "remember_session", NULL );
+
+			if (remember) {
+				/* Use last_* values from previous session */
+				str = g_key_file_get_string( kf, "Settings", "last_vis_mode", NULL );
+				if (str != NULL) {
+					int i;
+					for (i = 0; tokens_fsv_mode[i] != NULL; i++) {
+						if (!strcmp( str, tokens_fsv_mode[i] )) {
+							initial_fsv_mode = (FsvMode)i;
+							break;
+						}
 					}
+					g_free( str );
 				}
-				g_free( str );
+				str = g_key_file_get_string( kf, "Settings", "last_color_mode", NULL );
+				if (str != NULL) {
+					int i;
+					for (i = 0; tokens_color_mode_cfg[i] != NULL; i++) {
+						if (!strcmp( str, tokens_color_mode_cfg[i] )) {
+							initial_color_mode = (ColorMode)i;
+							break;
+						}
+					}
+					g_free( str );
+				}
+				str = g_key_file_get_string( kf, "Settings", "last_scale_mode", NULL );
+				if (str != NULL) {
+					initial_scale_logarithmic = !strcmp( str, "logarithmic" );
+					g_free( str );
+				}
+			}
+			else {
+				/* Use default_* values (or legacy "mode" key) */
+				str = g_key_file_get_string( kf, "Settings", "default_vis_mode", NULL );
+				if (str == NULL)
+					str = g_key_file_get_string( kf, "Settings", "mode", NULL );
+				if (str != NULL) {
+					int i;
+					for (i = 0; tokens_fsv_mode[i] != NULL; i++) {
+						if (!strcmp( str, tokens_fsv_mode[i] )) {
+							initial_fsv_mode = (FsvMode)i;
+							break;
+						}
+					}
+					g_free( str );
+				}
+				str = g_key_file_get_string( kf, "Settings", "default_color_mode", NULL );
+				if (str != NULL) {
+					int i;
+					for (i = 0; tokens_color_mode_cfg[i] != NULL; i++) {
+						if (!strcmp( str, tokens_color_mode_cfg[i] )) {
+							initial_color_mode = (ColorMode)i;
+							break;
+						}
+					}
+					g_free( str );
+				}
+				str = g_key_file_get_string( kf, "Settings", "default_scale_mode", NULL );
+				if (str != NULL) {
+					initial_scale_logarithmic = !strcmp( str, "logarithmic" );
+					g_free( str );
+				}
 			}
 		}
 		g_free( cfg_path );
@@ -697,6 +817,7 @@ main( int argc, char **argv )
 	/* Create application and run */
 	app = gtk_application_new( "com.freakzilla.fsv", G_APPLICATION_DEFAULT_FLAGS );
 	g_signal_connect( app, "activate", G_CALLBACK(app_activate_cb), NULL );
+	g_signal_connect( app, "shutdown", G_CALLBACK(app_shutdown_cb), NULL );
 	status = g_application_run( G_APPLICATION(app), 1, argv );
 	g_object_unref( app );
 

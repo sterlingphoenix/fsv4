@@ -476,22 +476,22 @@ Step 9.8 — Preferences window: Wildcard color editor rework
       and pattern list)
   [x] Update color_read_config / color_write_config to persist group
       names (add a "name" key to each [Wildcard:N] section)
-  [ ] Verify: builds, wildcard editor displays, adding/removing/editing
+  [x] Verify: builds, wildcard editor displays, adding/removing/editing
       groups works, patterns are saved and loaded correctly
 
 Step 9.9 — Settings persistence
-  [ ] Add new settings to the config file (fsvrc):
+  [x] Add new settings to the config file (fsvrc):
       - [Settings] remember_session = true/false
       - [Settings] default_vis_mode = mapv/treev/discv
       - [Settings] default_color_mode = wildcard/nodetype/time
       - [Settings] default_scale_mode = logarithmic/representative
       - [Settings] last_vis_mode, last_color_mode, last_scale_mode
         (saved on exit when remember_session is true)
-  [ ] Settings are saved when the Preferences window is closed:
+  [x] Settings are saved when the Preferences window is closed:
       - If OK/Cancel buttons: save on OK, discard on Cancel
       - If the user closes the window via the X button, warn and
         offer Save/Discard/Cancel
-  [ ] On startup, read settings and apply:
+  [x] On startup, read settings and apply:
       - If remember_session: use last_* values
       - Otherwise: use default_* values
   [ ] Verify: settings persist across sessions. Changing defaults

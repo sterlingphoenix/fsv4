@@ -27,6 +27,7 @@
 void fsv_set_mode( FsvMode mode );
 void fsv_load( const char *dir );
 void fsv_write_config( void );
+void fsv_write_general_settings( boolean remember_session, int default_vis_mode, int default_color_mode, boolean default_scale_log );
 
 
 /* end fsv.h */

@@ -555,6 +555,20 @@ csdialog_remember_toggled( GtkCheckButton *check, G_GNUC_UNUSED gpointer user_da
 }
 
 
+/* Helper: read the dropdown→FsvMode mapping (dropdown order differs from enum) */
+static FsvMode
+csdialog_get_vis_mode( void )
+{
+	guint sel = gtk_drop_down_get_selected( GTK_DROP_DOWN(csdialog.general.vis_mode_dropdown_w) );
+	switch (sel) {
+		case 0: return FSV_MAPV;
+		case 1: return FSV_TREEV;
+		case 2: return FSV_DISCV;
+		default: return FSV_MAPV;
+	}
+}
+
+
 /* Callback for the "OK" button */
 static void
 csdialog_ok_button_cb( G_GNUC_UNUSED GtkWidget *unused, GtkWidget *window_w )
@@ -569,10 +583,94 @@ csdialog_ok_button_cb( G_GNUC_UNUSED GtkWidget *unused, GtkWidget *window_w )
 	/* Update toolbar to reflect current color mode */
 	window_set_color_mode( mode );
 
-	/* Save settings to config file */
+	/* Save General tab settings */
+	{
+		boolean remember = gtk_check_button_get_active(
+			GTK_CHECK_BUTTON(csdialog.general.remember_check_w) );
+		FsvMode vis = csdialog_get_vis_mode( );
+		ColorMode col = (ColorMode)gtk_drop_down_get_selected(
+			GTK_DROP_DOWN(csdialog.general.color_mode_dropdown_w) );
+		boolean scale_log = gtk_drop_down_get_selected(
+			GTK_DROP_DOWN(csdialog.general.scale_mode_dropdown_w) ) == 0;
+		fsv_write_general_settings( remember, vis, col, scale_log );
+	}
+
+	/* Save color settings to config file */
 	color_write_config( );
 
 	gtk_window_destroy( GTK_WINDOW(window_w) );
+}
+
+
+/* Confirm dialog button callback for the X button close */
+static void
+csdialog_confirm_response_cb( GtkWidget *btn, gpointer user_data )
+{
+	GtkWidget *confirm_w = GTK_WIDGET(user_data);
+	GtkWidget *prefs_w = g_object_get_data( G_OBJECT(confirm_w), "prefs-window" );
+	int action = GPOINTER_TO_INT( g_object_get_data( G_OBJECT(btn), "action" ) );
+
+	gtk_window_destroy( GTK_WINDOW(confirm_w) );
+
+	if (action == 1) {
+		/* Save — same as clicking OK */
+		csdialog_ok_button_cb( NULL, prefs_w );
+	}
+	else if (action == 2) {
+		/* Discard — just close without saving */
+		gtk_window_destroy( GTK_WINDOW(prefs_w) );
+	}
+	/* action == 0 means Cancel — do nothing, go back to editing */
+}
+
+
+/* Intercept the X button close on Preferences window */
+static gboolean
+csdialog_close_request_cb( GtkWindow *prefs_w, G_GNUC_UNUSED gpointer data )
+{
+	GtkWidget *confirm_w, *vbox_w, *btn_box, *btn;
+
+	confirm_w = gtk_window_new( );
+	gtk_window_set_title( GTK_WINDOW(confirm_w), _("Unsaved Changes") );
+	gtk_window_set_modal( GTK_WINDOW(confirm_w), TRUE );
+	gtk_window_set_transient_for( GTK_WINDOW(confirm_w), prefs_w );
+	gtk_window_set_resizable( GTK_WINDOW(confirm_w), FALSE );
+	g_object_set_data( G_OBJECT(confirm_w), "prefs-window", prefs_w );
+
+	vbox_w = gtk_box_new( GTK_ORIENTATION_VERTICAL, 12 );
+	gtk_widget_set_margin_start( vbox_w, 18 );
+	gtk_widget_set_margin_end( vbox_w, 18 );
+	gtk_widget_set_margin_top( vbox_w, 18 );
+	gtk_widget_set_margin_bottom( vbox_w, 12 );
+	gtk_window_set_child( GTK_WINDOW(confirm_w), vbox_w );
+
+	gtk_box_append( GTK_BOX(vbox_w),
+		gtk_label_new( _("Save changes to preferences?") ) );
+
+	btn_box = gtk_box_new( GTK_ORIENTATION_HORIZONTAL, 8 );
+	gtk_widget_set_halign( btn_box, GTK_ALIGN_END );
+	gtk_box_append( GTK_BOX(vbox_w), btn_box );
+
+	btn = gtk_button_new_with_label( _("Cancel") );
+	g_object_set_data( G_OBJECT(btn), "action", GINT_TO_POINTER(0) );
+	g_signal_connect( btn, "clicked", G_CALLBACK(csdialog_confirm_response_cb), confirm_w );
+	gtk_box_append( GTK_BOX(btn_box), btn );
+
+	btn = gtk_button_new_with_label( _("Discard") );
+	gtk_widget_add_css_class( btn, "destructive-action" );
+	g_object_set_data( G_OBJECT(btn), "action", GINT_TO_POINTER(2) );
+	g_signal_connect( btn, "clicked", G_CALLBACK(csdialog_confirm_response_cb), confirm_w );
+	gtk_box_append( GTK_BOX(btn_box), btn );
+
+	btn = gtk_button_new_with_label( _("Save") );
+	gtk_widget_add_css_class( btn, "suggested-action" );
+	g_object_set_data( G_OBJECT(btn), "action", GINT_TO_POINTER(1) );
+	g_signal_connect( btn, "clicked", G_CALLBACK(csdialog_confirm_response_cb), confirm_w );
+	gtk_box_append( GTK_BOX(btn_box), btn );
+
+	gtk_window_present( GTK_WINDOW(confirm_w) );
+
+	return TRUE; /* block the default close */
 }
 
 
@@ -607,6 +705,8 @@ dialog_color_setup( void )
 	gtk_window_set_resizable( GTK_WINDOW(window_w), TRUE );
 	gtk_window_set_default_size( GTK_WINDOW(window_w), -1, 600 );
 	gui_window_modalize( window_w, main_window_w );
+	g_signal_connect( window_w, "close-request",
+		G_CALLBACK(csdialog_close_request_cb), NULL );
 	main_vbox_w = gui_vbox_add( window_w, 5 );
 
 	/* Top-level notebook: General | Colors */
@@ -615,6 +715,57 @@ dialog_color_setup( void )
 	/* ======== GENERAL TAB ======== */
 	{
 		GtkWidget *gen_vbox_w = gui_vbox_add( NULL, 12 );
+		boolean cfg_remember = FALSE;
+		int cfg_vis = FSV_MAPV;
+		int cfg_color = COLOR_BY_NODETYPE;
+		int cfg_scale_log = TRUE;
+
+		/* Read current general settings from config */
+		{
+			GKeyFile *cfg_kf = g_key_file_new( );
+			gchar *cfg_path = config_file_path( );
+			if (g_key_file_load_from_file( cfg_kf, cfg_path, G_KEY_FILE_NONE, NULL )) {
+				gchar *str;
+				cfg_remember = g_key_file_get_boolean( cfg_kf, "Settings", "remember_session", NULL );
+				str = g_key_file_get_string( cfg_kf, "Settings", "default_vis_mode", NULL );
+				if (str != NULL) {
+					if (!strcmp( str, "discv" )) cfg_vis = FSV_DISCV;
+					else if (!strcmp( str, "mapv" )) cfg_vis = FSV_MAPV;
+					else if (!strcmp( str, "treev" )) cfg_vis = FSV_TREEV;
+					g_free( str );
+				} else {
+					/* Fallback: use legacy "mode" key or current runtime mode */
+					str = g_key_file_get_string( cfg_kf, "Settings", "mode", NULL );
+					if (str != NULL) {
+						if (!strcmp( str, "discv" )) cfg_vis = FSV_DISCV;
+						else if (!strcmp( str, "mapv" )) cfg_vis = FSV_MAPV;
+						else if (!strcmp( str, "treev" )) cfg_vis = FSV_TREEV;
+						g_free( str );
+					} else {
+						cfg_vis = globals.fsv_mode;
+					}
+				}
+				str = g_key_file_get_string( cfg_kf, "Settings", "default_color_mode", NULL );
+				if (str != NULL) {
+					if (!strcmp( str, "wildcard" )) cfg_color = COLOR_BY_WPATTERN;
+					else if (!strcmp( str, "nodetype" )) cfg_color = COLOR_BY_NODETYPE;
+					else if (!strcmp( str, "time" )) cfg_color = COLOR_BY_TIMESTAMP;
+					g_free( str );
+				} else {
+					cfg_color = color_get_mode( );
+				}
+				str = g_key_file_get_string( cfg_kf, "Settings", "default_scale_mode", NULL );
+				if (str != NULL) {
+					cfg_scale_log = !strcmp( str, "logarithmic" );
+					g_free( str );
+				} else {
+					cfg_scale_log = geometry_treev_get_scale_logarithmic( );
+				}
+			}
+			g_free( cfg_path );
+			g_key_file_free( cfg_kf );
+		}
+
 		gtk_widget_set_margin_start( gen_vbox_w, 12 );
 		gtk_widget_set_margin_end( gen_vbox_w, 12 );
 		gtk_widget_set_margin_top( gen_vbox_w, 12 );
@@ -624,6 +775,7 @@ dialog_color_setup( void )
 		/* "Remember settings" checkbox */
 		csdialog.general.remember_check_w = gtk_check_button_new_with_label(
 			_("Remember settings from previous session") );
+		gtk_check_button_set_active( GTK_CHECK_BUTTON(csdialog.general.remember_check_w), cfg_remember );
 		gtk_box_append( GTK_BOX(gen_vbox_w), csdialog.general.remember_check_w );
 		g_signal_connect( csdialog.general.remember_check_w, "toggled",
 			G_CALLBACK(csdialog_remember_toggled), NULL );
@@ -636,8 +788,9 @@ dialog_color_setup( void )
 			GtkStringList *vis_list = gtk_string_list_new( vis_items );
 			csdialog.general.vis_mode_dropdown_w = gtk_drop_down_new(
 				G_LIST_MODEL(vis_list), NULL );
-			/* Default to current mode */
-			switch (globals.fsv_mode) {
+			/* Dropdown order: 0=MapV, 1=TreeV, 2=DiscV
+			 * FsvMode enum: 0=DISCV, 1=MAPV, 2=TREEV */
+			switch (cfg_vis) {
 				case FSV_MAPV:  gtk_drop_down_set_selected( GTK_DROP_DOWN(csdialog.general.vis_mode_dropdown_w), 0 ); break;
 				case FSV_TREEV: gtk_drop_down_set_selected( GTK_DROP_DOWN(csdialog.general.vis_mode_dropdown_w), 1 ); break;
 				case FSV_DISCV: gtk_drop_down_set_selected( GTK_DROP_DOWN(csdialog.general.vis_mode_dropdown_w), 2 ); break;
@@ -655,7 +808,7 @@ dialog_color_setup( void )
 			csdialog.general.color_mode_dropdown_w = gtk_drop_down_new(
 				G_LIST_MODEL(color_list), NULL );
 			gtk_drop_down_set_selected( GTK_DROP_DOWN(csdialog.general.color_mode_dropdown_w),
-				(guint)color_get_mode( ) );
+				(guint)cfg_color );
 			gtk_box_append( GTK_BOX(hbox_w), csdialog.general.color_mode_dropdown_w );
 		}
 
@@ -668,8 +821,15 @@ dialog_color_setup( void )
 			csdialog.general.scale_mode_dropdown_w = gtk_drop_down_new(
 				G_LIST_MODEL(scale_list), NULL );
 			gtk_drop_down_set_selected( GTK_DROP_DOWN(csdialog.general.scale_mode_dropdown_w),
-				geometry_treev_get_scale_logarithmic( ) ? 0 : 1 );
+				cfg_scale_log ? 0 : 1 );
 			gtk_box_append( GTK_BOX(hbox_w), csdialog.general.scale_mode_dropdown_w );
+		}
+
+		/* Grey out dropdowns when "remember session" is active */
+		if (cfg_remember) {
+			gtk_widget_set_sensitive( csdialog.general.vis_mode_dropdown_w, FALSE );
+			gtk_widget_set_sensitive( csdialog.general.color_mode_dropdown_w, FALSE );
+			gtk_widget_set_sensitive( csdialog.general.scale_mode_dropdown_w, FALSE );
 		}
 	}
 

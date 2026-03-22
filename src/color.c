@@ -327,8 +327,10 @@ void
 color_set_mode( ColorMode mode )
 {
 	color_mode = mode;
-	color_assign_recursive( globals.fstree );
-	redraw( );
+	if (globals.fstree != NULL) {
+		color_assign_recursive( globals.fstree );
+		redraw( );
+	}
 }
 
 
