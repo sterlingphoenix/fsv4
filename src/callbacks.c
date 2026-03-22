@@ -48,14 +48,6 @@ on_file_change_root_activate( G_GNUC_UNUSED GSimpleAction *action, G_GNUC_UNUSED
 }
 
 
-/* File -> Save settings */
-void
-on_file_save_settings_activate( G_GNUC_UNUSED GSimpleAction *action, G_GNUC_UNUSED GVariant *parameter, G_GNUC_UNUSED gpointer user_data )
-{
-	fsv_write_config( );
-}
-
-
 /* File -> Exit */
 void
 on_file_exit_activate( G_GNUC_UNUSED GSimpleAction *action, G_GNUC_UNUSED GVariant *parameter, G_GNUC_UNUSED gpointer user_data )

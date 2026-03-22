@@ -1,0 +1,67 @@
+# fsv configuration file
+
+[Settings]
+mode=mapv
+
+[Color]
+mode=wildcard
+
+[NodeType]
+directory=#A0A0A0
+regularfile=#FFFFA0
+symlink=#FFFFFF
+pipe=#00FF00
+socket=#FF8000
+chardevice=#00FFFF
+blockdevice=#4CA0FF
+unknown=#FF0000
+
+[Timestamp]
+spectrumtype=rainbow
+timestamptype=modify
+period=604800
+oldcolor=#0000FF
+newcolor=#FF0000
+
+[Wildcard]
+default=#FFFFA0
+
+# Executables and Scripts (Green)
+[Wildcard:1]
+color=#00FF00
+patterns=*.cmd;*.exe;*.com;*.btm;*.bat;*.sh;*.bash;*.zsh;*.fish;*.ps1;*.bin;*.app;*.msi;
+
+# Archives and Compressed Files (Red)
+[Wildcard:2]
+color=#FF0000
+patterns=*.tar;*.bz2;*.tgz;*.arj;*.taz;*.lzh;*.zip;*.z;*.Z;*.gz;*.7z;*.rar;*.xz;*.iso;*.lzma;*.pkg;*.deb;*.rpm;
+
+# Images (Magenta)
+[Wildcard:3]
+color=#FF00FF
+patterns=*.jpg;*.png;*.gif;*.bmp;*.xpm;*.tif;*.jpeg;*.tiff;*.webp;*.svg;*.ico;*.heic;*.raw;
+
+# Backups, Logs, and Temp Files (Blue)
+[Wildcard:4]
+color=#0000FF
+patterns=*~;*.old;*.bak;*.orig;*.tmp;*.temp;*.swp;*.swo;*.log;
+
+# Text, Templates, and Configuration Files (Orange)
+[Wildcard:5]
+color=#FFA500
+patterns=*.txt;*.md;*.csv;*.json;*.xml;*.yml;*.yaml;*.ini;*.cfg;*.conf;*.erb;*.epp;
+
+# Audio Files (Cyan)
+[Wildcard:6]
+color=#00FFFF
+patterns=*.mp3;*.wav;*.flac;*.ogg;*.m4a;*.aac;*.wma;
+
+# Video Files (Yellow)
+[Wildcard:7]
+color=#FFFF00
+patterns=*.mp4;*.mkv;*.avi;*.mov;*.wmv;*.flv;*.webm;
+
+# Source Code (Purple)
+[Wildcard:8]
+color=#A020F0
+patterns=*.pp;*.c;*.cpp;*.h;*.hpp;*.py;*.js;*.ts;*.html;*.css;*.java;*.go;*.rs;*.rb;*.php;

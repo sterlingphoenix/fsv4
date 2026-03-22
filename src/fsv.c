@@ -441,6 +441,9 @@ fsv_set_mode( FsvMode mode )
 
 	globals.fsv_mode = mode;
 
+	/* Sync toolbar vis mode buttons and scale toggle sensitivity */
+	window_set_vis_mode( mode );
+
 	/* Ensure that About presentation is not up */
 	about( ABOUT_END );
 

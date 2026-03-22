@@ -25,5 +25,13 @@
     <file>socket.png</file>
     <file>symlink.png</file>
     <file>unknown.png</file>
+    <file>vis-mapv.svg</file>
+    <file>vis-treev.svg</file>
+    <file>vis-discv.svg</file>
+    <file>color-wildcard.svg</file>
+    <file>color-nodetype.svg</file>
+    <file>color-timestamp.svg</file>
+    <file>scale-log.svg</file>
+    <file>scale-rep.svg</file>
   </gresource>
 </gresources>

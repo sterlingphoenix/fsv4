@@ -362,6 +362,156 @@ Step 7.7 - Final cleanup
 
   Checkpoint: User tests everything. Build is warning-free.
 
+Step 8 - Bug fixes and Minor Enhancements
+  [x] Complete bug fixes and minor enhancements.
+
+
+PHASE 9: UI MODERNISATION
+==========================
+
+Modernise the menu bar, toolbar, and preferences dialog. Simplify the
+menu to a single File menu, move visualization and color mode selection
+to the toolbar, add a comprehensive Preferences window, and rework the
+wildcard color editor.
+
+Step 9.1 — Simplify the menu bar
+  [x] Replace the current multi-menu bar (File, Visualisation, Colors)
+      with a single "File" menu containing:
+        - Open Root...
+        - Preferences...
+        - About
+        - (separator)
+        - Exit
+  [x] Remove the Visualisation and Colors menus and their GAction
+      handlers (vis-mode, color-mode radio actions in window.c)
+  [x] Verify: builds, runs, File menu works, old menus are gone
+
+Step 9.2 — Toolbar layout: two-row button bar
+  [x] Restructure the toolbar area into two rows:
+      - Row 1 (navigation): [Root] [Back] [Up] [Bird's Eye]
+      - Row 2 (modes): [MapV] [TreeV] [DiscV]  ···  [W*] [N] [D/T]
+        ···  [Log/Rep]
+  [x] Visualization mode buttons are radio-style (GtkToggleButton
+      group, exactly one active at a time). Larger than nav buttons.
+  [x] Color mode buttons are radio-style (same pattern, one active).
+  [x] Log/Rep scale toggle: GtkToggleButton, greyed out when vis mode
+      is not TreeV
+  [x] All buttons have tooltips
+  [x] Verify: builds, runs, both rows display correctly, buttons
+      reflect current state
+
+Step 9.3 — Generate placeholder SVG icons
+  [x] Create SVG icons for each new button:
+      - MapV: bold letter "M"
+      - TreeV: bold letter "T"
+      - DiscV: bold letter "D"
+      - Wildcard color mode: "W*"
+      - Node type color mode: "N"
+      - Date/Time color mode: "D/T"
+      - Log scale: "LOG" (or similar)
+      - Representative scale: "REP" (or similar)
+  [x] Add SVGs to src/icons/ and the GResource manifest
+  [x] Verify: icons display correctly in the toolbar
+
+Step 9.4 — Wire up toolbar mode buttons
+  [x] Visualization buttons switch the active visualization mode
+      (call the same code path as the old menu radio actions)
+  [x] Color mode buttons switch the active color mode
+  [x] Log/Rep toggle switches TreeV between logarithmic and
+      representative (linear) height scaling. Grey out when not TreeV.
+  [x] Switching vis mode to/from TreeV enables/disables the Log/Rep
+      button
+  [x] Verify: switching vis modes, color modes, and scale mode all work
+      from the toolbar. 3D view updates correctly.
+
+Step 9.5 — Add representative scale mode to TreeV
+  [x] Add a global or per-mode flag for TreeV scale mode (logarithmic
+      vs representative). Store in globals or a new settings struct.
+  [x] In geometry.c TreeV leaf height calculation, branch on the flag:
+      - Logarithmic: current log² × multiplier formula
+      - Representative: original sqrt(size) × multiplier formula
+  [x] When the flag changes at runtime, invalidate TreeV geometry
+      (mark VBO batches dirty) and trigger a redraw
+  [x] Verify: toggling scale mode at runtime visually changes bar
+      heights. Collapse/expand still works.
+
+  Checkpoint: User tests toolbar — vis mode switching, color mode
+  switching, scale toggle, navigation buttons, Bird's Eye toggle.
+  All modes render correctly.
+
+Step 9.6 — Preferences window: General tab
+  [ ] Create a new Preferences dialog (reuse or replace the existing
+      color setup dialog in dialog.c)
+  [ ] Use a GtkNotebook with tabs: "General" and "Colors"
+  [ ] General tab contains:
+      - "Remember settings from previous session" checkbox
+      - Default Visualization Mode dropdown (greyed if remember is on)
+      - Default Color Mode dropdown (greyed if remember is on)
+      - Default TreeV Scale Mode dropdown (greyed if remember is on)
+  [ ] Verify: builds, Preferences opens from File menu, General tab
+      displays correctly
+
+Step 9.7 — Preferences window: Colors tab (Node Type and Date/Time)
+  [ ] Colors tab uses a sub-notebook or expandable sections for each
+      color mode: "By Wildcard", "By Node Type", "By Date/Time"
+  [ ] "By Node Type" page: keep existing layout (icon + label + color
+      picker per node type)
+  [ ] "By Date/Time" page: keep existing layout (spectrum type,
+      timestamp type, time range, gradient colours, spectrum preview)
+  [ ] Verify: builds, Node Type and Date/Time color pages work as
+      before
+
+Step 9.8 — Preferences window: Wildcard color editor rework
+  [ ] Replace the current wildcard list UI with a new design:
+      - Each wildcard group is a row showing:
+        - Name (editable text field, e.g. "Source Code")
+        - Color picker (GtkColorDialogButton)
+        - Patterns field (editable text field, e.g. "*.c *.h *.cpp")
+      - "Add Group" button to add a new wildcard group
+      - "Remove" button (or per-row delete button) to remove a group
+      - Default color picker at the bottom for non-matching files
+  [ ] Pattern field accepts spaces, commas, or semicolons as
+      delimiters between patterns. Normalize to semicolons when saving.
+  [ ] Add a "name" field to WPatternGroup (currently has only color
+      and pattern list)
+  [ ] Update color_read_config / color_write_config to persist group
+      names (add a "name" key to each [Wildcard:N] section)
+  [ ] Verify: builds, wildcard editor displays, adding/removing/editing
+      groups works, patterns are saved and loaded correctly
+
+Step 9.9 — Settings persistence
+  [ ] Add new settings to the config file (fsvrc):
+      - [Settings] remember_session = true/false
+      - [Settings] default_vis_mode = mapv/treev/discv
+      - [Settings] default_color_mode = wildcard/nodetype/time
+      - [Settings] default_scale_mode = logarithmic/representative
+      - [Settings] last_vis_mode, last_color_mode, last_scale_mode
+        (saved on exit when remember_session is true)
+  [ ] Settings are saved when the Preferences window is closed:
+      - If OK/Cancel buttons: save on OK, discard on Cancel
+      - If the user closes the window via the X button, warn and
+        offer Save/Discard/Cancel
+  [ ] On startup, read settings and apply:
+      - If remember_session: use last_* values
+      - Otherwise: use default_* values
+  [ ] Verify: settings persist across sessions. Changing defaults
+      and restarting uses them. "Remember session" overrides defaults.
+
+Step 9.10 — Cleanup and polish
+  [ ] Remove dead code from the old menu system (unused GAction
+      handlers, old color setup dialog if fully replaced)
+  [ ] Ensure all new UI elements follow GTK4 conventions (use system
+      widgets where possible: GtkColorDialogButton, GtkDropDown, etc.)
+  [ ] Verify: clean build, no warnings, all features work
+
+  Checkpoint: User tests the full UI modernisation:
+  - File menu works (Open Root, Preferences, About, Exit)
+  - Toolbar: vis mode, color mode, scale toggle all work
+  - Preferences: General settings, all three color modes
+  - Wildcard editor: add/remove/edit groups with names and patterns
+  - Settings persist correctly across sessions
+  - All three vis modes render and interact correctly
+
 
 NOTES
 =====

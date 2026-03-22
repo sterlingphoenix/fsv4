@@ -35,6 +35,7 @@
 #include "dirtree.h"
 #include "filelist.h"
 #include "fsv.h"
+#include "geometry.h"
 #include "gui.h"
 #include "search.h"
 #include "viewport.h"
@@ -44,6 +45,14 @@
 #define ICON_CD_ROOT		"/org/fsv/icons/cd-root.png"
 #define ICON_CD_UP		"/org/fsv/icons/cd-up.png"
 #define ICON_BIRDSEYE_VIEW	"/org/fsv/icons/birdseye_view.png"
+#define ICON_VIS_MAPV		"/org/fsv/icons/vis-mapv.svg"
+#define ICON_VIS_TREEV		"/org/fsv/icons/vis-treev.svg"
+#define ICON_VIS_DISCV		"/org/fsv/icons/vis-discv.svg"
+#define ICON_COLOR_WILDCARD	"/org/fsv/icons/color-wildcard.svg"
+#define ICON_COLOR_NODETYPE	"/org/fsv/icons/color-nodetype.svg"
+#define ICON_COLOR_TIMESTAMP	"/org/fsv/icons/color-timestamp.svg"
+#define ICON_SCALE_LOG		"/org/fsv/icons/scale-log.svg"
+#define ICON_SCALE_REP		"/org/fsv/icons/scale-rep.svg"
 
 
 /* GAction for vis mode and color mode radio (for state changes) */
@@ -53,8 +62,26 @@ static GSimpleAction *color_mode_action = NULL;
 /* Bird's-eye view button (on toolbar) */
 static GtkWidget *birdseye_view_tbutton_w;
 
+/* Vis mode toolbar toggle buttons */
+static GtkWidget *vis_mapv_tbutton_w;
+static GtkWidget *vis_treev_tbutton_w;
+static GtkWidget *vis_discv_tbutton_w;
+
+/* Color mode toolbar toggle buttons */
+static GtkWidget *color_wildcard_tbutton_w;
+static GtkWidget *color_nodetype_tbutton_w;
+static GtkWidget *color_timestamp_tbutton_w;
+
+/* Scale mode toolbar toggle button */
+static GtkWidget *scale_tbutton_w;
+
 /* List of widgets that can be enabled or disabled on the fly */
 static GList *sw_widget_list = NULL;
+
+/* Forward declarations for toolbar toggle callbacks */
+static void on_vis_mode_toggled( GtkToggleButton *tbutton, gpointer user_data );
+static void on_color_mode_toggled( GtkToggleButton *tbutton, gpointer user_data );
+static void on_scale_mode_toggled( GtkToggleButton *tbutton, gpointer user_data );
 
 /* Handler for window close button (X).  Quit the application cleanly
  * so that idle/animation callbacks don't fire against destroyed widgets. */
@@ -88,42 +115,14 @@ build_menu_model( void )
 
 	/* File menu */
 	menu = g_menu_new( );
-	g_menu_append( menu, _("Change root..."), "win.change-root" );
-	g_menu_append( menu, _("Save settings"), "win.save-settings" );
+	g_menu_append( menu, _("Open Root..."), "win.change-root" );
+	g_menu_append( menu, _("Preferences..."), "win.color-setup" );
+	g_menu_append( menu, _("About"), "win.about" );
 	section = g_menu_new( );
 	g_menu_append( section, _("Exit"), "win.exit" );
 	g_menu_append_section( menu, NULL, G_MENU_MODEL(section) );
 	g_object_unref( section );
 	g_menu_append_submenu( menubar, _("File"), G_MENU_MODEL(menu) );
-	g_object_unref( menu );
-
-	/* Visualisation menu */
-	menu = g_menu_new( );
-	g_menu_append( menu, _("MapV"), "win.vis-mode::mapv" );
-	g_menu_append( menu, _("DiscV"), "win.vis-mode::discv" );
-	g_menu_append( menu, _("TreeV"), "win.vis-mode::treev" );
-	g_menu_append_submenu( menubar, _("Visualisation"), G_MENU_MODEL(menu) );
-	g_object_unref( menu );
-
-	/* Colors menu */
-	menu = g_menu_new( );
-	section = g_menu_new( );
-	g_menu_append( section, _("By wildcards"), "win.color-mode::wildcards" );
-	g_menu_append( section, _("By node type"), "win.color-mode::nodetype" );
-	g_menu_append( section, _("By timestamp"), "win.color-mode::timestamp" );
-	g_menu_append_section( menu, NULL, G_MENU_MODEL(section) );
-	g_object_unref( section );
-	section = g_menu_new( );
-	g_menu_append( section, _("Setup..."), "win.color-setup" );
-	g_menu_append_section( menu, NULL, G_MENU_MODEL(section) );
-	g_object_unref( section );
-	g_menu_append_submenu( menubar, _("Colors"), G_MENU_MODEL(menu) );
-	g_object_unref( menu );
-
-	/* Help menu */
-	menu = g_menu_new( );
-	g_menu_append( menu, _("About"), "win.about" );
-	g_menu_append_submenu( menubar, _("Help"), G_MENU_MODEL(menu) );
 	g_object_unref( menu );
 
 	return G_MENU_MODEL(menubar);
@@ -143,11 +142,6 @@ setup_actions( GtkWindow *window, FsvMode fsv_mode )
 	/* Simple actions */
 	action = g_simple_action_new( "change-root", NULL );
 	g_signal_connect( action, "activate", G_CALLBACK(on_file_change_root_activate), NULL );
-	g_action_map_add_action( G_ACTION_MAP(group), G_ACTION(action) );
-	g_object_unref( action );
-
-	action = g_simple_action_new( "save-settings", NULL );
-	g_signal_connect( action, "activate", G_CALLBACK(on_file_save_settings_activate), NULL );
 	g_action_map_add_action( G_ACTION_MAP(group), G_ACTION(action) );
 	g_object_unref( action );
 
@@ -295,7 +289,7 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 	gtk_paned_set_resize_start_child( GTK_PANED(hpaned_w), FALSE );
 	gtk_paned_set_shrink_start_child( GTK_PANED(hpaned_w), TRUE );
 
-	/* Horizontal box for toolbar buttons */
+	/* === Row 1: Navigation buttons === */
 	hbox_w = gui_hbox_add( left_vbox_w, 2 );
 
 	/* "cd /" button */
@@ -320,6 +314,97 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 	gtk_widget_add_css_class( button_w, "birdseye-toggle" );
 	G_LIST_APPEND(sw_widget_list, button_w);
 	birdseye_view_tbutton_w = button_w;
+
+	/* === Row 2: Vis mode, Color mode, Scale toggle === */
+	hbox_w = gui_hbox_add( left_vbox_w, 0 );
+
+	/* -- Visualization mode radio buttons -- */
+	{
+		GtkWidget *vis_box = gui_hbox_add( hbox_w, 1 );
+
+		button_w = gui_toggle_button_add( vis_box, NULL,
+			fsv_mode == FSV_MAPV, G_CALLBACK(on_vis_mode_toggled), "mapv" );
+		gui_resource_image_add( button_w, ICON_VIS_MAPV );
+		gtk_widget_set_tooltip_text( button_w, "Map View" );
+		gtk_widget_set_size_request( button_w, 36, 28 );
+		G_LIST_APPEND(sw_widget_list, button_w);
+		vis_mapv_tbutton_w = button_w;
+
+		button_w = gui_toggle_button_add( vis_box, NULL,
+			fsv_mode == FSV_TREEV, G_CALLBACK(on_vis_mode_toggled), "treev" );
+		gui_resource_image_add( button_w, ICON_VIS_TREEV );
+		gtk_widget_set_tooltip_text( button_w, "Tree View" );
+		gtk_widget_set_size_request( button_w, 36, 28 );
+		gtk_toggle_button_set_group( GTK_TOGGLE_BUTTON(button_w),
+			GTK_TOGGLE_BUTTON(vis_mapv_tbutton_w) );
+		G_LIST_APPEND(sw_widget_list, button_w);
+		vis_treev_tbutton_w = button_w;
+
+		button_w = gui_toggle_button_add( vis_box, NULL,
+			fsv_mode == FSV_DISCV, G_CALLBACK(on_vis_mode_toggled), "discv" );
+		gui_resource_image_add( button_w, ICON_VIS_DISCV );
+		gtk_widget_set_tooltip_text( button_w, "Disc View" );
+		gtk_widget_set_size_request( button_w, 36, 28 );
+		gtk_toggle_button_set_group( GTK_TOGGLE_BUTTON(button_w),
+			GTK_TOGGLE_BUTTON(vis_mapv_tbutton_w) );
+		G_LIST_APPEND(sw_widget_list, button_w);
+		vis_discv_tbutton_w = button_w;
+	}
+
+	/* Spacer between vis and color groups */
+	{
+		GtkWidget *spacer = gtk_separator_new( GTK_ORIENTATION_VERTICAL );
+		gtk_widget_set_margin_start( spacer, 6 );
+		gtk_widget_set_margin_end( spacer, 6 );
+		gtk_box_append( GTK_BOX(hbox_w), spacer );
+	}
+
+	/* -- Color mode radio buttons -- */
+	{
+		GtkWidget *color_box = gui_hbox_add( hbox_w, 1 );
+
+		button_w = gui_toggle_button_add( color_box, NULL,
+			TRUE, G_CALLBACK(on_color_mode_toggled), "wildcards" );
+		gui_resource_image_add( button_w, ICON_COLOR_WILDCARD );
+		gtk_widget_set_tooltip_text( button_w, "Color by Wildcard" );
+		G_LIST_APPEND(sw_widget_list, button_w);
+		color_wildcard_tbutton_w = button_w;
+
+		button_w = gui_toggle_button_add( color_box, NULL,
+			FALSE, G_CALLBACK(on_color_mode_toggled), "nodetype" );
+		gui_resource_image_add( button_w, ICON_COLOR_NODETYPE );
+		gtk_widget_set_tooltip_text( button_w, "Color by Node Type" );
+		gtk_toggle_button_set_group( GTK_TOGGLE_BUTTON(button_w),
+			GTK_TOGGLE_BUTTON(color_wildcard_tbutton_w) );
+		G_LIST_APPEND(sw_widget_list, button_w);
+		color_nodetype_tbutton_w = button_w;
+
+		button_w = gui_toggle_button_add( color_box, NULL,
+			FALSE, G_CALLBACK(on_color_mode_toggled), "timestamp" );
+		gui_resource_image_add( button_w, ICON_COLOR_TIMESTAMP );
+		gtk_widget_set_tooltip_text( button_w, "Color by Date/Time" );
+		gtk_toggle_button_set_group( GTK_TOGGLE_BUTTON(button_w),
+			GTK_TOGGLE_BUTTON(color_wildcard_tbutton_w) );
+		G_LIST_APPEND(sw_widget_list, button_w);
+		color_timestamp_tbutton_w = button_w;
+	}
+
+	/* Spacer between color and scale groups */
+	{
+		GtkWidget *spacer = gtk_separator_new( GTK_ORIENTATION_VERTICAL );
+		gtk_widget_set_margin_start( spacer, 6 );
+		gtk_widget_set_margin_end( spacer, 6 );
+		gtk_box_append( GTK_BOX(hbox_w), spacer );
+	}
+
+	/* -- Scale mode toggle (TreeV only) -- */
+	button_w = gui_toggle_button_add( hbox_w, NULL,
+		TRUE, G_CALLBACK(on_scale_mode_toggled), NULL );
+	gui_resource_image_add( button_w, ICON_SCALE_LOG );
+	gtk_widget_set_tooltip_text( button_w, "Logarithmic Scale (TreeV)" );
+	gtk_widget_set_sensitive( button_w, fsv_mode == FSV_TREEV );
+	G_LIST_APPEND(sw_widget_list, button_w);
+	scale_tbutton_w = button_w;
 
 	/* Search bar */
 	hbox_w = gui_hbox_add( left_vbox_w, 2 );
@@ -422,32 +507,119 @@ window_set_access( boolean enabled )
 }
 
 
-/* Resets the Color radio menu to the given mode (via GAction state) */
+/* Toolbar vis mode toggle button handler */
+static void
+on_vis_mode_toggled( GtkToggleButton *tbutton, gpointer user_data )
+{
+	const char *mode_str = (const char *)user_data;
+
+	/* Only act when button is being activated (not deactivated) */
+	if (!gtk_toggle_button_get_active( tbutton ))
+		return;
+
+	g_action_change_state( G_ACTION(vis_mode_action),
+		g_variant_new_string( mode_str ) );
+}
+
+/* Toolbar color mode toggle button handler */
+static void
+on_color_mode_toggled( GtkToggleButton *tbutton, gpointer user_data )
+{
+	const char *mode_str = (const char *)user_data;
+
+	if (!gtk_toggle_button_get_active( tbutton ))
+		return;
+
+	g_action_change_state( G_ACTION(color_mode_action),
+		g_variant_new_string( mode_str ) );
+}
+
+/* Toolbar scale mode toggle button handler */
+static void
+on_scale_mode_toggled( GtkToggleButton *tbutton, G_GNUC_UNUSED gpointer user_data )
+{
+	boolean logarithmic = gtk_toggle_button_get_active( tbutton );
+	geometry_treev_set_scale_logarithmic( logarithmic );
+}
+
+
+/* Helper: set a toggle button active without triggering its signal.
+ * Blocks by function pointer only (ignores data) so it works regardless
+ * of what callback_data was used when the signal was connected. */
+static void
+toggle_button_set_active_blocked( GtkWidget *tbutton_w, GCallback handler, boolean active )
+{
+	g_signal_handlers_block_matched( G_OBJECT(tbutton_w),
+		G_SIGNAL_MATCH_FUNC, 0, 0, NULL, (gpointer)handler, NULL );
+	gtk_toggle_button_set_active( GTK_TOGGLE_BUTTON(tbutton_w), active );
+	g_signal_handlers_unblock_matched( G_OBJECT(tbutton_w),
+		G_SIGNAL_MATCH_FUNC, 0, 0, NULL, (gpointer)handler, NULL );
+}
+
+
+/* Syncs the color mode toolbar buttons and GAction state to the given mode */
 void
 window_set_color_mode( ColorMode mode )
 {
 	const char *mode_str;
+	GtkWidget *active_w;
 
 	switch (mode) {
 		case COLOR_BY_NODETYPE:
 		mode_str = "nodetype";
+		active_w = color_nodetype_tbutton_w;
 		break;
 
 		case COLOR_BY_TIMESTAMP:
 		mode_str = "timestamp";
+		active_w = color_timestamp_tbutton_w;
 		break;
 
 		case COLOR_BY_WPATTERN:
 		mode_str = "wildcards";
+		active_w = color_wildcard_tbutton_w;
 		break;
 
 		SWITCH_FAIL
 	}
 
-	/* Block the handler, change state, unblock */
-	g_signal_handlers_block_by_func( color_mode_action, on_color_mode_change, NULL );
-	g_simple_action_set_state( color_mode_action, g_variant_new_string( mode_str ) );
-	g_signal_handlers_unblock_by_func( color_mode_action, on_color_mode_change, NULL );
+	/* Sync GAction state (may be NULL during early startup) */
+	if (color_mode_action != NULL) {
+		g_signal_handlers_block_by_func( color_mode_action, on_color_mode_change, NULL );
+		g_simple_action_set_state( color_mode_action, g_variant_new_string( mode_str ) );
+		g_signal_handlers_unblock_by_func( color_mode_action, on_color_mode_change, NULL );
+	}
+
+	/* Sync toolbar button — GTK4 radio grouping handles deactivating others */
+	if (active_w != NULL && !gtk_toggle_button_get_active( GTK_TOGGLE_BUTTON(active_w) )) {
+		toggle_button_set_active_blocked( active_w,
+			G_CALLBACK(on_color_mode_toggled), TRUE );
+	}
+}
+
+
+/* Syncs the vis mode toolbar buttons to the given mode.
+ * Also enables/disables the scale toggle for TreeV. */
+void
+window_set_vis_mode( FsvMode mode )
+{
+	GtkWidget *active_w = NULL;
+
+	switch (mode) {
+		case FSV_MAPV:  active_w = vis_mapv_tbutton_w;  break;
+		case FSV_TREEV: active_w = vis_treev_tbutton_w; break;
+		case FSV_DISCV: active_w = vis_discv_tbutton_w; break;
+		default: break;
+	}
+
+	if (active_w != NULL && !gtk_toggle_button_get_active( GTK_TOGGLE_BUTTON(active_w) )) {
+		toggle_button_set_active_blocked( active_w,
+			G_CALLBACK(on_vis_mode_toggled), TRUE );
+	}
+
+	/* Scale toggle only available in TreeV */
+	if (scale_tbutton_w != NULL)
+		gtk_widget_set_sensitive( scale_tbutton_w, mode == FSV_TREEV );
 }
 
 
