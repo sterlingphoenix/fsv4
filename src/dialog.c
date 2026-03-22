@@ -40,11 +40,6 @@
 #include "gui.h"
 #include "window.h"
 
-/* OK/Cancel button icon resource paths */
-#define ICON_BUTTON_OK		"/org/fsv/icons/button_ok.png"
-#define ICON_BUTTON_CANCEL	"/org/fsv/icons/button_cancel.png"
-
-
 /* Main window widget */
 static GtkWidget *main_window_w;
 
@@ -149,6 +144,7 @@ static struct ColorSetupDialog {
 
 /* Forward declarations */
 static void csdialog_wpattern_rebuild_ui( void );
+static void csdialog_wpattern_rebuild_ui_full( boolean focus_last );
 
 
 /* Callback for the node type color pickers */
@@ -397,7 +393,7 @@ csdialog_wpgroup_add_cb( G_GNUC_UNUSED GtkButton *button, G_GNUC_UNUSED gpointer
 
 	G_LIST_APPEND(csdialog.color_config.by_wpattern.wpgroup_list, wpgroup);
 
-	csdialog_wpattern_rebuild_ui( );
+	csdialog_wpattern_rebuild_ui_full( TRUE );
 }
 
 
@@ -444,14 +440,16 @@ csdialog_wpgroup_patterns_changed_cb( GtkEditable *editable, G_GNUC_UNUSED gpoin
 }
 
 
-/* Build (or rebuild) the wildcard group rows in the UI */
+/* Build (or rebuild) the wildcard group rows in the UI.
+ * If focus_last is TRUE, grabs focus on the last row's name entry. */
 static void
-csdialog_wpattern_rebuild_ui( void )
+csdialog_wpattern_rebuild_ui_full( boolean focus_last )
 {
 	GtkWidget *groups_box = csdialog.wpattern.groups_box_w;
 	GList *wpgroup_llink;
 	struct WPatternGroup *wpgroup;
 	GtkWidget *row_w, *name_w, *patterns_w, *remove_w;
+	GtkWidget *last_name_w = NULL;
 	char *patterns_str;
 
 	/* Remove all existing children */
@@ -478,6 +476,7 @@ csdialog_wpattern_rebuild_ui( void )
 		g_signal_connect( name_w, "changed",
 			G_CALLBACK(csdialog_wpgroup_name_changed_cb), NULL );
 		gtk_box_append( GTK_BOX(row_w), name_w );
+		last_name_w = name_w;
 
 		/* Color picker */
 		gui_colorpicker_add( row_w, &wpgroup->color, _("Group Color"),
@@ -505,6 +504,16 @@ csdialog_wpattern_rebuild_ui( void )
 		gtk_box_append( GTK_BOX(groups_box), row_w );
 		wpgroup_llink = wpgroup_llink->next;
 	}
+
+	if (focus_last && last_name_w != NULL)
+		gtk_widget_grab_focus( last_name_w );
+}
+
+
+static void
+csdialog_wpattern_rebuild_ui( void )
+{
+	csdialog_wpattern_rebuild_ui_full( FALSE );
 }
 
 
@@ -568,6 +577,8 @@ dialog_color_setup( void )
 	char strbuf[256];
 
 	window_w = gui_dialog_window( _("Preferences"), NULL );
+	gtk_window_set_resizable( GTK_WINDOW(window_w), TRUE );
+	gtk_window_set_default_size( GTK_WINDOW(window_w), -1, 600 );
 	gui_window_modalize( window_w, main_window_w );
 	main_vbox_w = gui_vbox_add( window_w, 5 );
 
@@ -656,18 +667,31 @@ dialog_color_setup( void )
 	gtk_widget_set_margin_bottom( vbox_w, 8 );
 	gui_notebook_page_add( csdialog.notebook_w, _("By wildcards"), vbox_w );
 
-	/* Column headers */
+	/* Column headers — use invisible entry + color button to match row widths */
 	{
 		GtkWidget *header_w = gtk_box_new( GTK_ORIENTATION_HORIZONTAL, 6 );
 		GtkWidget *lbl;
 
+		/* Name header — same width_chars as the name entries */
 		lbl = gtk_label_new( _("Name") );
-		gtk_widget_set_size_request( lbl, 120, -1 );
-		gtk_box_append( GTK_BOX(header_w), lbl );
+		gtk_label_set_xalign( GTK_LABEL(lbl), 0.0 );
+		gtk_widget_set_size_request( lbl, -1, -1 );
+		/* Match width of a 14-char entry by wrapping in a box */
+		{
+			GtkWidget *sizer = gtk_entry_new( );
+			gtk_editable_set_width_chars( GTK_EDITABLE(sizer), 14 );
+			gtk_editable_set_text( GTK_EDITABLE(sizer), _("Name") );
+			gtk_editable_set_editable( GTK_EDITABLE(sizer), FALSE );
+			gtk_widget_set_can_focus( sizer, FALSE );
+			gtk_widget_set_sensitive( sizer, FALSE );
+			gtk_box_append( GTK_BOX(header_w), sizer );
+		}
 
+		/* Color header — match width of a GtkColorDialogButton */
 		lbl = gtk_label_new( _("Color") );
 		gtk_box_append( GTK_BOX(header_w), lbl );
 
+		/* Patterns header */
 		lbl = gtk_label_new( _("Patterns (semicolon-separated)") );
 		gtk_widget_set_hexpand( lbl, TRUE );
 		gtk_label_set_xalign( GTK_LABEL(lbl), 0.0 );
@@ -829,15 +853,27 @@ dialog_color_setup( void )
 	csdialog_time_color_picker_set_access( csdialog.color_config.by_timestamp.spectrum_type == SPECTRUM_GRADIENT );
 
 
-	/* Horizontal box for OK and Cancel buttons */
-	hbox_w = gui_hbox_add( main_vbox_w, 0 );
-	gtk_box_set_homogeneous( GTK_BOX(hbox_w), TRUE );
-	gui_box_set_packing( hbox_w, EXPAND, FILL, AT_START );
-
 	/* OK and Cancel buttons */
-	gui_button_with_icon_add( hbox_w, ICON_BUTTON_OK, _("OK"), G_CALLBACK(csdialog_ok_button_cb), window_w );
-	gui_hbox_add( hbox_w, 0 ); /* spacer */
-	gui_button_with_icon_add( hbox_w, ICON_BUTTON_CANCEL, _("Cancel"), G_CALLBACK(close_cb), window_w );
+	{
+		GtkWidget *btn_box = gtk_box_new( GTK_ORIENTATION_HORIZONTAL, 8 );
+		GtkWidget *btn;
+
+		gtk_widget_set_halign( btn_box, GTK_ALIGN_END );
+		gtk_widget_set_margin_top( btn_box, 6 );
+		gtk_widget_set_margin_bottom( btn_box, 6 );
+		gtk_widget_set_margin_end( btn_box, 6 );
+
+		btn = gtk_button_new_with_label( _("Cancel") );
+		g_signal_connect( btn, "clicked", G_CALLBACK(close_cb), window_w );
+		gtk_box_append( GTK_BOX(btn_box), btn );
+
+		btn = gtk_button_new_with_label( _("OK") );
+		gtk_widget_add_css_class( btn, "suggested-action" );
+		g_signal_connect( btn, "clicked", G_CALLBACK(csdialog_ok_button_cb), window_w );
+		gtk_box_append( GTK_BOX(btn_box), btn );
+
+		gtk_box_append( GTK_BOX(main_vbox_w), btn_box );
+	}
 
 	/* Set page to current color mode */
 	gtk_notebook_set_current_page( GTK_NOTEBOOK(csdialog.notebook_w), color_mode );
