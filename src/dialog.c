@@ -36,6 +36,7 @@
 #include "dirtree.h" /* dirtree_entry_expanded( ) */
 #include "filelist.h" /* dir_contents_list_add( ) */
 #include "fsv.h"
+#include "geometry.h"
 #include "gui.h"
 #include "window.h"
 
@@ -173,8 +174,19 @@ static struct ColorSetupDialog {
 	/* Scratch copy of color configuration */
 	struct ColorConfig color_config;
 
-	/* Notebook widget (each page dedicated to a color mode) */
+	/* Top-level notebook (General / Colors) */
+	GtkWidget *top_notebook_w;
+
+	/* Color sub-notebook widget (each page dedicated to a color mode) */
 	GtkWidget *notebook_w;
+
+	/* General tab widgets */
+	struct {
+		GtkWidget *remember_check_w;
+		GtkWidget *vis_mode_dropdown_w;
+		GtkWidget *color_mode_dropdown_w;
+		GtkWidget *scale_mode_dropdown_w;
+	} general;
 
 	/* Node type configuration page */
 	/* (doesn't have any widgets we need to keep) */
@@ -747,6 +759,17 @@ csdialog_wpattern_button_cb( GtkWidget *button_w )
 }
 
 
+/* Callback for the "Remember settings" checkbox */
+static void
+csdialog_remember_toggled( GtkCheckButton *check, G_GNUC_UNUSED gpointer user_data )
+{
+	boolean sensitive = !gtk_check_button_get_active( check );
+	gtk_widget_set_sensitive( csdialog.general.vis_mode_dropdown_w, sensitive );
+	gtk_widget_set_sensitive( csdialog.general.color_mode_dropdown_w, sensitive );
+	gtk_widget_set_sensitive( csdialog.general.scale_mode_dropdown_w, sensitive );
+}
+
+
 /* Callback for the "OK" button */
 static void
 csdialog_ok_button_cb( G_GNUC_UNUSED GtkWidget *unused, GtkWidget *window_w )
@@ -754,12 +777,15 @@ csdialog_ok_button_cb( G_GNUC_UNUSED GtkWidget *unused, GtkWidget *window_w )
 	ColorMode mode;
 
 	/* Commit new color configuration, and set color mode to match
-	 * current notebook page */
+	 * current color sub-notebook page */
 	mode = (ColorMode)gtk_notebook_get_current_page( GTK_NOTEBOOK(csdialog.notebook_w) );
 	color_set_config( &csdialog.color_config, mode );
 
-        /* Update option menu to reflect current color mode */
+	/* Update toolbar to reflect current color mode */
 	window_set_color_mode( mode );
+
+	/* Save settings to config file */
+	color_write_config( );
 
 	gtk_window_destroy( GTK_WINDOW(window_w) );
 }
@@ -912,18 +938,88 @@ dialog_color_setup( void )
 	GtkWidget *table_w;
 	GtkWidget *label_w;
 	GtkWidget *optmenu_w;
-        RGBcolor *color;
-        ColorMode color_mode;
+	RGBcolor *color;
+	ColorMode color_mode;
 	int i;
 	char strbuf[256];
 
-	window_w = gui_dialog_window( _("Color Setup"), NULL );
+	window_w = gui_dialog_window( _("Preferences"), NULL );
 	gui_window_modalize( window_w, main_window_w );
 	main_vbox_w = gui_vbox_add( window_w, 5 );
-	csdialog.notebook_w = gui_notebook_add( main_vbox_w );
+
+	/* Top-level notebook: General | Colors */
+	csdialog.top_notebook_w = gui_notebook_add( main_vbox_w );
+
+	/* ======== GENERAL TAB ======== */
+	{
+		GtkWidget *gen_vbox_w = gui_vbox_add( NULL, 12 );
+		gtk_widget_set_margin_start( gen_vbox_w, 12 );
+		gtk_widget_set_margin_end( gen_vbox_w, 12 );
+		gtk_widget_set_margin_top( gen_vbox_w, 12 );
+		gtk_widget_set_margin_bottom( gen_vbox_w, 12 );
+		gui_notebook_page_add( csdialog.top_notebook_w, _("General"), gen_vbox_w );
+
+		/* "Remember settings" checkbox */
+		csdialog.general.remember_check_w = gtk_check_button_new_with_label(
+			_("Remember settings from previous session") );
+		gtk_box_append( GTK_BOX(gen_vbox_w), csdialog.general.remember_check_w );
+		g_signal_connect( csdialog.general.remember_check_w, "toggled",
+			G_CALLBACK(csdialog_remember_toggled), NULL );
+
+		/* Default visualization mode */
+		hbox_w = gui_hbox_add( gen_vbox_w, 8 );
+		gui_label_add( hbox_w, _("Default visualization:") );
+		{
+			const char * const vis_items[] = { "MapV", "TreeV", "DiscV", NULL };
+			GtkStringList *vis_list = gtk_string_list_new( vis_items );
+			csdialog.general.vis_mode_dropdown_w = gtk_drop_down_new(
+				G_LIST_MODEL(vis_list), NULL );
+			/* Default to current mode */
+			switch (globals.fsv_mode) {
+				case FSV_MAPV:  gtk_drop_down_set_selected( GTK_DROP_DOWN(csdialog.general.vis_mode_dropdown_w), 0 ); break;
+				case FSV_TREEV: gtk_drop_down_set_selected( GTK_DROP_DOWN(csdialog.general.vis_mode_dropdown_w), 1 ); break;
+				case FSV_DISCV: gtk_drop_down_set_selected( GTK_DROP_DOWN(csdialog.general.vis_mode_dropdown_w), 2 ); break;
+				default: break;
+			}
+			gtk_box_append( GTK_BOX(hbox_w), csdialog.general.vis_mode_dropdown_w );
+		}
+
+		/* Default color mode */
+		hbox_w = gui_hbox_add( gen_vbox_w, 8 );
+		gui_label_add( hbox_w, _("Default color mode:") );
+		{
+			const char * const color_items[] = { "By wildcards", "By node type", "By timestamp", NULL };
+			GtkStringList *color_list = gtk_string_list_new( color_items );
+			csdialog.general.color_mode_dropdown_w = gtk_drop_down_new(
+				G_LIST_MODEL(color_list), NULL );
+			gtk_drop_down_set_selected( GTK_DROP_DOWN(csdialog.general.color_mode_dropdown_w),
+				(guint)color_get_mode( ) );
+			gtk_box_append( GTK_BOX(hbox_w), csdialog.general.color_mode_dropdown_w );
+		}
+
+		/* Default scale mode */
+		hbox_w = gui_hbox_add( gen_vbox_w, 8 );
+		gui_label_add( hbox_w, _("Default TreeV scale:") );
+		{
+			const char * const scale_items[] = { "Logarithmic", "Representative", NULL };
+			GtkStringList *scale_list = gtk_string_list_new( scale_items );
+			csdialog.general.scale_mode_dropdown_w = gtk_drop_down_new(
+				G_LIST_MODEL(scale_list), NULL );
+			gtk_drop_down_set_selected( GTK_DROP_DOWN(csdialog.general.scale_mode_dropdown_w),
+				geometry_treev_get_scale_logarithmic( ) ? 0 : 1 );
+			gtk_box_append( GTK_BOX(hbox_w), csdialog.general.scale_mode_dropdown_w );
+		}
+	}
+
+	/* ======== COLORS TAB ======== */
+	{
+		GtkWidget *colors_vbox_w = gui_vbox_add( NULL, 5 );
+		gui_notebook_page_add( csdialog.top_notebook_w, _("Colors"), colors_vbox_w );
+		csdialog.notebook_w = gui_notebook_add( colors_vbox_w );
+	}
 
 	/* Get current color mode/configuration */
-        color_mode = color_get_mode( );
+	color_mode = color_get_mode( );
 	color_get_config( &csdialog.color_config );
 
 
