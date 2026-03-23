@@ -10,7 +10,19 @@ static GLuint
 compile_shader(GLenum type, const char *src)
 {
 	GLuint shader = glCreateShader(type);
-	glShaderSource(shader, 1, &src, NULL);
+
+	/* Prepend the correct version/precision preamble for GL vs GLES.
+	 * Shader bodies in shaders.h omit the #version line. */
+	const char *preamble;
+	if (epoxy_is_desktop_gl()) {
+		preamble = "#version 330 core\n";
+	} else {
+		preamble = "#version 300 es\n"
+		           "precision highp float;\n"
+		           "precision highp int;\n";
+	}
+	const char *sources[2] = { preamble, src };
+	glShaderSource(shader, 2, sources, NULL);
 	glCompileShader(shader);
 
 	GLint ok;
