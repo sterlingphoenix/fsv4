@@ -23,9 +23,9 @@ Claude Code did a lot of heavy lifting. I really feel more like a project manage
 **Install**
 
 1. Install dependencies:
-    - **Debian/Ubuntu:** `sudo apt-get install libgtk-4-dev libepoxy-dev libcglm-dev meson ninja-build`
-    - **Rocky/RHEL/Fedora:** `sudo dnf install gtk4-devel libepoxy-devel cglm-devel meson ninja-build`
-    - **Arch Linux:** `sudo pacman -S gtk4 libepoxy cglm meson ninja`
+    - **Debian/Ubuntu:** `sudo apt-get install libgtk-4-dev libepoxy-dev libcglm-dev libgl-dev meson ninja-build`
+    - **Rocky/RHEL/Fedora:** `sudo dnf install gtk4-devel libepoxy-devel cglm-devel mesa-libGL-devel meson ninja-build`
+    - **Arch Linux:** `sudo pacman -S gtk4 libepoxy mesa meson ninja && yay install cglm`
 2. Clone the repository
 3. Build:
     - `meson setup builddir`

@@ -278,8 +278,14 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 		}
 	}
 
-	/* Main horizontal paned widget */
-	hpaned_w = gui_hpaned_add( main_vbox_w, window_width / 5 );
+	/* Main horizontal paned widget — left pane must be wide enough for
+	 * the toolbar buttons (7 buttons + 2 separators ≈ 350px) */
+	{
+		int left_pane_w = window_width / 5;
+		if (left_pane_w < 350)
+			left_pane_w = 350;
+		hpaned_w = gui_hpaned_add( main_vbox_w, left_pane_w );
+	}
 	gtk_widget_set_vexpand( hpaned_w, TRUE );
 	gtk_widget_set_valign( hpaned_w, GTK_ALIGN_FILL );
 
@@ -287,7 +293,7 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 	left_vbox_w = gtk_box_new( GTK_ORIENTATION_VERTICAL, 0 );
 	gtk_paned_set_start_child( GTK_PANED(hpaned_w), left_vbox_w );
 	gtk_paned_set_resize_start_child( GTK_PANED(hpaned_w), FALSE );
-	gtk_paned_set_shrink_start_child( GTK_PANED(hpaned_w), TRUE );
+	gtk_paned_set_shrink_start_child( GTK_PANED(hpaned_w), FALSE );
 
 	/* === Row 1: Navigation buttons === */
 	hbox_w = gui_hbox_add( left_vbox_w, 2 );

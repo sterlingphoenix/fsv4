@@ -18,7 +18,6 @@
  */
 
 static const char lit_vert_src[] =
-"#version 330 core\n"
 "\n"
 "layout(location = 0) in vec3 a_position;\n"
 "layout(location = 1) in vec3 a_normal;\n"
@@ -41,7 +40,6 @@ static const char lit_vert_src[] =
 "}\n";
 
 static const char lit_frag_src[] =
-"#version 330 core\n"
 "\n"
 "flat in vec3 v_color;\n"
 "flat in vec3 v_normal_eye;\n"
@@ -78,7 +76,6 @@ static const char lit_frag_src[] =
  */
 
 static const char pick_vert_src[] =
-"#version 330 core\n"
 "\n"
 "layout(location = 0) in vec3 a_position;\n"
 "layout(location = 1) in vec3 a_normal;\n"
@@ -100,7 +97,6 @@ static const char pick_vert_src[] =
 "}\n";
 
 static const char pick_frag_src[] =
-"#version 330 core\n"
 "\n"
 "flat in vec4 v_pick_color;\n"
 "\n"
@@ -119,7 +115,6 @@ static const char pick_frag_src[] =
  */
 
 static const char text_vert_src[] =
-"#version 330 core\n"
 "\n"
 "layout(location = 0) in vec3 a_position;\n"
 "layout(location = 1) in vec2 a_texcoord;\n"
@@ -137,7 +132,6 @@ static const char text_vert_src[] =
 "}\n";
 
 static const char text_frag_src[] =
-"#version 330 core\n"
 "\n"
 "in vec2 v_texcoord;\n"
 "flat in vec3 v_color;\n"
@@ -161,7 +155,6 @@ static const char text_frag_src[] =
  */
 
 static const char flat_vert_src[] =
-"#version 330 core\n"
 "\n"
 "layout(location = 0) in vec3 a_position;\n"
 "\n"
@@ -172,7 +165,6 @@ static const char flat_vert_src[] =
 "}\n";
 
 static const char flat_frag_src[] =
-"#version 330 core\n"
 "\n"
 "uniform vec4 u_color;\n"
 "\n"
