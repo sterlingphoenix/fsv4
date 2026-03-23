@@ -144,6 +144,9 @@ static struct ColorSetupDialog {
 		GtkSizeGroup *name_sg;
 		GtkSizeGroup *color_sg;
 	} wpattern;
+
+	/* TRUE if the user has modified any setting since the dialog opened */
+	boolean dirty;
 } csdialog;
 
 
@@ -161,6 +164,7 @@ csdialog_node_type_color_picker_cb( RGBcolor *picked_color, RGBcolor *node_type_
 	node_type_color->r = picked_color->r;
 	node_type_color->g = picked_color->g;
 	node_type_color->b = picked_color->b;
+	csdialog.dirty = TRUE;
 }
 
 
@@ -203,6 +207,7 @@ csdialog_time_edit_cb( GtkWidget *dateedit_w )
 
 	csdialog.color_config.by_timestamp.old_time = old_time;
 	csdialog.color_config.by_timestamp.new_time = new_time;
+	csdialog.dirty = TRUE;
 }
 
 
@@ -214,6 +219,7 @@ csdialog_time_timestamp_option_menu_cb( GtkWidget *dropdown_w )
 
 	/* Drop-down indices match TimeStampType enum values */
 	csdialog.color_config.by_timestamp.timestamp_type = (TimeStampType)active;
+	csdialog.dirty = TRUE;
 }
 
 
@@ -275,6 +281,7 @@ csdialog_time_spectrum_option_menu_cb( GtkWidget *dropdown_w )
 	csdialog.color_config.by_timestamp.spectrum_type = type;
 	gui_preview_spectrum( csdialog.time.spectrum_preview_w, csdialog_time_spectrum_func );
 	csdialog_time_color_picker_set_access( type == SPECTRUM_GRADIENT );
+	csdialog.dirty = TRUE;
 }
 
 
@@ -290,6 +297,7 @@ csdialog_time_color_picker_cb( RGBcolor *picked_color, RGBcolor *end_color )
 
 	/* Redraw spectrum */
 	gui_preview_spectrum( csdialog.time.spectrum_preview_w, csdialog_time_spectrum_func );
+	csdialog.dirty = TRUE;
 }
 
 
@@ -346,6 +354,7 @@ csdialog_wpgroup_color_cb( RGBcolor *picked_color, RGBcolor *group_color )
 	group_color->r = picked_color->r;
 	group_color->g = picked_color->g;
 	group_color->b = picked_color->b;
+	csdialog.dirty = TRUE;
 }
 
 
@@ -356,6 +365,7 @@ csdialog_wp_default_color_cb( RGBcolor *picked_color, G_GNUC_UNUSED RGBcolor *un
 	csdialog.color_config.by_wpattern.default_color.r = picked_color->r;
 	csdialog.color_config.by_wpattern.default_color.g = picked_color->g;
 	csdialog.color_config.by_wpattern.default_color.b = picked_color->b;
+	csdialog.dirty = TRUE;
 }
 
 
@@ -380,6 +390,7 @@ csdialog_wpgroup_remove_cb( G_GNUC_UNUSED GtkButton *button, struct WPatternGrou
 
 	/* Rebuild the UI */
 	csdialog_wpattern_rebuild_ui( );
+	csdialog.dirty = TRUE;
 }
 
 
@@ -399,6 +410,7 @@ csdialog_wpgroup_add_cb( G_GNUC_UNUSED GtkButton *button, G_GNUC_UNUSED gpointer
 	G_LIST_APPEND(csdialog.color_config.by_wpattern.wpgroup_list, wpgroup);
 
 	csdialog_wpattern_rebuild_ui_full( TRUE );
+	csdialog.dirty = TRUE;
 }
 
 
@@ -415,6 +427,7 @@ csdialog_wpgroup_name_changed_cb( GtkEditable *editable, G_GNUC_UNUSED gpointer 
 	text = gtk_editable_get_text( editable );
 	xfree( wpgroup->name );
 	wpgroup->name = xstrdup( text );
+	csdialog.dirty = TRUE;
 }
 
 
@@ -442,6 +455,7 @@ csdialog_wpgroup_patterns_changed_cb( GtkEditable *editable, G_GNUC_UNUSED gpoin
 	/* Parse new pattern list */
 	new_list = string_to_patterns( text );
 	wpgroup->wp_list = new_list;
+	csdialog.dirty = TRUE;
 }
 
 
@@ -552,6 +566,15 @@ csdialog_remember_toggled( GtkCheckButton *check, G_GNUC_UNUSED gpointer user_da
 	gtk_widget_set_sensitive( csdialog.general.vis_mode_dropdown_w, sensitive );
 	gtk_widget_set_sensitive( csdialog.general.color_mode_dropdown_w, sensitive );
 	gtk_widget_set_sensitive( csdialog.general.scale_mode_dropdown_w, sensitive );
+	csdialog.dirty = TRUE;
+}
+
+
+/* Generic callback to mark the dialog dirty (used for dropdown changes) */
+static void
+csdialog_mark_dirty( void )
+{
+	csdialog.dirty = TRUE;
 }
 
 
@@ -629,6 +652,10 @@ static gboolean
 csdialog_close_request_cb( GtkWindow *prefs_w, G_GNUC_UNUSED gpointer data )
 {
 	GtkWidget *confirm_w, *vbox_w, *btn_box, *btn;
+
+	/* No changes — close silently (return FALSE to let GTK close it) */
+	if (!csdialog.dirty)
+		return FALSE;
 
 	confirm_w = gtk_window_new( );
 	gtk_window_set_title( GTK_WINDOW(confirm_w), _("Unsaved Changes") );
@@ -831,6 +858,14 @@ dialog_color_setup( void )
 			gtk_widget_set_sensitive( csdialog.general.color_mode_dropdown_w, FALSE );
 			gtk_widget_set_sensitive( csdialog.general.scale_mode_dropdown_w, FALSE );
 		}
+
+		/* Track dropdown changes for dirty flag */
+		g_signal_connect_swapped( csdialog.general.vis_mode_dropdown_w,
+			"notify::selected", G_CALLBACK(csdialog_mark_dirty), NULL );
+		g_signal_connect_swapped( csdialog.general.color_mode_dropdown_w,
+			"notify::selected", G_CALLBACK(csdialog_mark_dirty), NULL );
+		g_signal_connect_swapped( csdialog.general.scale_mode_dropdown_w,
+			"notify::selected", G_CALLBACK(csdialog_mark_dirty), NULL );
 	}
 
 	/* ======== COLORS TAB ======== */
@@ -1060,6 +1095,9 @@ dialog_color_setup( void )
 
 	/* Some cleanup will be required once the window goes away */
 	g_signal_connect( G_OBJECT(window_w), "destroy", G_CALLBACK(csdialog_destroy_cb), NULL );
+
+	/* Dialog just opened with no user changes yet */
+	csdialog.dirty = FALSE;
 
 	gtk_window_present( GTK_WINDOW(window_w) );
 }
