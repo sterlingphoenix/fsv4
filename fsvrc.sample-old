@@ -1,10 +1,7 @@
 # fsv configuration file
 
 [Settings]
-remember_session=false
-default_vis_mode=mapv
-default_color_mode=wildcard
-default_scale_mode=logarithmic
+mode=mapv
 
 [Color]
 mode=wildcard
@@ -29,42 +26,42 @@ newcolor=#FF0000
 [Wildcard]
 default=#FFFFA0
 
+# Executables and Scripts (Green)
 [Wildcard:1]
-name=Executables and Scripts
 color=#00FF00
 patterns=*.cmd;*.exe;*.com;*.btm;*.bat;*.sh;*.bash;*.zsh;*.fish;*.ps1;*.bin;*.app;*.msi;
 
+# Archives and Compressed Files (Red)
 [Wildcard:2]
-name=Archives and Compressed
 color=#FF0000
 patterns=*.tar;*.bz2;*.tgz;*.arj;*.taz;*.lzh;*.zip;*.z;*.Z;*.gz;*.7z;*.rar;*.xz;*.iso;*.lzma;*.pkg;*.deb;*.rpm;
 
+# Images (Magenta)
 [Wildcard:3]
-name=Images
 color=#FF00FF
 patterns=*.jpg;*.png;*.gif;*.bmp;*.xpm;*.tif;*.jpeg;*.tiff;*.webp;*.svg;*.ico;*.heic;*.raw;
 
+# Backups, Logs, and Temp Files (Blue)
 [Wildcard:4]
-name=Backups and Logs
 color=#0000FF
 patterns=*~;*.old;*.bak;*.orig;*.tmp;*.temp;*.swp;*.swo;*.log;
 
+# Text, Templates, and Configuration Files (Orange)
 [Wildcard:5]
-name=Text and Config
 color=#FFA500
 patterns=*.txt;*.md;*.csv;*.json;*.xml;*.yml;*.yaml;*.ini;*.cfg;*.conf;*.erb;*.epp;
 
+# Audio Files (Cyan)
 [Wildcard:6]
-name=Audio
 color=#00FFFF
 patterns=*.mp3;*.wav;*.flac;*.ogg;*.m4a;*.aac;*.wma;
 
+# Video Files (Yellow)
 [Wildcard:7]
-name=Video
 color=#FFFF00
 patterns=*.mp4;*.mkv;*.avi;*.mov;*.wmv;*.flv;*.webm;
 
+# Source Code (Purple)
 [Wildcard:8]
-name=Source Code
 color=#A020F0
 patterns=*.pp;*.c;*.cpp;*.h;*.hpp;*.py;*.js;*.ts;*.html;*.css;*.java;*.go;*.rs;*.rb;*.php;

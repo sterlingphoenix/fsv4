@@ -1,10 +1,10 @@
 
- * Logarithmic sizes in treev should be a toggle.
- * Color setup dialog is terrible. 
+
 
 Done
 
- * About page should render a lot faster. 
+ * Color setup dialog is terrible.
+ * About page should render a lot faster.
  * Help menu seems to be too big.
  * since MapV is the default, it should be the first option in the visualisation menu
  * Input is suspended during expand/initial animation but not collapse animation.
@@ -14,6 +14,7 @@ Done
  * Arch/Red Hat instructions
  * When closing using the window close button, there is no cleanup.
  * Tool tips
+ * Logarithmic sizes in treev should be a toggle.
 
 
 Unsolvable for now

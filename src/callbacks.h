@@ -8,11 +8,6 @@ on_file_change_root_activate           (GSimpleAction   *action,
                                         gpointer         user_data);
 
 void
-on_file_save_settings_activate         (GSimpleAction   *action,
-                                        GVariant        *parameter,
-                                        gpointer         user_data);
-
-void
 on_file_exit_activate                  (GSimpleAction   *action,
                                         GVariant        *parameter,
                                         gpointer         user_data);

@@ -110,6 +110,8 @@ void geometry_colexp_in_progress( GNode *dnode );
 boolean geometry_should_highlight( GNode *node, unsigned int face_id );
 void geometry_highlight_node( GNode *node, boolean strong );
 void geometry_free_recursive( GNode *dnode );
+void geometry_treev_set_scale_logarithmic( boolean logarithmic );
+boolean geometry_treev_get_scale_logarithmic( void );
 
 
 /* end geometry.h */

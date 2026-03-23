@@ -128,6 +128,7 @@ color_config_copy( struct ColorConfig *to, struct ColorConfig *from )
 		wpgroup = (struct WPatternGroup *)wpgroup_llink->data;
 		new_wpgroup = NEW(struct WPatternGroup);
 		*new_wpgroup = *wpgroup; /* struct assign */
+		new_wpgroup->name = wpgroup->name ? xstrdup( wpgroup->name ) : NULL;
 		G_LIST_APPEND(to->by_wpattern.wpgroup_list, new_wpgroup);
 
 		new_wpgroup->wp_list = NULL;
@@ -165,6 +166,7 @@ color_config_destroy( struct ColorConfig *ccfg )
 		}
 		g_list_free( wpgroup->wp_list );
 
+		xfree( wpgroup->name );
 		xfree( wpgroup );
 		wpgroup_llink = wpgroup_llink->next;
 	}
@@ -325,8 +327,10 @@ void
 color_set_mode( ColorMode mode )
 {
 	color_mode = mode;
-	color_assign_recursive( globals.fstree );
-	redraw( );
+	if (globals.fstree != NULL) {
+		color_assign_recursive( globals.fstree );
+		redraw( );
+	}
 }
 
 
@@ -517,6 +521,11 @@ color_read_config( void )
 		wpgroup->color = hex2rgb( str );
 		g_free( str );
 
+		/* Read optional group name */
+		str = g_key_file_get_string( kf, group, "name", NULL );
+		wpgroup->name = str ? xstrdup( str ) : NULL;
+		g_free( str );
+
 		wpgroup->wp_list = NULL;
 		patterns = g_key_file_get_string_list( kf, group, "patterns", &pat_len, NULL );
 		if (patterns != NULL) {
@@ -596,6 +605,8 @@ color_write_config( void )
 		group = g_strdup_printf( "Wildcard:%d", group_num++ );
 
 		g_key_file_set_string( kf, group, "color", rgb2hex( &wpgroup->color ) );
+		if (wpgroup->name != NULL)
+			g_key_file_set_string( kf, group, "name", wpgroup->name );
 
 		/* Build pattern array */
 		pat_count = g_list_length( wpgroup->wp_list );

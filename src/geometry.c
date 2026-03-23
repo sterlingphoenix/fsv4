@@ -1735,6 +1735,9 @@ enum {
 /* (TreeV draw messages enum removed — recursive draw only does labels now) */
 
 
+/* TRUE = logarithmic height scaling, FALSE = representative (sqrt) */
+static boolean treev_scale_logarithmic = TRUE;
+
 /* Color of interconnecting branches */
 static RGBcolor branch_color = { 0.5, 0.0, 0.0 };
 
@@ -2162,8 +2165,13 @@ treev_init_recursive( GNode *dnode )
 			TREEV_GEOM_PARAMS(node)->platform.height = TREEV_PLATFORM_HEIGHT;
 			treev_init_recursive( node );
 		}
-		double lsize = log( (double)size );
-		TREEV_GEOM_PARAMS(node)->leaf.height = lsize * lsize * TREEV_LEAF_HEIGHT_MULTIPLIER;
+		if (treev_scale_logarithmic) {
+			double lsize = log( (double)size );
+			TREEV_GEOM_PARAMS(node)->leaf.height = lsize * lsize * TREEV_LEAF_HEIGHT_MULTIPLIER;
+		}
+		else {
+			TREEV_GEOM_PARAMS(node)->leaf.height = sqrt( (double)size ) * 1.0;
+		}
 		node = node->next;
 	}
 }
@@ -4420,6 +4428,31 @@ geometry_free_recursive( G_GNUC_UNUSED GNode *dnode )
 	/* VBO batches are invalidated via geometry_highlight_node /
 	 * geometry_color_changed / colexp, so nothing to do here.
 	 * The function is kept for API compatibility with scanfs.c. */
+}
+
+
+/* Sets TreeV height scaling mode and reinitializes geometry */
+void
+geometry_treev_set_scale_logarithmic( boolean logarithmic )
+{
+	if (treev_scale_logarithmic == logarithmic)
+		return;
+
+	treev_scale_logarithmic = logarithmic;
+
+	/* If TreeV is active, reinitialize to recalculate heights */
+	if (globals.fsv_mode == FSV_TREEV) {
+		geometry_init( FSV_TREEV );
+		redraw( );
+	}
+}
+
+
+/* Returns TRUE if TreeV is using logarithmic scale */
+boolean
+geometry_treev_get_scale_logarithmic( void )
+{
+	return treev_scale_logarithmic;
 }
 
 
