@@ -494,15 +494,19 @@ Step 9.9 — Settings persistence
   [x] On startup, read settings and apply:
       - If remember_session: use last_* values
       - Otherwise: use default_* values
-  [ ] Verify: settings persist across sessions. Changing defaults
+  [x] Verify: settings persist across sessions. Changing defaults
       and restarting uses them. "Remember session" overrides defaults.
 
 Step 9.10 — Cleanup and polish
-  [ ] Remove dead code from the old menu system (unused GAction
+  [x] Remove dead code from the old menu system (unused GAction
       handlers, old color setup dialog if fully replaced)
-  [ ] Ensure all new UI elements follow GTK4 conventions (use system
+      — Audit complete: no dead code found. All callbacks, actions,
+        and dialog functions are actively referenced.
+  [x] Ensure all new UI elements follow GTK4 conventions (use system
       widgets where possible: GtkColorDialogButton, GtkDropDown, etc.)
-  [ ] Verify: clean build, no warnings, all features work
+      — All menus use GMenu/GSimpleAction, dialogs use GtkColorDialog,
+        GtkDropDown, GtkPopoverMenu. No deprecated GTK3 patterns remain.
+  [x] Verify: clean build, no warnings, all features work
 
   Checkpoint: User tests the full UI modernisation:
   - File menu works (Open Root, Preferences, About, Exit)
