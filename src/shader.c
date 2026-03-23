@@ -12,14 +12,17 @@ compile_shader(GLenum type, const char *src)
 	GLuint shader = glCreateShader(type);
 
 	/* Prepend the correct version/precision preamble for GL vs GLES.
-	 * Shader bodies in shaders.h omit the #version line. */
+	 * Shader bodies in shaders.h omit the #version line.
+	 * Check GL_VERSION directly — epoxy_is_desktop_gl() can misreport
+	 * on some EGL/Mesa configurations. */
 	const char *preamble;
-	if (epoxy_is_desktop_gl()) {
-		preamble = "#version 330 core\n";
-	} else {
+	const char *gl_version = (const char *)glGetString(GL_VERSION);
+	if (gl_version && strstr(gl_version, "OpenGL ES")) {
 		preamble = "#version 300 es\n"
 		           "precision highp float;\n"
 		           "precision highp int;\n";
+	} else {
+		preamble = "#version 330 core\n";
 	}
 	const char *sources[2] = { preamble, src };
 	glShaderSource(shader, 2, sources, NULL);
