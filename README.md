@@ -24,7 +24,7 @@ Claude Code did a lot of heavy lifting. I really feel more like a project manage
 
 1. Install dependencies:
     - **Debian/Ubuntu:** `sudo apt-get install libgtk-4-dev libepoxy-dev libcglm-dev libgl-dev meson ninja-build`
-    - **Arch Linux:** `sudo pacman -S gtk4 libepoxy mesa meson ninja && yay install cglm`
+    - **Arch Linux:** `sudo pacman -S gtk4 libepoxy mesa meson ninja && yay -S cglm`
     - **Fedora/RHEL/etc:** Fedora doesn't have a gclm package, and I couldn't find any alternate source for it. If you want to build this on Fedora, you'll need to manually install gclm. For reference, the other packages required can be installed using this: `sudo dnf install @development-tools @c-development gtk4-devel libepoxy-devel mesa-libGL-devel meson ninja-build`.
 2. Clone the repository
 3. Build:
