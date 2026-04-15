@@ -62,6 +62,8 @@ static const int default_timestamp_period = 7 * 24 * 60 * 60; /* 1 week */
 static const char default_timestamp_old_color[] = "#0000FF";
 static const char default_timestamp_new_color[] = "#FF0000";
 static const char default_wpattern_default_color[] = "#FFFFA0";
+static const char default_wpattern_executable_color[] = "#00FF00";
+static const gboolean default_wpattern_executable_overrides = TRUE;
 
 /* GKeyFile group and key names */
 static const char *tokens_color_mode[] = {
@@ -542,6 +544,15 @@ color_read_config( void )
 	color_config.by_wpattern.default_color = hex2rgb( str );
 	g_free( str );
 
+	/* Executable colour and override flag */
+	str = kf_get_string( kf, "Wildcard", "exec_color", default_wpattern_executable_color );
+	color_config.by_wpattern.executable_color = hex2rgb( str );
+	g_free( str );
+	if (g_key_file_has_key( kf, "Wildcard", "exec_overrides", NULL ))
+		color_config.by_wpattern.executable_overrides = g_key_file_get_boolean( kf, "Wildcard", "exec_overrides", NULL );
+	else
+		color_config.by_wpattern.executable_overrides = default_wpattern_executable_overrides;
+
 	g_key_file_free( kf );
 }
 
@@ -593,6 +604,8 @@ color_write_config( void )
 
 	/* ColorByWPattern configuration */
 	g_key_file_set_string( kf, "Wildcard", "default", rgb2hex( &color_config.by_wpattern.default_color ) );
+	g_key_file_set_string( kf, "Wildcard", "exec_color", rgb2hex( &color_config.by_wpattern.executable_color ) );
+	g_key_file_set_boolean( kf, "Wildcard", "exec_overrides", color_config.by_wpattern.executable_overrides );
 
 	group_num = 1;
 	wpgroup_llink = color_config.by_wpattern.wpgroup_list;

@@ -552,18 +552,16 @@ Step 10.1 — Capture executable bit in the scanner
   [x] Verify: builds cleanly, runs, no visible change.
 
 Step 10.2 — ColorConfig: executable colour and override flag
-  [ ] color.h: extend the ByWPattern struct (or ColorConfig) with:
-        RGBcolor executable_color;
-        gboolean executable_overrides;
-  [ ] color.c: add defaults. executable_color defaults to the
-      current "Executables and Scripts" wildcard group colour from
-      fsvrc.sample. executable_overrides defaults to TRUE.
-  [ ] color.c color_read_config: read "exec_color" and
-      "exec_overrides" keys from the [Wildcard] section with the
-      defaults as fallback.
-  [ ] color.c color_write_config: write both keys.
-  [ ] Verify: builds, existing configs still load, new keys are
-      written on save.
+  [x] color.h: added executable_color and executable_overrides to
+      struct ColorByWPattern.
+  [x] color.c: defaults are "#00FF00" (matches the current
+      Executables and Scripts group in fsvrc.sample) and TRUE.
+  [x] color.c color_read_config: reads "exec_color" and
+      "exec_overrides" keys from [Wildcard] with fallback defaults.
+      Uses g_key_file_has_key for the boolean so a missing key
+      gets the default instead of FALSE.
+  [x] color.c color_write_config: writes both keys.
+  [x] Verify: builds cleanly, existing configs still load.
 
 Step 10.3 — Apply exec colour in wpattern_color()
   [ ] color.c wpattern_color(): at the top of the function, if the
