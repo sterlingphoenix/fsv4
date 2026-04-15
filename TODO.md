@@ -517,6 +517,147 @@ Step 9.10 — Cleanup and polish
   - All three vis modes render and interact correctly
 
 
+PHASE 10: EXECUTABLE FILE VISUALISATION
+========================================
+
+Detect files with any executable permission bit set and surface that
+in the wildcard colour mode. An "Executable Color" and an
+"Executable overrides type" toggle are added to Preferences. On top
+of that, each visualisation mode shows executable files with a
+two-tone effect so both the type and exec-ness are visible at a
+glance.
+
+Design summary:
+- scanfs stores the file mode so NodeDesc can report executable-ness.
+- ColorConfig gains two fields: executable_color (RGB) and
+  executable_overrides (bool). Both live in the [Wildcard] section
+  of fsvrc.
+- wpattern_color() returns the exec colour when override is on and
+  the file is executable; otherwise it returns the normal pattern
+  match.
+- The geometry builders apply a two-tone effect to executable files:
+  top face uses executable_color, side faces use wpattern_color().
+  When override is on these are the same colour (looks solid), when
+  off the top face highlights the exec bit (looks two-tone).
+- Status bar shows both the type label and "(executable)" when both
+  apply, regardless of colour mode.
+
+Step 10.1 — Capture executable bit in the scanner
+  [ ] scanfs.c: uncomment the perms assignment (currently at line
+      ~100: `/*NODE_DESC(node)->perms = st.st_mode;*/`). Store only
+      the low permission bits (st.st_mode & 07777) to fit the
+      existing 10-bit perms field in NodeDesc.
+  [ ] common.h or color.h: add a helper `node_is_executable(GNode *)`
+      that returns TRUE when the node is a regular file with any of
+      S_IXUSR / S_IXGRP / S_IXOTH set. Directories do not count.
+  [ ] Verify: builds cleanly, runs, no visible change.
+
+Step 10.2 — ColorConfig: executable colour and override flag
+  [ ] color.h: extend the ByWPattern struct (or ColorConfig) with:
+        RGBcolor executable_color;
+        gboolean executable_overrides;
+  [ ] color.c: add defaults. executable_color defaults to the
+      current "Executables and Scripts" wildcard group colour from
+      fsvrc.sample. executable_overrides defaults to TRUE.
+  [ ] color.c color_read_config: read "exec_color" and
+      "exec_overrides" keys from the [Wildcard] section with the
+      defaults as fallback.
+  [ ] color.c color_write_config: write both keys.
+  [ ] Verify: builds, existing configs still load, new keys are
+      written on save.
+
+Step 10.3 — Apply exec colour in wpattern_color()
+  [ ] color.c wpattern_color(): at the top of the function, if the
+      override flag is set AND node_is_executable(node), return
+      &color_config.by_wpattern.executable_color immediately.
+  [ ] Verify: with override on, executable files show exec colour
+      regardless of filename in all three vis modes.
+
+Step 10.4 — Preferences UI: exec colour and override toggle
+  [ ] dialog.c Preferences > Colors > By Wildcard page: add two
+      widgets near the Default Color picker:
+        - "Executable Color" GtkColorDialogButton
+        - "Executable overrides type" GtkCheckButton
+  [ ] Tooltip the checkbox: "When on, executable files always show
+      the executable colour. When off, executable files show their
+      type colour with an executable-coloured highlight."
+  [ ] Wire Apply/OK to save both settings and invalidate all three
+      mode VBOs so colour changes take effect immediately.
+  [ ] Verify: toggling the checkbox and changing the colour both
+      update the 3D view without a restart.
+
+Step 10.5 — Status bar shows both type and executable
+  [ ] Find the status bar update path (likely in gui.c / window.c /
+      viewport.c where the current hovered/selected node label is
+      built).
+  [ ] When the node is executable (node_is_executable), append
+      "(executable)" or equivalent to the existing label so both
+      pieces of information are visible. This is independent of the
+      current colour mode and of the override flag.
+  [ ] Verify: hovering an executable file shows both its type and
+      the executable marker; hovering a non-executable regular
+      file is unchanged.
+
+  Checkpoint (mid-phase): User confirms the basic behaviour —
+  override toggle works, exec colour is configurable, status bar
+  shows both labels, all three modes still render correctly. The
+  two-tone effect is not yet implemented; executables show as flat
+  exec colour (override on) or flat type colour (override off).
+
+Step 10.6 — MapV two-tone: top = exec, sides = type
+  [ ] geometry.c MapV build path: when emitting a leaf node, check
+      node_is_executable(). If true, pass executable_color to the
+      top-face vertices and the normal wpattern_color() result to
+      the side-face vertices. The existing top_id/side_id split
+      (geometry.c:1424-1425) already separates these two groups.
+  [ ] When override is on, both colours are the exec colour, so the
+      block looks solid. When off, it looks two-tone.
+  [ ] Ensure the MapV VBO is marked dirty when the override flag or
+      exec colour changes (should already happen via the Step 10.4
+      invalidation, but verify).
+  [ ] Verify: in MapV, executable files show the exec colour on
+      their top face; non-executable files are unchanged.
+
+Step 10.7 — TreeV two-tone: top = exec, sides = type
+  [ ] geometry.c TreeV leaf build path: same trick. Top face of each
+      leaf uses executable_color when the node is executable; sides
+      use wpattern_color(). Branches, platforms, and directory
+      nodes are unaffected (they can't be "executable" in a
+      meaningful sense).
+  [ ] Verify: in TreeV, executable leaves show the exec colour on
+      their top face. Collapse/expand still works, frustum culling
+      still works, nothing else changes visually.
+
+Step 10.8 — DiscV split wedge
+  [ ] geometry.c DiscV leaf build path: for executable files, split
+      the wedge in half along the angular axis. One half uses the
+      type colour, the other half uses the exec colour. (Radial
+      split is an alternative — implement angular first, evaluate.)
+  [ ] Pick shader must still identify the whole sector as one node,
+      so both halves share the same node_id.
+  [ ] Verify: in DiscV, executable files render with the two-tone
+      split; selection still picks the correct node; rotation and
+      zoom work.
+
+Step 10.9 — Cleanup and polish
+  [ ] Double-check that scanfs never leaks permission bits beyond
+      what NodeDesc.perms can store.
+  [ ] Verify the override toggle, the exec colour picker, and the
+      status bar all behave correctly when switching colour modes
+      (wildcard → nodetype → time and back).
+  [ ] Confirm no GL errors, no warnings, no frame-rate regression.
+  [ ] Verify: clean build, all features work.
+
+  Checkpoint: User tests the full feature:
+  - Executable files detected correctly (try /usr/bin)
+  - Override toggle works in all three modes
+  - Two-tone effect visible on executables in MapV, TreeV, DiscV
+  - Status bar shows "(executable)" alongside the type label
+  - Changing the exec colour updates the view immediately
+  - Settings persist across restarts
+  - Non-wildcard colour modes (nodetype, time) still work normally
+
+
 NOTES
 =====
 - Each step should leave the code compilable and runnable

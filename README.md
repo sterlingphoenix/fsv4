@@ -28,7 +28,7 @@ Claude Code did a lot of heavy lifting. I really feel more like a project manage
     - **Fedora/RHEL/etc:** Fedora doesn't have a gclm package, and I couldn't find any alternate source for it. If you want to build this on Fedora, you'll need to manually install gclm. For reference, the other packages required can be installed using this: `sudo dnf install @development-tools @c-development gtk4-devel libepoxy-devel mesa-libGL-devel meson ninja-build`.
 2. Clone the repository
 3. Build:
-    - `meson setup builddir`
-    - `ninja -C builddir`
-    - `sudo ninja -C builddir install`
+    - `meson setup build`
+    - `ninja -C build`
+    - `sudo ninja -C build install`
 
