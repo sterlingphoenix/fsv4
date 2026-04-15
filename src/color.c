@@ -262,6 +262,11 @@ wpattern_color( GNode *node )
 	if (NODE_IS_DIR(node))
 		return node_type_color( node );
 
+	/* Executable override: when enabled, any file with an X bit set
+	 * takes the executable colour regardless of filename match */
+	if (color_config.by_wpattern.executable_overrides && node_is_executable( node ))
+		return &color_config.by_wpattern.executable_color;
+
 	name = NODE_DESC(node)->name;
 
 	/* Search for a match in the wildcard pattern groups */

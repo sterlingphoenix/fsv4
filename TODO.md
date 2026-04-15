@@ -564,11 +564,11 @@ Step 10.2 — ColorConfig: executable colour and override flag
   [x] Verify: builds cleanly, existing configs still load.
 
 Step 10.3 — Apply exec colour in wpattern_color()
-  [ ] color.c wpattern_color(): at the top of the function, if the
-      override flag is set AND node_is_executable(node), return
-      &color_config.by_wpattern.executable_color immediately.
-  [ ] Verify: with override on, executable files show exec colour
-      regardless of filename in all three vis modes.
+  [x] color.c wpattern_color(): after the directory-override branch,
+      if executable_overrides is on AND node_is_executable(node),
+      return &executable_color immediately, bypassing pattern match.
+  [x] Verify: with override on (default), executable files show
+      the exec colour in wildcard mode regardless of filename.
 
 Step 10.4 — Preferences UI: exec colour and override toggle
   [ ] dialog.c Preferences > Colors > By Wildcard page: add two
