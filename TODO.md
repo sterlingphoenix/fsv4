@@ -658,6 +658,153 @@ Step 10.9 — Cleanup and polish
   - Non-wildcard colour modes (nodetype, time) still work normally
 
 
+PHASE 11: TEXT-BASED TOP TOOLBAR
+=================================
+
+Replace the icon-based two-row toolbar (currently nested inside the
+left pane) with a single text-based button bar that spans the full
+width of the window at the top, and remove the menu bar. Buttons are
+grouped into four labelled clusters that wrap as units when the window
+is narrow.
+
+Final layout (left-aligned, then a flexible spacer, then right-aligned):
+
+  Navigation: [Root] [Back] [Up] [Top-Down]   [Open...]
+  Visualisation: [MapV]   [TreeV] [x] Log   [DiscV]
+  Color Mode: [Wildcard] [Node Type] [Timestamp]
+                                    [⚙ Preferences] [? About] [✕ Exit]
+
+Conventions:
+- Each cluster is a labelled GtkBox; clusters are children of a
+  GtkFlowBox so they stay together when wrapped.
+- Buttons use plain text labels (no icons). Utility cluster uses
+  glyph + word.
+- Vis and color buttons remain radio toggles (existing logic
+  preserved). The Log checkbox is a sibling of the TreeV button,
+  separated from MapV and DiscV by extra spacing so the visual
+  association is obvious.
+- Top-Down (was Bird's Eye) keeps its existing toggle behaviour and
+  its accent CSS class.
+
+Step 11.1 — Move toolbar out of the left pane
+  [ ] In window.c window_init(), build the toolbar as a child of
+      main_vbox_w directly (above the hpaned), not inside left_vbox_w.
+  [ ] The existing two-row hbox setup stays in place for now (still
+      icon-based). The only change is that the parent is the main
+      vbox so it spans the full window width.
+  [ ] Remove the "left pane minimum width = 350px for the toolbar"
+      constraint since the toolbar no longer lives there.
+  [ ] Verify: builds, runs, toolbar appears at the top of the window
+      above the hpaned, all existing buttons still work.
+
+Step 11.2 — Drop the menu bar
+  [ ] Remove build_menu_model(), the gtk_popover_menu_bar_new_from_model
+      call, and the popover-min-height workaround block.
+  [ ] Keep the underlying GActions (change-root, color-setup, about,
+      exit) and the setup_actions() registration — the new toolbar
+      buttons will trigger the same callbacks directly.
+  [ ] Verify: builds, runs, no menu bar visible, window opens with
+      just the toolbar at the top.
+
+Step 11.3 — Replace icon buttons with text-labelled buttons
+  [ ] Replace each gui_resource_image_add(...) icon inside the existing
+      toolbar buttons with a plain text label. Specifically:
+        - Nav: "Root", "Back", "Up", "Top-Down"
+        - Vis: "MapV", "TreeV", "DiscV"
+        - Color: "Wildcard", "Node Type", "Timestamp"
+        - Scale: "Log" (will become a checkbox in step 11.5)
+  [ ] Keep all signal handlers and radio grouping unchanged.
+  [ ] Keep the CSS accent class on the Top-Down toggle.
+  [ ] Update tooltips to match the new labels:
+        - Top-Down: "Toggle top-down camera"
+        - Wildcard: "Color by wildcard pattern"
+        - Node Type: "Color by node type"
+        - Timestamp: "Sorted by modification time"
+        - Log: "Logarithmic vs representative TreeV scale"
+  [ ] Verify: builds, runs, all buttons display text, all functions
+      still work.
+
+Step 11.4 — Add cluster labels and an "Open..." button
+  [ ] Wrap each cluster in a horizontal box that begins with a
+      GtkLabel ("Navigation:", "Visualisation:", "Color Mode:").
+      The utility cluster has no label.
+  [ ] Add a fifth nav button at the end of the navigation cluster:
+      "Open..." with extra left margin so it visually separates from
+      the in-tree nav buttons. It triggers the existing change-root
+      action (on_file_change_root_activate).
+  [ ] Verify: builds, runs, labels appear, Open... opens the file
+      dialog.
+
+Step 11.5 — Convert Log toggle into a checkbox next to TreeV
+  [ ] Replace the standalone Log GtkToggleButton with a GtkCheckButton
+      placed inside the visualisation cluster between TreeV and DiscV.
+  [ ] Add visible spacing (margin-start/margin-end ≈ 12-16 px) on
+      the checkbox so the layout reads as
+        [MapV] · · · [TreeV] [x] Log · · · [DiscV]
+      and the checkbox clearly belongs to TreeV.
+  [ ] Wire the "toggled" signal to the existing scale-mode handler
+      (on_scale_mode_toggled). Keep the current grey-out-when-not-TreeV
+      behaviour for clarity but leave the checkbox itself functional.
+  [ ] Verify: builds, runs, checkbox toggles TreeV scale mode,
+      grey-out follows the active vis mode.
+
+Step 11.6 — Add the right-aligned utility cluster
+  [ ] Build a fourth cluster containing three text+glyph buttons:
+        - "⚙ Preferences"  → on_color_setup_activate
+        - "? About"        → on_help_about_fsv_activate
+        - "✕ Exit"         → on_file_exit_activate
+  [ ] Connect each button's "clicked" signal directly to the existing
+      callback (no GAction indirection needed since the menu is gone,
+      but the actions can stay registered for completeness).
+  [ ] Verify: builds, runs, all three buttons trigger the right
+      dialogs / actions.
+
+Step 11.7 — Cluster wrapping and alignment
+  [ ] Place all four clusters as children of a GtkFlowBox configured
+      with:
+        - orientation = GTK_ORIENTATION_HORIZONTAL
+        - homogeneous = FALSE
+        - selection-mode = GTK_SELECTION_NONE
+        - max-children-per-line = 4
+        - row-spacing / column-spacing tuned for a tight bar
+      Each FlowBox child contains one cluster box; clusters never
+      split across rows.
+  [ ] Right-align the utility cluster: set hexpand on a spacer or
+      on the utility cluster's halign so it sits flush right while
+      the other clusters stay flush left.
+  [ ] Verify: builds, runs, the bar appears as a single row at a
+      typical window size, wraps cleanly when narrowed, clusters
+      stay grouped.
+
+Step 11.8 — Cleanup
+  [ ] Remove unused icon resources from the GResource manifest:
+      ICON_CD_ROOT, ICON_BACK, ICON_CD_UP, ICON_BIRDSEYE_VIEW,
+      ICON_VIS_MAPV, ICON_VIS_TREEV, ICON_VIS_DISCV,
+      ICON_COLOR_WILDCARD, ICON_COLOR_NODETYPE,
+      ICON_COLOR_TIMESTAMP, ICON_SCALE_LOG (only the ones the new
+      toolbar no longer references — keep any used elsewhere).
+  [ ] Delete the corresponding SVG files under src/icons/ if nothing
+      else references them.
+  [ ] Remove the GAction entries that the new toolbar no longer
+      uses indirectly (only if truly dead — verify nothing else
+      references them).
+  [ ] Remove the birdseye-toggle CSS rule if no longer needed (or
+      keep, if Top-Down still uses it).
+  [ ] Verify: clean build, no warnings, no missing-resource errors
+      at runtime.
+
+  Checkpoint: User tests the new toolbar:
+  - Single row at a typical window size
+  - Cluster labels visible
+  - Wraps cluster-by-cluster when window is narrowed
+  - Navigation: Root, Back, Up, Top-Down, Open... all work
+  - Visualisation: MapV/TreeV/DiscV switch correctly, Log checkbox
+    sits next to TreeV and toggles the scale mode
+  - Color Mode: Wildcard/Node Type/Timestamp switch correctly
+  - Utility cluster is right-aligned and Preferences/About/Exit work
+  - Menu bar is gone
+
+
 NOTES
 =====
 - Each step should leave the code compilable and runnable
