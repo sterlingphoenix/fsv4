@@ -383,11 +383,11 @@ csdialog_wp_exec_color_cb( RGBcolor *picked_color, G_GNUC_UNUSED RGBcolor *unuse
 }
 
 
-/* Callback for the "Executable overrides type" checkbox */
+/* Callback for the "Override type colour for executables" checkbox */
 static void
-csdialog_wp_exec_override_cb( GtkCheckButton *check_w, G_GNUC_UNUSED gpointer user_data )
+csdialog_wp_override_typed_exec_cb( GtkCheckButton *check_w, G_GNUC_UNUSED gpointer user_data )
 {
-	csdialog.color_config.by_wpattern.executable_overrides =
+	csdialog.color_config.by_wpattern.override_typed_exec =
 		gtk_check_button_get_active( check_w );
 	csdialog.dirty = TRUE;
 }
@@ -986,16 +986,16 @@ dialog_color_setup( void )
 		GtkWidget *exec_row_w = gtk_box_new( GTK_ORIENTATION_HORIZONTAL, 8 );
 
 		csdialog.wpattern.exec_override_check_w = gtk_check_button_new_with_label(
-			_("Executable overrides type") );
+			_("Execute bit overrides wildcard") );
 		gtk_check_button_set_active(
 			GTK_CHECK_BUTTON(csdialog.wpattern.exec_override_check_w),
-			csdialog.color_config.by_wpattern.executable_overrides );
+			csdialog.color_config.by_wpattern.override_typed_exec );
 		gtk_widget_set_tooltip_text( csdialog.wpattern.exec_override_check_w,
-			_("When on, executable files always show the executable colour. "
-			  "When off, executable files show their type colour with an "
-			  "executable-coloured highlight.") );
+			_("When on, the execute bit takes precedence to wildcard "
+			  "matches. When off, should the file match any given "
+			  "wildcard, the wildcard takes precedence.") );
 		g_signal_connect( csdialog.wpattern.exec_override_check_w, "toggled",
-			G_CALLBACK(csdialog_wp_exec_override_cb), NULL );
+			G_CALLBACK(csdialog_wp_override_typed_exec_cb), NULL );
 		gtk_box_append( GTK_BOX(exec_row_w), csdialog.wpattern.exec_override_check_w );
 
 		/* Spacer */

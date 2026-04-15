@@ -81,8 +81,8 @@ struct ColorConfig {
 	struct ColorByWPattern {
 		GList *wpgroup_list; /* elements: struct WPatternGroup */
 		RGBcolor default_color;
-		RGBcolor executable_color;
-		gboolean executable_overrides;
+		RGBcolor executable_color;	/* used for unmatched executables */
+		gboolean override_typed_exec;	/* swap match colour for exec colour when file is executable */
 	} by_wpattern;
 };
 

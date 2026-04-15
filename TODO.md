@@ -582,57 +582,53 @@ Step 10.4 — Preferences UI: exec colour and override toggle
   [x] Verify: builds cleanly. User to test interactively.
 
 Step 10.5 — Status bar shows both type and executable
-  [ ] Find the status bar update path (likely in gui.c / window.c /
-      viewport.c where the current hovered/selected node label is
-      built).
-  [ ] When the node is executable (node_is_executable), append
-      "(executable)" or equivalent to the existing label so both
-      pieces of information are visible. This is independent of the
-      current colour mode and of the override flag.
-  [ ] Verify: hovering an executable file shows both its type and
-      the executable marker; hovering a non-executable regular
-      file is unchanged.
+  [-] DEFERRED: the status bar currently shows only the file name
+      and has no type information at all. A proper overhaul of the
+      status bar (adding type, size, etc.) is planned as a separate
+      future task, at which point the executable marker will be
+      included naturally. Skipping for now.
 
   Checkpoint (mid-phase): User confirms the basic behaviour —
-  override toggle works, exec colour is configurable, status bar
-  shows both labels, all three modes still render correctly. The
-  two-tone effect is not yet implemented; executables show as flat
-  exec colour (override on) or flat type colour (override off).
+  override toggle works, exec colour is configurable, all three
+  modes still render correctly. The two-tone effect is not yet
+  implemented; executables show as flat exec colour (override on)
+  or flat type colour (override off).
 
-Step 10.6 — MapV two-tone: top = exec, sides = type
-  [ ] geometry.c MapV build path: when emitting a leaf node, check
-      node_is_executable(). If true, pass executable_color to the
-      top-face vertices and the normal wpattern_color() result to
-      the side-face vertices. The existing top_id/side_id split
-      (geometry.c:1424-1425) already separates these two groups.
-  [ ] When override is on, both colours are the exec colour, so the
-      block looks solid. When off, it looks two-tone.
-  [ ] Ensure the MapV VBO is marked dirty when the override flag or
-      exec colour changes (should already happen via the Step 10.4
-      invalidation, but verify).
-  [ ] Verify: in MapV, executable files show the exec colour on
-      their top face; non-executable files are unchanged.
+Step 10.6 — Executable visualisation (ls-style override)
+  [x] Final semantics (after two iterations):
+       - Unmatched file + executable → solid exec colour
+         (typical /usr/bin case: "other"-type files that are
+         actual Unix binaries — almost always what you want)
+       - Matched file + executable + override flag on →
+         solid exec colour (ls-style: exec trumps type)
+       - Matched file + executable + override flag off →
+         plain match colour (type trumps exec)
+       - Non-executable → unchanged
+  [x] Flag renamed to override_typed_exec, config key
+      "override_typed_exec", default ON.
+  [x] color.h: removed the brightness cache fields from the
+      previous iteration (bright_color on WPatternGroup,
+      bright_default_color on ColorByWPattern).
+  [x] color.c: removed brighten_color() and regen_bright_colors()
+      helpers. wpattern_color() now short-circuits to the exec
+      colour at the top when override is on, falling through to
+      the normal pattern search otherwise. Unmatched executables
+      still get the exec colour at the end.
+  [x] dialog.c: checkbox relabelled to "Override type colour for
+      executables" with a simpler tooltip.
+  [x] geometry.c: MapV top-face split already reverted.
+      Brightness-based two-tone is gone. All three mode builders
+      untouched — the override lives entirely in the colour path.
+  [x] Verify: clean build. User to test interactively.
 
-Step 10.7 — TreeV two-tone: top = exec, sides = type
-  [ ] geometry.c TreeV leaf build path: same trick. Top face of each
-      leaf uses executable_color when the node is executable; sides
-      use wpattern_color(). Branches, platforms, and directory
-      nodes are unaffected (they can't be "executable" in a
-      meaningful sense).
-  [ ] Verify: in TreeV, executable leaves show the exec colour on
-      their top face. Collapse/expand still works, frustum culling
-      still works, nothing else changes visually.
+Step 10.7 — TreeV (subsumed by 10.6)
+  [x] Works automatically via the new wpattern_color() path.
+      TreeV leaves already read NODE_DESC(node)->color, which now
+      carries the correct brightness-adjusted or exec colour.
 
-Step 10.8 — DiscV split wedge
-  [ ] geometry.c DiscV leaf build path: for executable files, split
-      the wedge in half along the angular axis. One half uses the
-      type colour, the other half uses the exec colour. (Radial
-      split is an alternative — implement angular first, evaluate.)
-  [ ] Pick shader must still identify the whole sector as one node,
-      so both halves share the same node_id.
-  [ ] Verify: in DiscV, executable files render with the two-tone
-      split; selection still picks the correct node; rotation and
-      zoom work.
+Step 10.8 — DiscV (subsumed by 10.6)
+  [x] Same as TreeV — DiscV geometry reads NODE_DESC(node)->color
+      and automatically gets the new behaviour.
 
 Step 10.9 — Cleanup and polish
   [ ] Double-check that scanfs never leaks permission bits beyond
