@@ -687,23 +687,23 @@ Conventions:
   its accent CSS class.
 
 Step 11.1 — Move toolbar out of the left pane
-  [ ] In window.c window_init(), build the toolbar as a child of
+  [x] In window.c window_init(), build the toolbar as a child of
       main_vbox_w directly (above the hpaned), not inside left_vbox_w.
-  [ ] The existing two-row hbox setup stays in place for now (still
+  [x] The existing two-row hbox setup stays in place for now (still
       icon-based). The only change is that the parent is the main
       vbox so it spans the full window width.
-  [ ] Remove the "left pane minimum width = 350px for the toolbar"
+  [x] Remove the "left pane minimum width = 350px for the toolbar"
       constraint since the toolbar no longer lives there.
-  [ ] Verify: builds, runs, toolbar appears at the top of the window
+  [x] Verify: builds, runs, toolbar appears at the top of the window
       above the hpaned, all existing buttons still work.
 
 Step 11.2 — Drop the menu bar
-  [ ] Remove build_menu_model(), the gtk_popover_menu_bar_new_from_model
+  [x] Remove build_menu_model(), the gtk_popover_menu_bar_new_from_model
       call, and the popover-min-height workaround block.
-  [ ] Keep the underlying GActions (change-root, color-setup, about,
+  [x] Keep the underlying GActions (change-root, color-setup, about,
       exit) and the setup_actions() registration — the new toolbar
       buttons will trigger the same callbacks directly.
-  [ ] Verify: builds, runs, no menu bar visible, window opens with
+  [x] Verify: builds, runs, no menu bar visible, window opens with
       just the toolbar at the top.
 
 Step 11.3 — Replace icon buttons with text-labelled buttons
