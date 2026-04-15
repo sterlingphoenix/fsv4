@@ -62,6 +62,8 @@ static const int default_timestamp_period = 7 * 24 * 60 * 60; /* 1 week */
 static const char default_timestamp_old_color[] = "#0000FF";
 static const char default_timestamp_new_color[] = "#FF0000";
 static const char default_wpattern_default_color[] = "#FFFFA0";
+static const char default_wpattern_executable_color[] = "#00FF00";
+static const gboolean default_wpattern_override_typed_exec = TRUE;
 
 /* GKeyFile group and key names */
 static const char *tokens_color_mode[] = {
@@ -248,17 +250,32 @@ time_color( GNode *node )
 
 
 /* Returns the appropriate color for the given node, as matched (or not
- * matched) to the current set of wildcard patterns */
+ * matched) to the current set of wildcard patterns.
+ *
+ * Executable handling (ls-style):
+ *  - Unmatched file + executable → exec colour (typical /usr/bin case)
+ *  - Matched file + executable + override on → exec colour
+ *  - Matched file + executable + override off → plain match colour
+ *  - Non-executable → match colour or default colour
+ */
 static const RGBcolor *
 wpattern_color( GNode *node )
 {
 	struct WPatternGroup *wpgroup;
 	GList *wpgroup_llink, *wp_llink;
 	const char *name, *wpattern;
+	gboolean is_exec;
 
 	/* Directory override */
 	if (NODE_IS_DIR(node))
 		return node_type_color( node );
+
+	is_exec = node_is_executable( node );
+
+	/* Typed-executable override: short-circuit before pattern matching
+	 * so an executable .jpg shows as "Executable" instead of "Image". */
+	if (is_exec && color_config.by_wpattern.override_typed_exec)
+		return &color_config.by_wpattern.executable_color;
 
 	name = NODE_DESC(node)->name;
 
@@ -272,14 +289,19 @@ wpattern_color( GNode *node )
 		while (wp_llink != NULL) {
 			wpattern = (char *)wp_llink->data;
 			if (!fnmatch( wpattern, name, FNM_FILE_NAME | FNM_PERIOD ))
-				return &wpgroup->color; /* A match! */
+				return &wpgroup->color;
 			wp_llink = wp_llink->next;
 		}
 
 		wpgroup_llink = wpgroup_llink->next;
 	}
 
-	/* No match */
+	/* No pattern matched. On Unix, "other" files (no extension) with
+	 * the executable bit set are almost always actual executables —
+	 * treat them as such. */
+	if (is_exec)
+		return &color_config.by_wpattern.executable_color;
+
 	return &color_config.by_wpattern.default_color;
 }
 
@@ -542,6 +564,16 @@ color_read_config( void )
 	color_config.by_wpattern.default_color = hex2rgb( str );
 	g_free( str );
 
+	/* Executable handling: colour for unmatched executables, plus the
+	 * typed-executable override toggle. */
+	str = kf_get_string( kf, "Wildcard", "exec_color", default_wpattern_executable_color );
+	color_config.by_wpattern.executable_color = hex2rgb( str );
+	g_free( str );
+	if (g_key_file_has_key( kf, "Wildcard", "override_typed_exec", NULL ))
+		color_config.by_wpattern.override_typed_exec = g_key_file_get_boolean( kf, "Wildcard", "override_typed_exec", NULL );
+	else
+		color_config.by_wpattern.override_typed_exec = default_wpattern_override_typed_exec;
+
 	g_key_file_free( kf );
 }
 
@@ -593,6 +625,8 @@ color_write_config( void )
 
 	/* ColorByWPattern configuration */
 	g_key_file_set_string( kf, "Wildcard", "default", rgb2hex( &color_config.by_wpattern.default_color ) );
+	g_key_file_set_string( kf, "Wildcard", "exec_color", rgb2hex( &color_config.by_wpattern.executable_color ) );
+	g_key_file_set_boolean( kf, "Wildcard", "override_typed_exec", color_config.by_wpattern.override_typed_exec );
 
 	group_num = 1;
 	wpgroup_llink = color_config.by_wpattern.wpgroup_list;

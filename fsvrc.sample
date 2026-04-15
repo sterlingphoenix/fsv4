@@ -5,6 +5,9 @@ remember_session=false
 default_vis_mode=mapv
 default_color_mode=wildcard
 default_scale_mode=logarithmic
+last_vis_mode=mapv
+last_color_mode=wildcard
+last_scale_mode=logarithmic
 
 [Color]
 mode=wildcard
@@ -23,48 +26,60 @@ unknown=#FF0000
 spectrumtype=rainbow
 timestamptype=modify
 period=604800
-oldcolor=#0000FF
-newcolor=#FF0000
+oldcolor=#BFBFBF
+newcolor=#BFBFBF
 
 [Wildcard]
-default=#FFFFA0
+default=#DEDDDA
+exec_color=#00FF00
+override_typed_exec=false
 
 [Wildcard:1]
-name=Executables and Scripts
 color=#00FF00
+name=Executables and Scripts
 patterns=*.cmd;*.exe;*.com;*.btm;*.bat;*.sh;*.bash;*.zsh;*.fish;*.ps1;*.bin;*.app;*.msi;
 
 [Wildcard:2]
-name=Archives and Compressed
 color=#FF0000
+name=Archives and Compressed
 patterns=*.tar;*.bz2;*.tgz;*.arj;*.taz;*.lzh;*.zip;*.z;*.Z;*.gz;*.7z;*.rar;*.xz;*.iso;*.lzma;*.pkg;*.deb;*.rpm;
 
 [Wildcard:3]
-name=Images
 color=#FF00FF
+name=Images
 patterns=*.jpg;*.png;*.gif;*.bmp;*.xpm;*.tif;*.jpeg;*.tiff;*.webp;*.svg;*.ico;*.heic;*.raw;
 
 [Wildcard:4]
-name=Backups and Logs
 color=#0000FF
+name=Backups and Logs
 patterns=*~;*.old;*.bak;*.orig;*.tmp;*.temp;*.swp;*.swo;*.log;
 
 [Wildcard:5]
-name=Text and Config
 color=#FFA500
+name=Plain Text and Config
 patterns=*.txt;*.md;*.csv;*.json;*.xml;*.yml;*.yaml;*.ini;*.cfg;*.conf;*.erb;*.epp;
 
 [Wildcard:6]
-name=Audio
-color=#00FFFF
-patterns=*.mp3;*.wav;*.flac;*.ogg;*.m4a;*.aac;*.wma;
+color=#DD9500
+name=Documents
+patterns=*.doc;*.docx;*.xls;*.xlsx;*.ppt;*.pptx;*.rtf;*.odt;*.tex;
 
 [Wildcard:7]
-name=Video
-color=#FFFF00
-patterns=*.mp4;*.mkv;*.avi;*.mov;*.wmv;*.flv;*.webm;
+color=#00FFFF
+name=Audio
+patterns=*.mp3;*.wav;*.flac;*.ogg;*.m4a;*.aac;*.wma;
 
 [Wildcard:8]
-name=Source Code
+color=#FFFF00
+name=Video
+patterns=*.mp4;*.mkv;*.avi;*.mov;*.wmv;*.flv;*.webm;
+
+[Wildcard:9]
 color=#A020F0
+name=Source Code
 patterns=*.pp;*.c;*.cpp;*.h;*.hpp;*.py;*.js;*.ts;*.html;*.css;*.java;*.go;*.rs;*.rb;*.php;
+
+[Wildcard:10]
+color=#B5FFA6
+name=Libraries
+patterns=*.a;*.so;
