@@ -309,6 +309,7 @@ const char *i64toa( int64 number );
 const char *abbrev_size( int64 size );
 const char *node_absname( GNode *node );
 GNode *node_named( const char *absname );
+boolean node_is_executable( GNode *node );
 const struct NodeInfo *get_node_info( GNode *node );
 const char *rgb2hex( RGBcolor *color );
 RGBcolor hex2rgb( const char *hex_color );

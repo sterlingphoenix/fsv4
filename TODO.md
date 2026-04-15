@@ -543,14 +543,13 @@ Design summary:
   apply, regardless of colour mode.
 
 Step 10.1 — Capture executable bit in the scanner
-  [ ] scanfs.c: uncomment the perms assignment (currently at line
-      ~100: `/*NODE_DESC(node)->perms = st.st_mode;*/`). Store only
-      the low permission bits (st.st_mode & 07777) to fit the
-      existing 10-bit perms field in NodeDesc.
-  [ ] common.h or color.h: add a helper `node_is_executable(GNode *)`
-      that returns TRUE when the node is a regular file with any of
-      S_IXUSR / S_IXGRP / S_IXOTH set. Directories do not count.
-  [ ] Verify: builds cleanly, runs, no visible change.
+  [x] scanfs.c: uncomment the perms assignment. Store st.st_mode &
+      0777 to fit the existing 10-bit perms field in NodeDesc
+      (setuid/setgid/sticky bits are not needed for this feature).
+  [x] common.c/h: add `node_is_executable(GNode *)` returning TRUE
+      iff the node is a regular file with any of the X bits set
+      (0111). Directories are excluded.
+  [x] Verify: builds cleanly, runs, no visible change.
 
 Step 10.2 — ColorConfig: executable colour and override flag
   [ ] color.h: extend the ByWPattern struct (or ColorConfig) with:

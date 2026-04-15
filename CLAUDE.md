@@ -15,8 +15,8 @@ These rules are **non-negotiable**. Violating any of them will result in broken,
 ### 1. The program MUST build and run after every TODO item
 
 After completing ANY item in `TODO.md`:
-1. Run `ninja -C builddir` — it must compile with zero errors.
-2. The user must run `./builddir/fsv /usr` (or another directory) — it must launch, display the 3D visualization, and be interactive. Ask the user to verify functionality.
+1. Run `ninja -C build` — it must compile with zero errors.
+2. The user must run `./build/fsv ~/src` (or another directory) — it must launch, display the 3D visualization, and be interactive. Ask the user to verify functionality.
 3. If the build fails or the program crashes, or the user reports issues, **the item is not done**. Fix it before moving on.
 
 Do NOT mark an item complete if the program does not build and run. Do NOT skip ahead to later items. Do NOT batch multiple items and test at the end.
@@ -70,22 +70,22 @@ If something breaks, fix it before proceeding.
 sudo apt-get install libgtk-3-dev libepoxy-dev libcglm-dev meson ninja-build
 
 # Configure and build
-meson setup builddir
-ninja -C builddir
+meson setup build
+ninja -C build
 
 # Run without installing
-./builddir/fsv [directory]
+./build/fsv [directory]
 
 # Build with debug enabled
-meson setup builddir -Dfsv_debug=true
-ninja -C builddir
+meson setup build -Dfsv_debug=true
+ninja -C build
 
 # Reconfigure existing build
-meson configure builddir -Dfsv_debug=true
-ninja -C builddir
+meson configure build -Dfsv_debug=true
+ninja -C build
 
 # Install
-sudo ninja -C builddir install
+sudo ninja -C build install
 ```
 
 Build system is Meson (>= 0.55). There is no test suite or linter configured.

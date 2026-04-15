@@ -368,6 +368,21 @@ node_absname( GNode *node )
 }
 
 
+/* TRUE iff node is a regular file with any executable permission bit set.
+ * Directories are excluded — their X bits mean "traversable", not
+ * "executable", and treating them as executable would paint nearly the
+ * whole tree. */
+boolean
+node_is_executable( GNode *node )
+{
+	if (node == NULL)
+		return FALSE;
+	if (NODE_DESC(node)->type != NODE_REGFILE)
+		return FALSE;
+	return (NODE_DESC(node)->perms & 0111) != 0;
+}
+
+
 /* This does roughly the opposite of node_absname( ): given an (absolute)
  * filename, return the corresponding node if it is present in the current
  * filesystem tree (NULL otherwise) */
