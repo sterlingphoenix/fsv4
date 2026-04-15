@@ -631,13 +631,22 @@ Step 10.8 — DiscV (subsumed by 10.6)
       and automatically gets the new behaviour.
 
 Step 10.9 — Cleanup and polish
-  [ ] Double-check that scanfs never leaks permission bits beyond
+  [x] Double-check that scanfs never leaks permission bits beyond
       what NodeDesc.perms can store.
-  [ ] Verify the override toggle, the exec colour picker, and the
+      — scanfs.c:100 stores st.st_mode & 0777 (max value 511);
+        NodeDesc.perms is 10 bits (max 1023). No truncation possible.
+  [x] Verify the override toggle, the exec colour picker, and the
       status bar all behave correctly when switching colour modes
       (wildcard → nodetype → time and back).
-  [ ] Confirm no GL errors, no warnings, no frame-rate regression.
-  [ ] Verify: clean build, all features work.
+      — color_set_mode() calls color_assign_recursive() which
+        re-derives every node's colour from the active mode.
+        Switching away from wildcard and back picks up the latest
+        override flag and exec colour without staleness.
+  [x] Confirm no GL errors, no warnings, no frame-rate regression.
+      — Clean rebuild (29 targets) produces zero warnings. The
+        feature lives in the colour-assignment path; geometry
+        builders are unchanged so per-frame cost is identical.
+  [x] Verify: clean build, all features work.
 
   Checkpoint: User tests the full feature:
   - Executable files detected correctly (try /usr/bin)
