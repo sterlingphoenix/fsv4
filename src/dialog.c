@@ -1248,8 +1248,19 @@ dialog_node_properties( GNode *node )
 	gui_table_attach( table_w, hbox_w, 0, 1, 2, 3 );
 
 	proptext = xstrdup( "" );
-	/* Type */
-	STRRECAT(proptext, _(node_type_names[NODE_DESC(node)->type]));
+	/* Type — wildcard group name for files (falls back to node type
+	 * if nothing matches), node type for directories. Append
+	 * "(executable)" when the file has the execute bit set. */
+	{
+		const char *type_label = NULL;
+		if (!NODE_IS_DIR(node))
+			type_label = color_wpattern_group_name( node );
+		if (type_label == NULL)
+			type_label = _(node_type_names[NODE_DESC(node)->type]);
+		STRRECAT(proptext, type_label);
+		if (node_is_executable( node ))
+			STRRECAT(proptext, _(" (executable)"));
+	}
 	STRRECAT(proptext, "\n\n");
 	/* Location */
         STRRECAT(proptext, node_info->prefix);

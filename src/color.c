@@ -306,6 +306,38 @@ wpattern_color( GNode *node )
 }
 
 
+/* Returns the display name of the wildcard group whose pattern matches
+ * the given node, or NULL if no group matches (or if node is a directory).
+ * Used by the Properties dialog to show the wildcard-based file type. */
+const char *
+color_wpattern_group_name( GNode *node )
+{
+	struct WPatternGroup *wpgroup;
+	GList *wpgroup_llink, *wp_llink;
+	const char *name, *wpattern;
+
+	if (node == NULL || NODE_IS_DIR(node))
+		return NULL;
+
+	name = NODE_DESC(node)->name;
+
+	wpgroup_llink = color_config.by_wpattern.wpgroup_list;
+	while (wpgroup_llink != NULL) {
+		wpgroup = (struct WPatternGroup *)wpgroup_llink->data;
+		wp_llink = wpgroup->wp_list;
+		while (wp_llink != NULL) {
+			wpattern = (char *)wp_llink->data;
+			if (!fnmatch( wpattern, name, FNM_FILE_NAME | FNM_PERIOD ))
+				return wpgroup->name;
+			wp_llink = wp_llink->next;
+		}
+		wpgroup_llink = wpgroup_llink->next;
+	}
+
+	return NULL;
+}
+
+
 /* (Re)assigns colors to all nodes rooted at the given node */
 void
 color_assign_recursive( GNode *dnode )

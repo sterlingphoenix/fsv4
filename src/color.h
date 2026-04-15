@@ -90,6 +90,7 @@ struct ColorConfig {
 void color_config_destroy( struct ColorConfig *ccfg );
 ColorMode color_get_mode( void );
 void color_get_config( struct ColorConfig *ccfg );
+const char *color_wpattern_group_name( GNode *node );
 void color_assign_recursive( GNode *dnode );
 void color_set_mode( ColorMode mode );
 RGBcolor color_spectrum_color( SpectrumType type, double x, void *data );
