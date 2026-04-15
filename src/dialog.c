@@ -140,6 +140,9 @@ static struct ColorSetupDialog {
 		GtkWidget *scroll_w;
 		/* Default color picker */
 		GtkWidget *default_colorpicker_w;
+		/* Executable colour picker and override checkbox */
+		GtkWidget *exec_colorpicker_w;
+		GtkWidget *exec_override_check_w;
 		/* Size groups for column alignment between header and rows */
 		GtkSizeGroup *name_sg;
 		GtkSizeGroup *color_sg;
@@ -365,6 +368,27 @@ csdialog_wp_default_color_cb( RGBcolor *picked_color, G_GNUC_UNUSED RGBcolor *un
 	csdialog.color_config.by_wpattern.default_color.r = picked_color->r;
 	csdialog.color_config.by_wpattern.default_color.g = picked_color->g;
 	csdialog.color_config.by_wpattern.default_color.b = picked_color->b;
+	csdialog.dirty = TRUE;
+}
+
+
+/* Callback for the executable colour picker */
+static void
+csdialog_wp_exec_color_cb( RGBcolor *picked_color, G_GNUC_UNUSED RGBcolor *unused )
+{
+	csdialog.color_config.by_wpattern.executable_color.r = picked_color->r;
+	csdialog.color_config.by_wpattern.executable_color.g = picked_color->g;
+	csdialog.color_config.by_wpattern.executable_color.b = picked_color->b;
+	csdialog.dirty = TRUE;
+}
+
+
+/* Callback for the "Executable overrides type" checkbox */
+static void
+csdialog_wp_exec_override_cb( GtkCheckButton *check_w, G_GNUC_UNUSED gpointer user_data )
+{
+	csdialog.color_config.by_wpattern.executable_overrides =
+		gtk_check_button_get_active( check_w );
 	csdialog.dirty = TRUE;
 }
 
@@ -955,6 +979,39 @@ dialog_color_setup( void )
 			G_CALLBACK(csdialog_wp_default_color_cb), color );
 
 		gtk_box_append( GTK_BOX(vbox_w), bottom_w );
+	}
+
+	/* Executable file handling row */
+	{
+		GtkWidget *exec_row_w = gtk_box_new( GTK_ORIENTATION_HORIZONTAL, 8 );
+
+		csdialog.wpattern.exec_override_check_w = gtk_check_button_new_with_label(
+			_("Executable overrides type") );
+		gtk_check_button_set_active(
+			GTK_CHECK_BUTTON(csdialog.wpattern.exec_override_check_w),
+			csdialog.color_config.by_wpattern.executable_overrides );
+		gtk_widget_set_tooltip_text( csdialog.wpattern.exec_override_check_w,
+			_("When on, executable files always show the executable colour. "
+			  "When off, executable files show their type colour with an "
+			  "executable-coloured highlight.") );
+		g_signal_connect( csdialog.wpattern.exec_override_check_w, "toggled",
+			G_CALLBACK(csdialog_wp_exec_override_cb), NULL );
+		gtk_box_append( GTK_BOX(exec_row_w), csdialog.wpattern.exec_override_check_w );
+
+		/* Spacer */
+		{
+			GtkWidget *spacer = gtk_box_new( GTK_ORIENTATION_HORIZONTAL, 0 );
+			gtk_widget_set_hexpand( spacer, TRUE );
+			gtk_box_append( GTK_BOX(exec_row_w), spacer );
+		}
+
+		gui_label_add( exec_row_w, _("Executable color:") );
+		color = &csdialog.color_config.by_wpattern.executable_color;
+		csdialog.wpattern.exec_colorpicker_w = gui_colorpicker_add(
+			exec_row_w, color, _("Executable Color"),
+			G_CALLBACK(csdialog_wp_exec_color_cb), color );
+
+		gtk_box_append( GTK_BOX(vbox_w), exec_row_w );
 	}
 
 

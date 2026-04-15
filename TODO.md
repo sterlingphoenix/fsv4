@@ -571,17 +571,15 @@ Step 10.3 — Apply exec colour in wpattern_color()
       the exec colour in wildcard mode regardless of filename.
 
 Step 10.4 — Preferences UI: exec colour and override toggle
-  [ ] dialog.c Preferences > Colors > By Wildcard page: add two
-      widgets near the Default Color picker:
-        - "Executable Color" GtkColorDialogButton
-        - "Executable overrides type" GtkCheckButton
-  [ ] Tooltip the checkbox: "When on, executable files always show
-      the executable colour. When off, executable files show their
-      type colour with an executable-coloured highlight."
-  [ ] Wire Apply/OK to save both settings and invalidate all three
-      mode VBOs so colour changes take effect immediately.
-  [ ] Verify: toggling the checkbox and changing the colour both
-      update the 3D view without a restart.
+  [x] dialog.c Preferences > Colors > By Wildcard page: new row
+      below the Default Color row holds the "Executable overrides
+      type" checkbox (left) and "Executable color:" picker (right).
+  [x] Checkbox has the full tooltip explaining both states.
+  [x] Save path is automatic: the existing csdialog_ok_button_cb
+      passes csdialog.color_config to color_set_config(), which
+      triggers color_assign_recursive() → geometry_queue_rebuild(),
+      so the new fields flow through without extra plumbing.
+  [x] Verify: builds cleanly. User to test interactively.
 
 Step 10.5 — Status bar shows both type and executable
   [ ] Find the status bar update path (likely in gui.c / window.c /
