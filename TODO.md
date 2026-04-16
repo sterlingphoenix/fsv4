@@ -764,19 +764,13 @@ Step 11.6 — Add the right-aligned utility cluster
       dialogs / actions.
 
 Step 11.7 — Cluster wrapping and alignment
-  [ ] Place all four clusters as children of a GtkFlowBox configured
-      with:
-        - orientation = GTK_ORIENTATION_HORIZONTAL
-        - homogeneous = FALSE
-        - selection-mode = GTK_SELECTION_NONE
-        - max-children-per-line = 4
-        - row-spacing / column-spacing tuned for a tight bar
-      Each FlowBox child contains one cluster box; clusters never
-      split across rows.
-  [ ] Right-align the utility cluster: set hexpand on a spacer or
-      on the utility cluster's halign so it sits flush right while
-      the other clusters stay flush left.
-  [ ] Verify: builds, runs, the bar appears as a single row at a
+  [x] Outer hbox: GtkFlowBox (hexpand, left-aligned) holds the three
+      wrappable clusters (nav, vis, color); the utility cluster sits
+      outside the FlowBox as a direct child of the outer hbox, so it
+      stays at the far right regardless of wrapping.
+  [x] FlowBox configured with selection-mode=NONE, homogeneous=FALSE,
+      max-children-per-line=3, row-spacing=2, column-spacing=12.
+  [x] Verify: builds, runs, the bar appears as a single row at a
       typical window size, wraps cleanly when narrowed, clusters
       stay grouped.
 
