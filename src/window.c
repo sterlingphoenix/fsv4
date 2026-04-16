@@ -317,7 +317,6 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 				g_signal_connect( log_check, "toggled",
 					G_CALLBACK(on_scale_mode_toggled), NULL );
 				gtk_box_append( GTK_BOX(vis_box), log_check );
-				G_LIST_APPEND(sw_widget_list, log_check);
 				scale_tbutton_w = log_check;
 			}
 
@@ -469,6 +468,11 @@ window_set_access( boolean enabled )
 		llink = llink->next;
 	}
 
+	/* Log checkbox: only sensitive in TreeV, regardless of access state */
+	if (scale_tbutton_w != NULL)
+		gtk_widget_set_sensitive( scale_tbutton_w,
+			enabled && globals.fsv_mode == FSV_TREEV );
+
 	/* Show busy cursor when access is disabled */
 	if (main_window_w_saved != NULL)
 		gui_cursor( main_window_w_saved, enabled ? NULL : "wait" );
@@ -487,6 +491,11 @@ on_vis_mode_toggled( GtkToggleButton *tbutton, gpointer user_data )
 
 	g_action_change_state( G_ACTION(vis_mode_action),
 		g_variant_new_string( mode_str ) );
+
+	/* Log checkbox only relevant in TreeV */
+	if (scale_tbutton_w != NULL)
+		gtk_widget_set_sensitive( scale_tbutton_w,
+			strcmp( mode_str, "treev" ) == 0 );
 }
 
 /* Toolbar color mode toggle button handler */
