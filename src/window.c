@@ -166,6 +166,14 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 			"button.birdseye-toggle:checked { "
 			"  background: alpha(@accent_color, 0.3); "
 			"  border-color: @accent_color; "
+			"} "
+			"checkbutton.toolbar-check { "
+			"  padding-left: 0; "
+			"  margin-left: -4px; "
+			"} "
+			"checkbutton.toolbar-check indicator { "
+			"  margin-left: 0; "
+			"  padding-left: 0; "
 			"}" );
 		gtk_style_context_add_provider_for_display(
 			gdk_display_get_default( ),
@@ -282,6 +290,14 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 			G_LIST_APPEND(sw_widget_list, button_w);
 			vis_mapv_tbutton_w = button_w;
 
+			button_w = gui_toggle_button_add( vis_box, _("DiscV"),
+				fsv_mode == FSV_DISCV, G_CALLBACK(on_vis_mode_toggled), "discv" );
+			gtk_widget_set_tooltip_text( button_w, _("Disc View") );
+			gtk_toggle_button_set_group( GTK_TOGGLE_BUTTON(button_w),
+				GTK_TOGGLE_BUTTON(vis_mapv_tbutton_w) );
+			G_LIST_APPEND(sw_widget_list, button_w);
+			vis_discv_tbutton_w = button_w;
+
 			button_w = gui_toggle_button_add( vis_box, _("TreeV"),
 				fsv_mode == FSV_TREEV, G_CALLBACK(on_vis_mode_toggled), "treev" );
 			gtk_widget_set_tooltip_text( button_w, _("Tree View") );
@@ -290,14 +306,13 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 			G_LIST_APPEND(sw_widget_list, button_w);
 			vis_treev_tbutton_w = button_w;
 
-			/* Scale mode checkbox (TreeV only) — sits next to TreeV */
+			/* Scale mode checkbox — sits right after TreeV */
 			{
 				GtkWidget *log_check = gtk_check_button_new_with_label( _("Log") );
 				gtk_check_button_set_active( GTK_CHECK_BUTTON(log_check), TRUE );
+				gtk_widget_add_css_class( log_check, "toolbar-check" );
 				gtk_widget_set_tooltip_text( log_check,
 					_("Logarithmic vs representative TreeV scale") );
-				gtk_widget_set_margin_start( log_check, 2 );
-				gtk_widget_set_margin_end( log_check, 8 );
 				gtk_widget_set_sensitive( log_check, fsv_mode == FSV_TREEV );
 				g_signal_connect( log_check, "toggled",
 					G_CALLBACK(on_scale_mode_toggled), NULL );
@@ -305,14 +320,6 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 				G_LIST_APPEND(sw_widget_list, log_check);
 				scale_tbutton_w = log_check;
 			}
-
-			button_w = gui_toggle_button_add( vis_box, _("DiscV"),
-				fsv_mode == FSV_DISCV, G_CALLBACK(on_vis_mode_toggled), "discv" );
-			gtk_widget_set_tooltip_text( button_w, _("Disc View") );
-			gtk_toggle_button_set_group( GTK_TOGGLE_BUTTON(button_w),
-				GTK_TOGGLE_BUTTON(vis_mapv_tbutton_w) );
-			G_LIST_APPEND(sw_widget_list, button_w);
-			vis_discv_tbutton_w = button_w;
 
 			gtk_flow_box_append( GTK_FLOW_BOX(flowbox_w), vis_box );
 		}
