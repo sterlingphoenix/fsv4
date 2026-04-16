@@ -288,7 +288,7 @@ wpattern_color( GNode *node )
 		wp_llink = wpgroup->wp_list;
 		while (wp_llink != NULL) {
 			wpattern = (char *)wp_llink->data;
-			if (!fnmatch( wpattern, name, FNM_FILE_NAME | FNM_PERIOD ))
+			if (!fnmatch( wpattern, name, FNM_FILE_NAME | FNM_PERIOD | FNM_CASEFOLD ))
 				return &wpgroup->color;
 			wp_llink = wp_llink->next;
 		}
@@ -327,7 +327,7 @@ color_wpattern_group_name( GNode *node )
 		wp_llink = wpgroup->wp_list;
 		while (wp_llink != NULL) {
 			wpattern = (char *)wp_llink->data;
-			if (!fnmatch( wpattern, name, FNM_FILE_NAME | FNM_PERIOD ))
+			if (!fnmatch( wpattern, name, FNM_FILE_NAME | FNM_PERIOD | FNM_CASEFOLD ))
 				return wpgroup->name;
 			wp_llink = wp_llink->next;
 		}

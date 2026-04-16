@@ -1,7 +1,7 @@
 # fsv configuration file
 
 [Settings]
-remember_session=false
+remember_session=true
 default_vis_mode=mapv
 default_color_mode=wildcard
 default_scale_mode=logarithmic

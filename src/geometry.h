@@ -112,6 +112,7 @@ void geometry_highlight_node( GNode *node, boolean strong );
 void geometry_free_recursive( GNode *dnode );
 void geometry_treev_set_scale_logarithmic( boolean logarithmic );
 boolean geometry_treev_get_scale_logarithmic( void );
+void geometry_toggle_labels( void );
 
 
 /* end geometry.h */
