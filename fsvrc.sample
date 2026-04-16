@@ -47,7 +47,7 @@ patterns=*.tar;*.bz2;*.tgz;*.arj;*.taz;*.lzh;*.zip;*.z;*.Z;*.gz;*.7z;*.rar;*.xz;
 [Wildcard:3]
 color=#FF00FF
 name=Images
-patterns=*.jpg;*.png;*.gif;*.bmp;*.xpm;*.tif;*.jpeg;*.tiff;*.webp;*.svg;*.ico;*.heic;*.raw;
+patterns=*.jpg;*.png;*.gif;*.bmp;*.xpm;*.tif;*.jpeg;*.tiff;*.webp;*.svg;*.ico;*.heic;*.raw;*.cr2;*.dng;
 
 [Wildcard:4]
 color=#0000FF

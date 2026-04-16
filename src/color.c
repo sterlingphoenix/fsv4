@@ -44,7 +44,7 @@
 
 
 /* Default configuration */
-static const ColorMode default_color_mode = COLOR_BY_NODETYPE;
+static const ColorMode default_color_mode = COLOR_BY_WPATTERN;
 static const char *default_nodetype_colors[NUM_NODE_TYPES] = {
 	NULL,		/* Metanode (not used) */
 	"#A0A0A0",	/* Directory */
@@ -59,11 +59,11 @@ static const char *default_nodetype_colors[NUM_NODE_TYPES] = {
 static const int default_timestamp_spectrum_type = SPECTRUM_RAINBOW;
 static const int default_timestamp_timestamp_type = TIMESTAMP_MODIFY;
 static const int default_timestamp_period = 7 * 24 * 60 * 60; /* 1 week */
-static const char default_timestamp_old_color[] = "#0000FF";
-static const char default_timestamp_new_color[] = "#FF0000";
-static const char default_wpattern_default_color[] = "#FFFFA0";
+static const char default_timestamp_old_color[] = "#BFBFBF";
+static const char default_timestamp_new_color[] = "#BFBFBF";
+static const char default_wpattern_default_color[] = "#DEDDDA";
 static const char default_wpattern_executable_color[] = "#00FF00";
-static const gboolean default_wpattern_override_typed_exec = TRUE;
+static const gboolean default_wpattern_override_typed_exec = FALSE;
 
 /* GKeyFile group and key names */
 static const char *tokens_color_mode[] = {

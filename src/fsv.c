@@ -355,7 +355,7 @@ enum {
 static FsvMode initial_fsv_mode = FSV_MAPV;
 
 /* Initial color mode and scale mode (determined from config) */
-static ColorMode initial_color_mode = COLOR_BY_NODETYPE;
+static ColorMode initial_color_mode = COLOR_BY_WPATTERN;
 static boolean initial_scale_logarithmic = TRUE;
 
 /* Root directory to scan (set during command-line parsing) */
@@ -516,6 +516,10 @@ fsv_write_config( void )
 	/* Load existing file to preserve other groups */
 	g_key_file_load_from_file( kf, path, G_KEY_FILE_KEEP_COMMENTS, NULL );
 
+	/* Ensure remember_session defaults to true in the config */
+	if (!g_key_file_has_key( kf, "Settings", "remember_session", NULL ))
+		g_key_file_set_boolean( kf, "Settings", "remember_session", TRUE );
+
 	/* Write last-session values (current runtime state) */
 	if (globals.fsv_mode != FSV_SPLASH && globals.fsv_mode != FSV_NONE)
 		g_key_file_set_string( kf, "Settings", "last_vis_mode", tokens_fsv_mode[globals.fsv_mode] );
@@ -653,7 +657,9 @@ main( int argc, char **argv )
 		gchar *cfg_path = config_file_path( );
 		if (g_key_file_load_from_file( kf, cfg_path, G_KEY_FILE_NONE, NULL )) {
 			gchar *str;
-			boolean remember = g_key_file_get_boolean( kf, "Settings", "remember_session", NULL );
+			boolean remember = g_key_file_has_key( kf, "Settings", "remember_session", NULL )
+				? g_key_file_get_boolean( kf, "Settings", "remember_session", NULL )
+				: TRUE;
 
 			if (remember) {
 				/* Use last_* values from previous session */

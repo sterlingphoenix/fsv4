@@ -766,9 +766,9 @@ dialog_color_setup( void )
 	/* ======== GENERAL TAB ======== */
 	{
 		GtkWidget *gen_vbox_w = gui_vbox_add( NULL, 12 );
-		boolean cfg_remember = FALSE;
+		boolean cfg_remember = TRUE;
 		int cfg_vis = FSV_MAPV;
-		int cfg_color = COLOR_BY_NODETYPE;
+		int cfg_color = COLOR_BY_WPATTERN;
 		int cfg_scale_log = TRUE;
 
 		/* Read current general settings from config */
