@@ -159,11 +159,11 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 	GtkWidget *search_next_button_w;
 	int window_width, window_height;
 
-	/* Custom CSS for bird's-eye toggle button */
+	/* Custom CSS for toolbar toggle buttons and checkbox */
 	{
 		GtkCssProvider *css = gtk_css_provider_new( );
 		gtk_css_provider_load_from_string( css,
-			"button.birdseye-toggle:checked { "
+			"button.toggle:checked { "
 			"  background: alpha(@accent_color, 0.3); "
 			"  border-color: @accent_color; "
 			"} "
