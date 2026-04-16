@@ -1,13 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <gresources>
   <gresource prefix="/org/fsv/icons">
-    <file>back.png</file>
-    <file>birdseye_view.png</file>
     <file>blockdev.png</file>
     <file>button_cancel.png</file>
     <file>button_ok.png</file>
-    <file>cd-root.png</file>
-    <file>cd-up.png</file>
     <file>chardev.png</file>
     <file>fifo.png</file>
     <file>folder.png</file>
@@ -25,13 +21,5 @@
     <file>socket.png</file>
     <file>symlink.png</file>
     <file>unknown.png</file>
-    <file>vis-mapv.svg</file>
-    <file>vis-treev.svg</file>
-    <file>vis-discv.svg</file>
-    <file>color-wildcard.svg</file>
-    <file>color-nodetype.svg</file>
-    <file>color-timestamp.svg</file>
-    <file>scale-log.svg</file>
-    <file>scale-rep.svg</file>
   </gresource>
 </gresources>

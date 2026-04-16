@@ -40,9 +40,17 @@
 /** Menu actions **/
 
 
-/* File -> Change root... */
+/* File -> Change root... (GAction callback) */
 void
 on_file_change_root_activate( G_GNUC_UNUSED GSimpleAction *action, G_GNUC_UNUSED GVariant *parameter, G_GNUC_UNUSED gpointer user_data )
+{
+	dialog_change_root( );
+}
+
+
+/* "Open..." toolbar button */
+void
+on_open_button_clicked( G_GNUC_UNUSED GtkButton *button, G_GNUC_UNUSED gpointer user_data )
 {
 	dialog_change_root( );
 }
@@ -126,6 +134,34 @@ void
 on_back_button_clicked( G_GNUC_UNUSED GtkButton *button, G_GNUC_UNUSED gpointer user_data )
 {
 	camera_look_at_previous( );
+}
+
+
+/* "Preferences" toolbar button */
+void
+on_preferences_button_clicked( G_GNUC_UNUSED GtkButton *button, G_GNUC_UNUSED gpointer user_data )
+{
+	dialog_color_setup( );
+}
+
+
+/* "About" toolbar button */
+void
+on_about_button_clicked( G_GNUC_UNUSED GtkButton *button, G_GNUC_UNUSED gpointer user_data )
+{
+	about( ABOUT_BEGIN );
+}
+
+
+/* "Exit" toolbar button */
+void
+on_exit_button_clicked( G_GNUC_UNUSED GtkButton *button, G_GNUC_UNUSED gpointer user_data )
+{
+	GApplication *app = g_application_get_default( );
+	if (app != NULL)
+		g_application_quit( app );
+	else
+		exit( EXIT_SUCCESS );
 }
 
 
