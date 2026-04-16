@@ -40,21 +40,6 @@
 #include "search.h"
 #include "viewport.h"
 
-/* Toolbar button icon resource paths */
-#define ICON_BACK		"/org/fsv/icons/back.png"
-#define ICON_CD_ROOT		"/org/fsv/icons/cd-root.png"
-#define ICON_CD_UP		"/org/fsv/icons/cd-up.png"
-#define ICON_BIRDSEYE_VIEW	"/org/fsv/icons/birdseye_view.png"
-#define ICON_VIS_MAPV		"/org/fsv/icons/vis-mapv.svg"
-#define ICON_VIS_TREEV		"/org/fsv/icons/vis-treev.svg"
-#define ICON_VIS_DISCV		"/org/fsv/icons/vis-discv.svg"
-#define ICON_COLOR_WILDCARD	"/org/fsv/icons/color-wildcard.svg"
-#define ICON_COLOR_NODETYPE	"/org/fsv/icons/color-nodetype.svg"
-#define ICON_COLOR_TIMESTAMP	"/org/fsv/icons/color-timestamp.svg"
-#define ICON_SCALE_LOG		"/org/fsv/icons/scale-log.svg"
-#define ICON_SCALE_REP		"/org/fsv/icons/scale-rep.svg"
-
-
 /* GAction for vis mode and color mode radio (for state changes) */
 static GSimpleAction *vis_mode_action = NULL;
 static GSimpleAction *color_mode_action = NULL;

@@ -775,20 +775,16 @@ Step 11.7 — Cluster wrapping and alignment
       stay grouped.
 
 Step 11.8 — Cleanup
-  [ ] Remove unused icon resources from the GResource manifest:
-      ICON_CD_ROOT, ICON_BACK, ICON_CD_UP, ICON_BIRDSEYE_VIEW,
-      ICON_VIS_MAPV, ICON_VIS_TREEV, ICON_VIS_DISCV,
-      ICON_COLOR_WILDCARD, ICON_COLOR_NODETYPE,
-      ICON_COLOR_TIMESTAMP, ICON_SCALE_LOG (only the ones the new
-      toolbar no longer references — keep any used elsewhere).
-  [ ] Delete the corresponding SVG files under src/icons/ if nothing
-      else references them.
-  [ ] Remove the GAction entries that the new toolbar no longer
-      uses indirectly (only if truly dead — verify nothing else
-      references them).
-  [ ] Remove the birdseye-toggle CSS rule if no longer needed (or
-      keep, if Top-Down still uses it).
-  [ ] Verify: clean build, no warnings, no missing-resource errors
+  [x] Removed all 12 ICON_* defines from window.c (no longer
+      referenced after text-button conversion).
+  [x] Removed 12 icon files from src/icons/ (4 PNG, 8 SVG) and
+      their entries from fsv.gresource.xml.
+  [x] GAction entries kept — still used by setup_actions() which
+      wires change-root, exit, color-setup, about, vis-mode, and
+      color-mode actions (some still referenced by other code paths).
+  [x] birdseye-toggle CSS class kept — still used by the Top-Down
+      toggle button.
+  [x] Verify: clean build, no warnings, no missing-resource errors
       at runtime.
 
   Checkpoint: User tests the new toolbar:
