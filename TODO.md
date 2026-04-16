@@ -707,21 +707,21 @@ Step 11.2 — Drop the menu bar
       just the toolbar at the top.
 
 Step 11.3 — Replace icon buttons with text-labelled buttons
-  [ ] Replace each gui_resource_image_add(...) icon inside the existing
+  [x] Replace each gui_resource_image_add(...) icon inside the existing
       toolbar buttons with a plain text label. Specifically:
         - Nav: "Root", "Back", "Up", "Top-Down"
         - Vis: "MapV", "TreeV", "DiscV"
         - Color: "Wildcard", "Node Type", "Timestamp"
         - Scale: "Log" (will become a checkbox in step 11.5)
-  [ ] Keep all signal handlers and radio grouping unchanged.
-  [ ] Keep the CSS accent class on the Top-Down toggle.
-  [ ] Update tooltips to match the new labels:
+  [x] Keep all signal handlers and radio grouping unchanged.
+  [x] Keep the CSS accent class on the Top-Down toggle.
+  [x] Update tooltips to match the new labels:
         - Top-Down: "Toggle top-down camera"
         - Wildcard: "Color by wildcard pattern"
         - Node Type: "Color by node type"
         - Timestamp: "Sorted by modification time"
         - Log: "Logarithmic vs representative TreeV scale"
-  [ ] Verify: builds, runs, all buttons display text, all functions
+  [x] Verify: builds, runs, all buttons display text, all functions
       still work.
 
 Step 11.4 — Add cluster labels and an "Open..." button

@@ -235,24 +235,20 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 	hbox_w = gui_hbox_add( toolbar_vbox_w, 2 );
 
 	/* "cd /" button */
-	button_w = gui_button_add( hbox_w, NULL, G_CALLBACK(on_cd_root_button_clicked), NULL );
-	gtk_image_set_pixel_size( GTK_IMAGE(gui_resource_image_add( button_w, ICON_CD_ROOT )), 32 );
-	gtk_widget_set_tooltip_text( button_w, "Reset View" );
+	button_w = gui_button_add( hbox_w, _("Root"), G_CALLBACK(on_cd_root_button_clicked), NULL );
+	gtk_widget_set_tooltip_text( button_w, _("Jump to filesystem root") );
 	G_LIST_APPEND(sw_widget_list, button_w);
 	/* "back" button */
-	button_w = gui_button_add( hbox_w, NULL, G_CALLBACK(on_back_button_clicked), NULL );
-	gtk_image_set_pixel_size( GTK_IMAGE(gui_resource_image_add( button_w, ICON_BACK )), 32 );
-	gtk_widget_set_tooltip_text( button_w, "Go Back" );
+	button_w = gui_button_add( hbox_w, _("Back"), G_CALLBACK(on_back_button_clicked), NULL );
+	gtk_widget_set_tooltip_text( button_w, _("Go back") );
 	G_LIST_APPEND(sw_widget_list, button_w);
 	/* "cd .." button */
-	button_w = gui_button_add( hbox_w, NULL, G_CALLBACK(on_cd_up_button_clicked), NULL );
-	gtk_image_set_pixel_size( GTK_IMAGE(gui_resource_image_add( button_w, ICON_CD_UP )), 32 );
-	gtk_widget_set_tooltip_text( button_w, "Directory Up" );
+	button_w = gui_button_add( hbox_w, _("Up"), G_CALLBACK(on_cd_up_button_clicked), NULL );
+	gtk_widget_set_tooltip_text( button_w, _("Go up one directory") );
 	G_LIST_APPEND(sw_widget_list, button_w);
-	/* "bird's-eye view" toggle button */
-	button_w = gui_toggle_button_add( hbox_w, NULL, FALSE, G_CALLBACK(on_birdseye_view_togglebutton_toggled), NULL );
-	gtk_image_set_pixel_size( GTK_IMAGE(gui_resource_image_add( button_w, ICON_BIRDSEYE_VIEW )), 32 );
-	gtk_widget_set_tooltip_text( button_w, "Toggle Bird's Eye/Top View" );
+	/* Top-Down view toggle (was "bird's-eye view") */
+	button_w = gui_toggle_button_add( hbox_w, _("Top-Down"), FALSE, G_CALLBACK(on_birdseye_view_togglebutton_toggled), NULL );
+	gtk_widget_set_tooltip_text( button_w, _("Toggle top-down camera") );
 	gtk_widget_add_css_class( button_w, "birdseye-toggle" );
 	G_LIST_APPEND(sw_widget_list, button_w);
 	birdseye_view_tbutton_w = button_w;
@@ -264,26 +260,23 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 	{
 		GtkWidget *vis_box = gui_hbox_add( hbox_w, 1 );
 
-		button_w = gui_toggle_button_add( vis_box, NULL,
+		button_w = gui_toggle_button_add( vis_box, _("MapV"),
 			fsv_mode == FSV_MAPV, G_CALLBACK(on_vis_mode_toggled), "mapv" );
-		gtk_image_set_pixel_size( GTK_IMAGE(gui_resource_image_add( button_w, ICON_VIS_MAPV )), 32 );
-		gtk_widget_set_tooltip_text( button_w, "Map View" );
+		gtk_widget_set_tooltip_text( button_w, _("Map View") );
 		G_LIST_APPEND(sw_widget_list, button_w);
 		vis_mapv_tbutton_w = button_w;
 
-		button_w = gui_toggle_button_add( vis_box, NULL,
+		button_w = gui_toggle_button_add( vis_box, _("TreeV"),
 			fsv_mode == FSV_TREEV, G_CALLBACK(on_vis_mode_toggled), "treev" );
-		gtk_image_set_pixel_size( GTK_IMAGE(gui_resource_image_add( button_w, ICON_VIS_TREEV )), 32 );
-		gtk_widget_set_tooltip_text( button_w, "Tree View" );
+		gtk_widget_set_tooltip_text( button_w, _("Tree View") );
 		gtk_toggle_button_set_group( GTK_TOGGLE_BUTTON(button_w),
 			GTK_TOGGLE_BUTTON(vis_mapv_tbutton_w) );
 		G_LIST_APPEND(sw_widget_list, button_w);
 		vis_treev_tbutton_w = button_w;
 
-		button_w = gui_toggle_button_add( vis_box, NULL,
+		button_w = gui_toggle_button_add( vis_box, _("DiscV"),
 			fsv_mode == FSV_DISCV, G_CALLBACK(on_vis_mode_toggled), "discv" );
-		gtk_image_set_pixel_size( GTK_IMAGE(gui_resource_image_add( button_w, ICON_VIS_DISCV )), 32 );
-		gtk_widget_set_tooltip_text( button_w, "Disc View" );
+		gtk_widget_set_tooltip_text( button_w, _("Disc View") );
 		gtk_toggle_button_set_group( GTK_TOGGLE_BUTTON(button_w),
 			GTK_TOGGLE_BUTTON(vis_mapv_tbutton_w) );
 		G_LIST_APPEND(sw_widget_list, button_w);
@@ -302,26 +295,23 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 	{
 		GtkWidget *color_box = gui_hbox_add( hbox_w, 1 );
 
-		button_w = gui_toggle_button_add( color_box, NULL,
+		button_w = gui_toggle_button_add( color_box, _("Wildcard"),
 			TRUE, G_CALLBACK(on_color_mode_toggled), "wildcards" );
-		gtk_image_set_pixel_size( GTK_IMAGE(gui_resource_image_add( button_w, ICON_COLOR_WILDCARD )), 32 );
-		gtk_widget_set_tooltip_text( button_w, "Color by Wildcard" );
+		gtk_widget_set_tooltip_text( button_w, _("Color by wildcard pattern") );
 		G_LIST_APPEND(sw_widget_list, button_w);
 		color_wildcard_tbutton_w = button_w;
 
-		button_w = gui_toggle_button_add( color_box, NULL,
+		button_w = gui_toggle_button_add( color_box, _("Node Type"),
 			FALSE, G_CALLBACK(on_color_mode_toggled), "nodetype" );
-		gtk_image_set_pixel_size( GTK_IMAGE(gui_resource_image_add( button_w, ICON_COLOR_NODETYPE )), 32 );
-		gtk_widget_set_tooltip_text( button_w, "Color by Node Type" );
+		gtk_widget_set_tooltip_text( button_w, _("Color by node type") );
 		gtk_toggle_button_set_group( GTK_TOGGLE_BUTTON(button_w),
 			GTK_TOGGLE_BUTTON(color_wildcard_tbutton_w) );
 		G_LIST_APPEND(sw_widget_list, button_w);
 		color_nodetype_tbutton_w = button_w;
 
-		button_w = gui_toggle_button_add( color_box, NULL,
+		button_w = gui_toggle_button_add( color_box, _("Timestamp"),
 			FALSE, G_CALLBACK(on_color_mode_toggled), "timestamp" );
-		gtk_image_set_pixel_size( GTK_IMAGE(gui_resource_image_add( button_w, ICON_COLOR_TIMESTAMP )), 32 );
-		gtk_widget_set_tooltip_text( button_w, "Color by Date/Time" );
+		gtk_widget_set_tooltip_text( button_w, _("Sorted by modification time") );
 		gtk_toggle_button_set_group( GTK_TOGGLE_BUTTON(button_w),
 			GTK_TOGGLE_BUTTON(color_wildcard_tbutton_w) );
 		G_LIST_APPEND(sw_widget_list, button_w);
@@ -337,10 +327,9 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 	}
 
 	/* -- Scale mode toggle (TreeV only) -- */
-	button_w = gui_toggle_button_add( hbox_w, NULL,
+	button_w = gui_toggle_button_add( hbox_w, _("Log"),
 		TRUE, G_CALLBACK(on_scale_mode_toggled), NULL );
-	gtk_image_set_pixel_size( GTK_IMAGE(gui_resource_image_add( button_w, ICON_SCALE_LOG )), 32 );
-	gtk_widget_set_tooltip_text( button_w, "Logarithmic Scale (TreeV)" );
+	gtk_widget_set_tooltip_text( button_w, _("Logarithmic vs representative TreeV scale") );
 	gtk_widget_set_sensitive( button_w, fsv_mode == FSV_TREEV );
 	G_LIST_APPEND(sw_widget_list, button_w);
 	scale_tbutton_w = button_w;
