@@ -40,9 +40,17 @@
 /** Menu actions **/
 
 
-/* File -> Change root... */
+/* File -> Change root... (GAction callback) */
 void
 on_file_change_root_activate( G_GNUC_UNUSED GSimpleAction *action, G_GNUC_UNUSED GVariant *parameter, G_GNUC_UNUSED gpointer user_data )
+{
+	dialog_change_root( );
+}
+
+
+/* "Open..." toolbar button */
+void
+on_open_button_clicked( G_GNUC_UNUSED GtkButton *button, G_GNUC_UNUSED gpointer user_data )
 {
 	dialog_change_root( );
 }

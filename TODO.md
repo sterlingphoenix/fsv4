@@ -725,14 +725,17 @@ Step 11.3 — Replace icon buttons with text-labelled buttons
       still work.
 
 Step 11.4 — Add cluster labels and an "Open..." button
-  [ ] Wrap each cluster in a horizontal box that begins with a
+  [x] Wrap each cluster in a horizontal box that begins with a
       GtkLabel ("Navigation:", "Visualisation:", "Color Mode:").
       The utility cluster has no label.
-  [ ] Add a fifth nav button at the end of the navigation cluster:
+  [x] Add a fifth nav button at the end of the navigation cluster:
       "Open..." with extra left margin so it visually separates from
-      the in-tree nav buttons. It triggers the existing change-root
-      action (on_file_change_root_activate).
-  [ ] Verify: builds, runs, labels appear, Open... opens the file
+      the in-tree nav buttons. Uses a proper GtkButton "clicked"
+      callback (on_open_button_clicked) that calls dialog_change_root().
+  [x] Merged the two toolbar rows into one single row with clusters
+      and vertical separators between them. Scale toggle moved into
+      the visualisation cluster next to TreeV.
+  [x] Verify: builds, runs, labels appear, Open... opens the file
       dialog.
 
 Step 11.5 — Convert Log toggle into a checkbox next to TreeV

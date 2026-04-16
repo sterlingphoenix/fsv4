@@ -48,5 +48,9 @@ on_cd_up_button_clicked                (GtkButton       *button,
                                         gpointer         user_data);
 
 void
+on_open_button_clicked                 (GtkButton       *button,
+                                        gpointer         user_data);
+
+void
 on_birdseye_view_togglebutton_toggled  (GtkToggleButton *togglebutton,
                                         gpointer         user_data);

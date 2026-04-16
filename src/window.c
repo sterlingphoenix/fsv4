@@ -231,34 +231,53 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 	gtk_paned_set_resize_start_child( GTK_PANED(hpaned_w), FALSE );
 	gtk_paned_set_shrink_start_child( GTK_PANED(hpaned_w), FALSE );
 
-	/* === Row 1: Navigation buttons === */
+	/* === Toolbar: one row with labelled clusters === */
 	hbox_w = gui_hbox_add( toolbar_vbox_w, 2 );
 
-	/* "cd /" button */
-	button_w = gui_button_add( hbox_w, _("Root"), G_CALLBACK(on_cd_root_button_clicked), NULL );
-	gtk_widget_set_tooltip_text( button_w, _("Jump to filesystem root") );
-	G_LIST_APPEND(sw_widget_list, button_w);
-	/* "back" button */
-	button_w = gui_button_add( hbox_w, _("Back"), G_CALLBACK(on_back_button_clicked), NULL );
-	gtk_widget_set_tooltip_text( button_w, _("Go back") );
-	G_LIST_APPEND(sw_widget_list, button_w);
-	/* "cd .." button */
-	button_w = gui_button_add( hbox_w, _("Up"), G_CALLBACK(on_cd_up_button_clicked), NULL );
-	gtk_widget_set_tooltip_text( button_w, _("Go up one directory") );
-	G_LIST_APPEND(sw_widget_list, button_w);
-	/* Top-Down view toggle (was "bird's-eye view") */
-	button_w = gui_toggle_button_add( hbox_w, _("Top-Down"), FALSE, G_CALLBACK(on_birdseye_view_togglebutton_toggled), NULL );
-	gtk_widget_set_tooltip_text( button_w, _("Toggle top-down camera") );
-	gtk_widget_add_css_class( button_w, "birdseye-toggle" );
-	G_LIST_APPEND(sw_widget_list, button_w);
-	birdseye_view_tbutton_w = button_w;
-
-	/* === Row 2: Vis mode, Color mode, Scale toggle === */
-	hbox_w = gui_hbox_add( toolbar_vbox_w, 0 );
-
-	/* -- Visualization mode radio buttons -- */
+	/* -- Navigation cluster -- */
 	{
-		GtkWidget *vis_box = gui_hbox_add( hbox_w, 1 );
+		GtkWidget *nav_box = gui_hbox_add( hbox_w, 4 );
+
+		gui_label_add( nav_box, _("Navigation") );
+
+		button_w = gui_button_add( nav_box, _("Root"), G_CALLBACK(on_cd_root_button_clicked), NULL );
+		gtk_widget_set_tooltip_text( button_w, _("Jump to filesystem root") );
+		G_LIST_APPEND(sw_widget_list, button_w);
+
+		button_w = gui_button_add( nav_box, _("Back"), G_CALLBACK(on_back_button_clicked), NULL );
+		gtk_widget_set_tooltip_text( button_w, _("Go back") );
+		G_LIST_APPEND(sw_widget_list, button_w);
+
+		button_w = gui_button_add( nav_box, _("Up"), G_CALLBACK(on_cd_up_button_clicked), NULL );
+		gtk_widget_set_tooltip_text( button_w, _("Go up one directory") );
+		G_LIST_APPEND(sw_widget_list, button_w);
+
+		button_w = gui_toggle_button_add( nav_box, _("Top-Down"), FALSE, G_CALLBACK(on_birdseye_view_togglebutton_toggled), NULL );
+		gtk_widget_set_tooltip_text( button_w, _("Toggle top-down camera") );
+		gtk_widget_add_css_class( button_w, "birdseye-toggle" );
+		G_LIST_APPEND(sw_widget_list, button_w);
+		birdseye_view_tbutton_w = button_w;
+
+		/* "Open..." — visually separated from in-tree nav buttons */
+		button_w = gui_button_add( nav_box, _("Open\u2026"), G_CALLBACK(on_open_button_clicked), NULL );
+		gtk_widget_set_margin_start( button_w, 12 );
+		gtk_widget_set_tooltip_text( button_w, _("Open a different root directory") );
+		G_LIST_APPEND(sw_widget_list, button_w);
+	}
+
+	/* Spacer between nav and vis clusters */
+	{
+		GtkWidget *spacer = gtk_separator_new( GTK_ORIENTATION_VERTICAL );
+		gtk_widget_set_margin_start( spacer, 8 );
+		gtk_widget_set_margin_end( spacer, 8 );
+		gtk_box_append( GTK_BOX(hbox_w), spacer );
+	}
+
+	/* -- Visualisation cluster -- */
+	{
+		GtkWidget *vis_box = gui_hbox_add( hbox_w, 4 );
+
+		gui_label_add( vis_box, _("Visualisation") );
 
 		button_w = gui_toggle_button_add( vis_box, _("MapV"),
 			fsv_mode == FSV_MAPV, G_CALLBACK(on_vis_mode_toggled), "mapv" );
@@ -274,6 +293,14 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 		G_LIST_APPEND(sw_widget_list, button_w);
 		vis_treev_tbutton_w = button_w;
 
+		/* Scale mode toggle (TreeV only) — sits next to TreeV */
+		button_w = gui_toggle_button_add( vis_box, _("Log"),
+			TRUE, G_CALLBACK(on_scale_mode_toggled), NULL );
+		gtk_widget_set_tooltip_text( button_w, _("Logarithmic vs representative TreeV scale") );
+		gtk_widget_set_sensitive( button_w, fsv_mode == FSV_TREEV );
+		G_LIST_APPEND(sw_widget_list, button_w);
+		scale_tbutton_w = button_w;
+
 		button_w = gui_toggle_button_add( vis_box, _("DiscV"),
 			fsv_mode == FSV_DISCV, G_CALLBACK(on_vis_mode_toggled), "discv" );
 		gtk_widget_set_tooltip_text( button_w, _("Disc View") );
@@ -283,17 +310,19 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 		vis_discv_tbutton_w = button_w;
 	}
 
-	/* Spacer between vis and color groups */
+	/* Spacer between vis and color clusters */
 	{
 		GtkWidget *spacer = gtk_separator_new( GTK_ORIENTATION_VERTICAL );
-		gtk_widget_set_margin_start( spacer, 6 );
-		gtk_widget_set_margin_end( spacer, 6 );
+		gtk_widget_set_margin_start( spacer, 8 );
+		gtk_widget_set_margin_end( spacer, 8 );
 		gtk_box_append( GTK_BOX(hbox_w), spacer );
 	}
 
-	/* -- Color mode radio buttons -- */
+	/* -- Color Mode cluster -- */
 	{
-		GtkWidget *color_box = gui_hbox_add( hbox_w, 1 );
+		GtkWidget *color_box = gui_hbox_add( hbox_w, 4 );
+
+		gui_label_add( color_box, _("Color Mode") );
 
 		button_w = gui_toggle_button_add( color_box, _("Wildcard"),
 			TRUE, G_CALLBACK(on_color_mode_toggled), "wildcards" );
@@ -317,22 +346,6 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 		G_LIST_APPEND(sw_widget_list, button_w);
 		color_timestamp_tbutton_w = button_w;
 	}
-
-	/* Spacer between color and scale groups */
-	{
-		GtkWidget *spacer = gtk_separator_new( GTK_ORIENTATION_VERTICAL );
-		gtk_widget_set_margin_start( spacer, 6 );
-		gtk_widget_set_margin_end( spacer, 6 );
-		gtk_box_append( GTK_BOX(hbox_w), spacer );
-	}
-
-	/* -- Scale mode toggle (TreeV only) -- */
-	button_w = gui_toggle_button_add( hbox_w, _("Log"),
-		TRUE, G_CALLBACK(on_scale_mode_toggled), NULL );
-	gtk_widget_set_tooltip_text( button_w, _("Logarithmic vs representative TreeV scale") );
-	gtk_widget_set_sensitive( button_w, fsv_mode == FSV_TREEV );
-	G_LIST_APPEND(sw_widget_list, button_w);
-	scale_tbutton_w = button_w;
 
 	/* Search bar */
 	hbox_w = gui_hbox_add( left_vbox_w, 2 );
