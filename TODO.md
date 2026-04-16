@@ -739,16 +739,16 @@ Step 11.4 — Add cluster labels and an "Open..." button
       dialog.
 
 Step 11.5 — Convert Log toggle into a checkbox next to TreeV
-  [ ] Replace the standalone Log GtkToggleButton with a GtkCheckButton
+  [x] Replace the standalone Log GtkToggleButton with a GtkCheckButton
       placed inside the visualisation cluster between TreeV and DiscV.
-  [ ] Add visible spacing (margin-start/margin-end ≈ 12-16 px) on
-      the checkbox so the layout reads as
-        [MapV] · · · [TreeV] [x] Log · · · [DiscV]
+  [x] Add visible spacing (margin-start 2px, margin-end 8px) on the
+      checkbox so the layout reads as
+        [MapV] [TreeV] [x] Log   [DiscV]
       and the checkbox clearly belongs to TreeV.
-  [ ] Wire the "toggled" signal to the existing scale-mode handler
-      (on_scale_mode_toggled). Keep the current grey-out-when-not-TreeV
-      behaviour for clarity but leave the checkbox itself functional.
-  [ ] Verify: builds, runs, checkbox toggles TreeV scale mode,
+  [x] Wire the "toggled" signal to on_scale_mode_toggled (updated to
+      accept GtkCheckButton). Grey-out-when-not-TreeV preserved via
+      gtk_widget_set_sensitive on the stored scale_tbutton_w.
+  [x] Verify: builds, runs, checkbox toggles TreeV scale mode,
       grey-out follows the active vis mode.
 
 Step 11.6 — Add the right-aligned utility cluster

@@ -81,7 +81,7 @@ static GList *sw_widget_list = NULL;
 /* Forward declarations for toolbar toggle callbacks */
 static void on_vis_mode_toggled( GtkToggleButton *tbutton, gpointer user_data );
 static void on_color_mode_toggled( GtkToggleButton *tbutton, gpointer user_data );
-static void on_scale_mode_toggled( GtkToggleButton *tbutton, gpointer user_data );
+static void on_scale_mode_toggled( GtkCheckButton *check, gpointer user_data );
 
 /* Handler for window close button (X).  Quit the application cleanly
  * so that idle/animation callbacks don't fire against destroyed widgets. */
@@ -293,13 +293,21 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 		G_LIST_APPEND(sw_widget_list, button_w);
 		vis_treev_tbutton_w = button_w;
 
-		/* Scale mode toggle (TreeV only) — sits next to TreeV */
-		button_w = gui_toggle_button_add( vis_box, _("Log"),
-			TRUE, G_CALLBACK(on_scale_mode_toggled), NULL );
-		gtk_widget_set_tooltip_text( button_w, _("Logarithmic vs representative TreeV scale") );
-		gtk_widget_set_sensitive( button_w, fsv_mode == FSV_TREEV );
-		G_LIST_APPEND(sw_widget_list, button_w);
-		scale_tbutton_w = button_w;
+		/* Scale mode checkbox (TreeV only) — sits next to TreeV */
+		{
+			GtkWidget *log_check = gtk_check_button_new_with_label( _("Log") );
+			gtk_check_button_set_active( GTK_CHECK_BUTTON(log_check), TRUE );
+			gtk_widget_set_tooltip_text( log_check,
+				_("Logarithmic vs representative TreeV scale") );
+			gtk_widget_set_margin_start( log_check, 2 );
+			gtk_widget_set_margin_end( log_check, 8 );
+			gtk_widget_set_sensitive( log_check, fsv_mode == FSV_TREEV );
+			g_signal_connect( log_check, "toggled",
+				G_CALLBACK(on_scale_mode_toggled), NULL );
+			gtk_box_append( GTK_BOX(vis_box), log_check );
+			G_LIST_APPEND(sw_widget_list, log_check);
+			scale_tbutton_w = log_check;
+		}
 
 		button_w = gui_toggle_button_add( vis_box, _("DiscV"),
 			fsv_mode == FSV_DISCV, G_CALLBACK(on_vis_mode_toggled), "discv" );
@@ -477,9 +485,9 @@ on_color_mode_toggled( GtkToggleButton *tbutton, gpointer user_data )
 
 /* Toolbar scale mode toggle button handler */
 static void
-on_scale_mode_toggled( GtkToggleButton *tbutton, G_GNUC_UNUSED gpointer user_data )
+on_scale_mode_toggled( GtkCheckButton *check, G_GNUC_UNUSED gpointer user_data )
 {
-	boolean logarithmic = gtk_toggle_button_get_active( tbutton );
+	boolean logarithmic = gtk_check_button_get_active( check );
 	geometry_treev_set_scale_logarithmic( logarithmic );
 }
 
