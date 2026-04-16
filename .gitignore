@@ -1,8 +1,11 @@
 # Meson build directory
 builddir/
+build/
 
 # Claude
 .claude
 CLAUDE.md
-build/
+
+# deb package generator
+create-deb.sh
 DIST/
