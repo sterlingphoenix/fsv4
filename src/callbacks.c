@@ -137,6 +137,34 @@ on_back_button_clicked( G_GNUC_UNUSED GtkButton *button, G_GNUC_UNUSED gpointer 
 }
 
 
+/* "Preferences" toolbar button */
+void
+on_preferences_button_clicked( G_GNUC_UNUSED GtkButton *button, G_GNUC_UNUSED gpointer user_data )
+{
+	dialog_color_setup( );
+}
+
+
+/* "About" toolbar button */
+void
+on_about_button_clicked( G_GNUC_UNUSED GtkButton *button, G_GNUC_UNUSED gpointer user_data )
+{
+	about( ABOUT_BEGIN );
+}
+
+
+/* "Exit" toolbar button */
+void
+on_exit_button_clicked( G_GNUC_UNUSED GtkButton *button, G_GNUC_UNUSED gpointer user_data )
+{
+	GApplication *app = g_application_get_default( );
+	if (app != NULL)
+		g_application_quit( app );
+	else
+		exit( EXIT_SUCCESS );
+}
+
+
 /* "cd /" button */
 void
 on_cd_root_button_clicked( G_GNUC_UNUSED GtkButton *button, G_GNUC_UNUSED gpointer user_data )

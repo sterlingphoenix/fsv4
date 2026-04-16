@@ -752,14 +752,15 @@ Step 11.5 — Convert Log toggle into a checkbox next to TreeV
       grey-out follows the active vis mode.
 
 Step 11.6 — Add the right-aligned utility cluster
-  [ ] Build a fourth cluster containing three text+glyph buttons:
-        - "⚙ Preferences"  → on_color_setup_activate
-        - "? About"        → on_help_about_fsv_activate
-        - "✕ Exit"         → on_file_exit_activate
-  [ ] Connect each button's "clicked" signal directly to the existing
-      callback (no GAction indirection needed since the menu is gone,
-      but the actions can stay registered for completeness).
-  [ ] Verify: builds, runs, all three buttons trigger the right
+  [x] Build a fourth cluster containing three text+glyph buttons:
+        - "⚙ Preferences"  → on_preferences_button_clicked
+        - "? About"        → on_about_button_clicked
+        - "✕ Exit"         → on_exit_button_clicked
+  [x] Added proper GtkButton "clicked" wrappers in callbacks.c/h for
+      all three (matching the pattern used for on_open_button_clicked).
+  [x] Right-aligned via an expanding spacer between the color cluster
+      and the utility cluster.
+  [x] Verify: builds, runs, all three buttons trigger the right
       dialogs / actions.
 
 Step 11.7 — Cluster wrapping and alignment

@@ -355,6 +355,27 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 		color_timestamp_tbutton_w = button_w;
 	}
 
+	/* -- Expanding spacer pushes the utility cluster to the right -- */
+	{
+		GtkWidget *spacer = gtk_box_new( GTK_ORIENTATION_HORIZONTAL, 0 );
+		gtk_widget_set_hexpand( spacer, TRUE );
+		gtk_box_append( GTK_BOX(hbox_w), spacer );
+	}
+
+	/* -- Utility cluster (right-aligned, no label) -- */
+	{
+		GtkWidget *util_box = gui_hbox_add( hbox_w, 4 );
+
+		button_w = gui_button_add( util_box, _("Preferences"), G_CALLBACK(on_preferences_button_clicked), NULL );
+		gtk_widget_set_tooltip_text( button_w, _("Open preferences") );
+
+		button_w = gui_button_add( util_box, _("Help"), G_CALLBACK(on_about_button_clicked), NULL );
+		gtk_widget_set_tooltip_text( button_w, _("About fsv") );
+
+		button_w = gui_button_add( util_box, _("Exit"), G_CALLBACK(on_exit_button_clicked), NULL );
+		gtk_widget_set_tooltip_text( button_w, _("Exit fsv") );
+	}
+
 	/* Search bar */
 	hbox_w = gui_hbox_add( left_vbox_w, 2 );
 	gui_box_set_packing( hbox_w, EXPAND, FILL, AT_START );
