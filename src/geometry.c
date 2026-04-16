@@ -69,6 +69,9 @@ static int frustum_viewport_h; /* viewport height in pixels */
  * Below this threshold, labels are too small to read. */
 #define LABEL_SIZE_THRESHOLD 6.0
 
+/* Global toggle for label visibility (toggled by 't' hotkey) */
+static boolean labels_visible = TRUE;
+
 
 /* Extracts frustum planes from the current GL matrices.
  * Call once per frame before any recursive draw. */
@@ -705,7 +708,7 @@ discv_draw( boolean high_detail )
 		}
 	}
 
-	if (high_detail) {
+	if (high_detail && labels_visible) {
 		glLineWidth( 3.0 );
 
 		/* Node name labels */
@@ -1700,10 +1703,12 @@ mapv_draw( boolean high_detail )
 		}
 
 		/* Node name labels */
-		text_pre( );
-		text_set_color( 0.0, 0.0, 0.0 );
-		mapv_draw_recursive( globals.fstree, 0.0 );
-		text_post( );
+		if (labels_visible) {
+			text_pre( );
+			text_set_color( 0.0, 0.0, 0.0 );
+			mapv_draw_recursive( globals.fstree, 0.0 );
+			text_post( );
+		}
 
 		/* Node cursor */
 		mapv_draw_cursor( CURSOR_POS(camera->pan_part) );
@@ -3759,9 +3764,11 @@ treev_draw( boolean high_detail )
 		}
 
 		/* Node name labels */
-		text_pre( );
-		treev_draw_recursive( globals.fstree, NIL, treev_core_radius, 0.0 );
-		text_post( );
+		if (labels_visible) {
+			text_pre( );
+			treev_draw_recursive( globals.fstree, NIL, treev_core_radius, 0.0 );
+			text_post( );
+		}
 
 		/* Node cursor */
 		treev_draw_cursor( CURSOR_POS(camera->pan_part) );
@@ -4453,6 +4460,14 @@ boolean
 geometry_treev_get_scale_logarithmic( void )
 {
 	return treev_scale_logarithmic;
+}
+
+
+void
+geometry_toggle_labels( void )
+{
+	labels_visible = !labels_visible;
+	redraw( );
 }
 
 

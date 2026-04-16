@@ -367,6 +367,9 @@ viewport_key_pressed_cb( G_GNUC_UNUSED GtkEventControllerKey *controller,
 		pan_key_up = TRUE;    break;
 		case GDK_KEY_Down:  case GDK_KEY_s: case GDK_KEY_S:
 		pan_key_down = TRUE;  break;
+		case GDK_KEY_t: case GDK_KEY_T:
+		geometry_toggle_labels( );
+		return TRUE;
 		default:
 		return FALSE;
 	}
