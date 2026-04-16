@@ -4,3 +4,5 @@ builddir/
 # Claude
 .claude
 CLAUDE.md
+build/
+DIST/
