@@ -9,3 +9,4 @@ CLAUDE.md
 # deb package generator
 create-deb.sh
 DIST/
+DEB/
