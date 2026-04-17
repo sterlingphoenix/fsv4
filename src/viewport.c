@@ -31,6 +31,7 @@
 #include "about.h"
 #include "camera.h"
 #include "color.h"
+#include "fsv.h"
 #include "dialog.h" /* context_menu( ) */
 #include "filelist.h" /* filelist_show_entry( ) */
 #include "geometry.h"
@@ -376,6 +377,15 @@ viewport_key_pressed_cb( G_GNUC_UNUSED GtkEventControllerKey *controller,
 		return TRUE;
 		case GDK_KEY_l: case GDK_KEY_L:
 		window_toggle_log_scale( );
+		return TRUE;
+		case GDK_KEY_1:
+		fsv_set_mode( FSV_MAPV );
+		return TRUE;
+		case GDK_KEY_2:
+		fsv_set_mode( FSV_DISCV );
+		return TRUE;
+		case GDK_KEY_3:
+		fsv_set_mode( FSV_TREEV );
 		return TRUE;
 		case GDK_KEY_r: case GDK_KEY_R:
 		if (!camera_moving( ) && root_dnode != NULL)
