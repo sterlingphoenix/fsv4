@@ -43,6 +43,7 @@ void window_set_vis_mode( FsvMode mode );
 void window_set_color_mode( ColorMode mode );
 #endif
 void window_birdseye_view_off( void);
+void window_toggle_log_scale( void );
 void window_statusbar( StatusBarID sb_id, const char *message );
 
 

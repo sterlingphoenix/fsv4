@@ -1702,16 +1702,16 @@ mapv_draw( boolean high_detail )
 			glEnable( GL_CULL_FACE );
 		}
 
-		/* Node name labels */
 		if (labels_visible) {
+			/* Node name labels */
 			text_pre( );
 			text_set_color( 0.0, 0.0, 0.0 );
 			mapv_draw_recursive( globals.fstree, 0.0 );
 			text_post( );
-		}
 
-		/* Node cursor */
-		mapv_draw_cursor( CURSOR_POS(camera->pan_part) );
+			/* Node cursor */
+			mapv_draw_cursor( CURSOR_POS(camera->pan_part) );
+		}
 	}
 }
 
@@ -3763,15 +3763,15 @@ treev_draw( boolean high_detail )
 			glEnable( GL_CULL_FACE );
 		}
 
-		/* Node name labels */
 		if (labels_visible) {
+			/* Node name labels */
 			text_pre( );
 			treev_draw_recursive( globals.fstree, NIL, treev_core_radius, 0.0 );
 			text_post( );
-		}
 
-		/* Node cursor */
-		treev_draw_cursor( CURSOR_POS(camera->pan_part) );
+			/* Node cursor */
+			treev_draw_cursor( CURSOR_POS(camera->pan_part) );
+		}
 	}
 }
 
@@ -4220,8 +4220,9 @@ geometry_draw( boolean high_detail )
 		SWITCH_FAIL
 	}
 
-	/* Draw highlight overlay if active */
-	geometry_draw_highlight( );
+	/* Draw highlight overlay if active (hidden when labels are off) */
+	if (labels_visible)
+		geometry_draw_highlight( );
 }
 
 

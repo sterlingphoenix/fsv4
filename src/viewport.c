@@ -30,6 +30,8 @@
 
 #include "about.h"
 #include "camera.h"
+#include "color.h"
+#include "fsv.h"
 #include "dialog.h" /* context_menu( ) */
 #include "filelist.h" /* filelist_show_entry( ) */
 #include "geometry.h"
@@ -353,10 +355,15 @@ viewport_scroll_cb( G_GNUC_UNUSED GtkEventControllerScroll *controller,
 static gboolean
 viewport_key_pressed_cb( G_GNUC_UNUSED GtkEventControllerKey *controller,
                          guint keyval, G_GNUC_UNUSED guint keycode,
-                         G_GNUC_UNUSED GdkModifierType state, G_GNUC_UNUSED gpointer user_data )
+                         GdkModifierType state, G_GNUC_UNUSED gpointer user_data )
 {
 	if (globals.fsv_mode == FSV_SPLASH)
 		return FALSE;
+
+	if ((state & GDK_CONTROL_MASK) && (keyval == GDK_KEY_o || keyval == GDK_KEY_O)) {
+		dialog_change_root( );
+		return TRUE;
+	}
 
 	switch (keyval) {
 		case GDK_KEY_Left:  case GDK_KEY_a: case GDK_KEY_A:
@@ -369,6 +376,32 @@ viewport_key_pressed_cb( G_GNUC_UNUSED GtkEventControllerKey *controller,
 		pan_key_down = TRUE;  break;
 		case GDK_KEY_t: case GDK_KEY_T:
 		geometry_toggle_labels( );
+		return TRUE;
+		case GDK_KEY_b: case GDK_KEY_B:
+		ogl_cycle_background( );
+		return TRUE;
+		case GDK_KEY_l: case GDK_KEY_L:
+		window_toggle_log_scale( );
+		return TRUE;
+		case GDK_KEY_1:
+		fsv_set_mode( FSV_MAPV );
+		return TRUE;
+		case GDK_KEY_2:
+		fsv_set_mode( FSV_DISCV );
+		return TRUE;
+		case GDK_KEY_3:
+		fsv_set_mode( FSV_TREEV );
+		return TRUE;
+		case GDK_KEY_r: case GDK_KEY_R:
+		if (!camera_moving( ) && root_dnode != NULL)
+			camera_look_at( root_dnode );
+		return TRUE;
+		case GDK_KEY_c: case GDK_KEY_C:
+		{
+			ColorMode next = (color_get_mode( ) + 1) % COLOR_NONE;
+			color_set_mode( next );
+			window_set_color_mode( next );
+		}
 		return TRUE;
 		default:
 		return FALSE;
