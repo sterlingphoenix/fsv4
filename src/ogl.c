@@ -57,6 +57,16 @@ static int pick_fb_width = 0;
 static int pick_fb_height = 0;
 static boolean pick_fbo_valid = FALSE;
 
+/* Background color presets (R, G, B) */
+static const float bg_colors[][3] = {
+	{ 0.000f, 0.000f, 0.000f },  /* #000000 black */
+	{ 0.100f, 0.100f, 0.100f },  /* #2E2E2E dark grey */
+	{ 0.000f, 0.000f, 0.100f },  /* #131333 dark blue */
+	{ 0.100f, 0.000f, 0.000f },  /* #330F0F dark red */
+};
+#define NUM_BG_COLORS (sizeof(bg_colors) / sizeof(bg_colors[0]))
+static unsigned int bg_index = 0;
+
 
 /* Ensures the GL context is current (public interface) */
 void
@@ -99,7 +109,7 @@ ogl_init( void )
 	glDepthFunc( GL_LEQUAL );
 	glEnable( GL_POLYGON_OFFSET_FILL );
 	glPolygonOffset( 1.0, 1.0 );
-	glClearColor( 0.0, 0.0, 0.0, 1.0 );
+	glClearColor( bg_colors[bg_index][0], bg_colors[bg_index][1], bg_colors[bg_index][2], 1.0 );
 
 	/* Initialize texture-mapped text engine */
 	text_init( );
@@ -339,7 +349,7 @@ ogl_color_pick( int x, int y, unsigned int *face_id )
 		/* Restore GtkGLArea's FBO and GL state for normal rendering */
 		gtk_gl_area_attach_buffers( GTK_GL_AREA(viewport_gl_area_w) );
 		glViewport( viewport[0], viewport[1], viewport[2], viewport[3] );
-		glClearColor( 0.0, 0.0, 0.0, 1.0 );
+		glClearColor( bg_colors[bg_index][0], bg_colors[bg_index][1], bg_colors[bg_index][2], 1.0 );
 		glEnable( GL_DEPTH_TEST );
 		glEnable( GL_CULL_FACE );
 		glEnable( GL_POLYGON_OFFSET_FILL );
@@ -368,6 +378,16 @@ void
 ogl_pick_invalidate( void )
 {
 	pick_fbo_valid = FALSE;
+}
+
+
+/* Cycle to the next background color preset */
+void
+ogl_cycle_background( void )
+{
+	bg_index = (bg_index + 1) % NUM_BG_COLORS;
+	glClearColor( bg_colors[bg_index][0], bg_colors[bg_index][1], bg_colors[bg_index][2], 1.0 );
+	redraw( );
 }
 
 

@@ -370,6 +370,9 @@ viewport_key_pressed_cb( G_GNUC_UNUSED GtkEventControllerKey *controller,
 		case GDK_KEY_t: case GDK_KEY_T:
 		geometry_toggle_labels( );
 		return TRUE;
+		case GDK_KEY_b: case GDK_KEY_B:
+		ogl_cycle_background( );
+		return TRUE;
 		default:
 		return FALSE;
 	}

@@ -36,6 +36,7 @@ double ogl_aspect_ratio( void );
 void ogl_draw( void );
 unsigned int ogl_color_pick( int x, int y, unsigned int *face_id );
 void ogl_pick_invalidate( void );
+void ogl_cycle_background( void );
 #ifdef GTK_WIDGET
 GtkWidget *ogl_widget_new( void );
 gboolean ogl_gl_query( void );
