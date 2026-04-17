@@ -420,6 +420,9 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 	/* Set up GTK4 event controllers for the viewport */
 	viewport_setup_controllers( gl_area_w );
 
+	/* Give the GL area initial keyboard focus */
+	gtk_widget_grab_focus( gl_area_w );
+
 	/* y-scrollbar */
 	y_scrollbar_w = gui_vscrollbar_add( hbox_w, NULL );
 	G_LIST_APPEND(sw_widget_list, y_scrollbar_w);
