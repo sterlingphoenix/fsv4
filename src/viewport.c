@@ -355,10 +355,15 @@ viewport_scroll_cb( G_GNUC_UNUSED GtkEventControllerScroll *controller,
 static gboolean
 viewport_key_pressed_cb( G_GNUC_UNUSED GtkEventControllerKey *controller,
                          guint keyval, G_GNUC_UNUSED guint keycode,
-                         G_GNUC_UNUSED GdkModifierType state, G_GNUC_UNUSED gpointer user_data )
+                         GdkModifierType state, G_GNUC_UNUSED gpointer user_data )
 {
 	if (globals.fsv_mode == FSV_SPLASH)
 		return FALSE;
+
+	if ((state & GDK_CONTROL_MASK) && (keyval == GDK_KEY_o || keyval == GDK_KEY_O)) {
+		dialog_change_root( );
+		return TRUE;
+	}
 
 	switch (keyval) {
 		case GDK_KEY_Left:  case GDK_KEY_a: case GDK_KEY_A:
