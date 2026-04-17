@@ -60,6 +60,9 @@ static GtkWidget *color_timestamp_tbutton_w;
 /* Scale mode toolbar toggle button */
 static GtkWidget *scale_tbutton_w;
 
+/* GL area widget (for refocusing after toolbar clicks) */
+static GtkWidget *main_gl_area_w = NULL;
+
 /* List of widgets that can be enabled or disabled on the fly */
 static GList *sw_widget_list = NULL;
 
@@ -416,6 +419,7 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 
 	/* Main viewport (OpenGL area widget) */
 	gl_area_w = gui_gl_area_add( hbox_w );
+	main_gl_area_w = gl_area_w;
 
 	/* Set up GTK4 event controllers for the viewport */
 	viewport_setup_controllers( gl_area_w );
@@ -499,6 +503,9 @@ on_vis_mode_toggled( GtkToggleButton *tbutton, gpointer user_data )
 	if (scale_tbutton_w != NULL)
 		gtk_widget_set_sensitive( scale_tbutton_w,
 			strcmp( mode_str, "treev" ) == 0 );
+
+	if (main_gl_area_w != NULL)
+		gtk_widget_grab_focus( main_gl_area_w );
 }
 
 /* Toolbar color mode toggle button handler */
@@ -512,6 +519,9 @@ on_color_mode_toggled( GtkToggleButton *tbutton, gpointer user_data )
 
 	g_action_change_state( G_ACTION(color_mode_action),
 		g_variant_new_string( mode_str ) );
+
+	if (main_gl_area_w != NULL)
+		gtk_widget_grab_focus( main_gl_area_w );
 }
 
 /* Toolbar scale mode toggle button handler */
@@ -520,6 +530,19 @@ on_scale_mode_toggled( GtkCheckButton *check, G_GNUC_UNUSED gpointer user_data )
 {
 	boolean logarithmic = gtk_check_button_get_active( check );
 	geometry_treev_set_scale_logarithmic( logarithmic );
+
+	if (main_gl_area_w != NULL)
+		gtk_widget_grab_focus( main_gl_area_w );
+}
+
+
+void
+window_toggle_log_scale( void )
+{
+	if (scale_tbutton_w == NULL || !gtk_widget_get_sensitive( scale_tbutton_w ))
+		return;
+	gboolean active = gtk_check_button_get_active( GTK_CHECK_BUTTON(scale_tbutton_w) );
+	gtk_check_button_set_active( GTK_CHECK_BUTTON(scale_tbutton_w), !active );
 }
 
 

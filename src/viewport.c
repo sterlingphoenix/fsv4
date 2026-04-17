@@ -374,6 +374,9 @@ viewport_key_pressed_cb( G_GNUC_UNUSED GtkEventControllerKey *controller,
 		case GDK_KEY_b: case GDK_KEY_B:
 		ogl_cycle_background( );
 		return TRUE;
+		case GDK_KEY_l: case GDK_KEY_L:
+		window_toggle_log_scale( );
+		return TRUE;
 		case GDK_KEY_r: case GDK_KEY_R:
 		if (!camera_moving( ) && root_dnode != NULL)
 			camera_look_at( root_dnode );
