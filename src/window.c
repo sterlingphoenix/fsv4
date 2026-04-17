@@ -252,8 +252,8 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 
 			gui_label_add( nav_box, _("Navigation") );
 
-			button_w = gui_button_add( nav_box, _("Root"), G_CALLBACK(on_cd_root_button_clicked), NULL );
-			gtk_widget_set_tooltip_text( button_w, _("Jump to filesystem root") );
+			button_w = gui_button_add( nav_box, _("Reset"), G_CALLBACK(on_cd_root_button_clicked), NULL );
+			gtk_widget_set_tooltip_text( button_w, _("Reset to initial camera view") );
 			G_LIST_APPEND(sw_widget_list, button_w);
 
 			button_w = gui_button_add( nav_box, _("Back"), G_CALLBACK(on_back_button_clicked), NULL );

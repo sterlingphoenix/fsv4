@@ -30,6 +30,7 @@
 
 #include "about.h"
 #include "camera.h"
+#include "color.h"
 #include "dialog.h" /* context_menu( ) */
 #include "filelist.h" /* filelist_show_entry( ) */
 #include "geometry.h"
@@ -372,6 +373,17 @@ viewport_key_pressed_cb( G_GNUC_UNUSED GtkEventControllerKey *controller,
 		return TRUE;
 		case GDK_KEY_b: case GDK_KEY_B:
 		ogl_cycle_background( );
+		return TRUE;
+		case GDK_KEY_r: case GDK_KEY_R:
+		if (!camera_moving( ) && root_dnode != NULL)
+			camera_look_at( root_dnode );
+		return TRUE;
+		case GDK_KEY_c: case GDK_KEY_C:
+		{
+			ColorMode next = (color_get_mode( ) + 1) % COLOR_NONE;
+			color_set_mode( next );
+			window_set_color_mode( next );
+		}
 		return TRUE;
 		default:
 		return FALSE;
