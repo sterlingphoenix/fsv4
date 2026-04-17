@@ -284,18 +284,10 @@ mapv_scrollbar_move( double value, int axis )
 	switch (axis) {
 		case X_AXIS:
 		MAPV_CAMERA(camera)->target.x = value;
-		if (!birdseye_view_active) {
-			/* Yaw appropriately */
-			camera->theta = mapv_camera_theta( value );
-		}
 		break;
 
 		case Y_AXIS:
 		MAPV_CAMERA(camera)->target.y = - value;
-		if (!birdseye_view_active && (globals.current_node != root_dnode)) {
-			/* Pitch appropriately */
-			camera->phi = mapv_camera_phi( - value, globals.current_node );
-		}
 		break;
 
 		SWITCH_FAIL
