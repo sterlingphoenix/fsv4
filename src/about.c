@@ -456,6 +456,9 @@ about( AboutMesg mesg )
 {
 	switch (mesg) {
 		case ABOUT_BEGIN:
+		/* If already up, treat as a toggle and dismiss */
+		if (about_active)
+			return about( ABOUT_END );
 		/* Begin the presentation */
 		morph_break( &about_part );
 		morph_break( &about_exit_part );
