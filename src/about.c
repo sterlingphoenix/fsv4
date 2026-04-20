@@ -65,12 +65,12 @@ draw_fsv( void )
 		/* Zooming in to final position (no spinning) */
 		p = INTERVAL_PART(about_part, 0.0, 0.2);
 		q = pow( 1.0 - p, 1.5 );
-		glmath_translated( 0.0, 40.0 * (1.0 - q), -200.0 - 1000.0 * q );
+		glmath_translated( 0.0, 250.0 * (1.0 - q), -480.0 - 1000.0 * q );
 		glmath_rotated( 5.0, 1.0, 0.0, 0.0 );
 	}
 	else {
 		/* Holding at final position */
-		glmath_translated( 0.0, 40.0, -200.0 );
+		glmath_translated( 0.0, 250.0, -480.0 );
 		glmath_rotated( 5.0, 1.0, 0.0, 0.0 );
 	}
 
@@ -113,15 +113,15 @@ draw_text( void )
 	text_pre( );
 
 	tdims.x = 400.0;
-	tdims.y = 18.0;
+	tdims.y = 10.0;
 	tpos.x = 0.0;
-	tpos.y = -35.0; /* -35 */
+	tpos.y = 68.0;
 	tpos.z = -200.0 * q;
 	text_set_color( 1.0, 1.0, 1.0 );
-	text_draw_straight( "fsv - 3D File System Visualizer", &tpos, &tdims );
+	text_draw_straight( "A 3D File System Visualiser", &tpos, &tdims );
 
-	tdims.y = 15.0;
-	tpos.y = 40.0 * q - 95.0; /* -55 */
+	tdims.y = 8.0;
+	tpos.y = 32.0 * q + 25.0;
 	text_draw_straight( "Version " VERSION, &tpos, &tdims );
 
 	text_post( );
@@ -149,7 +149,7 @@ about( AboutMesg mesg )
 		/* Begin the presentation */
 		morph_break( &about_part );
 		about_part = 0.0;
-		morph_full( &about_part, MORPH_LINEAR, 1.0, 4.0, about_progress_cb, about_progress_cb, NULL );
+		morph_full( &about_part, MORPH_LINEAR, 1.0, 2.0, about_progress_cb, about_progress_cb, NULL );
 		about_active = TRUE;
 		break;
 
