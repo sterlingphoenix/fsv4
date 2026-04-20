@@ -45,6 +45,10 @@ static double about_part;
 /* TRUE while giving About presentation */
 static boolean about_active = FALSE;
 
+/* Exit animation: reverses the entry animation briefly before returning */
+static boolean about_exiting = FALSE;
+static double about_exit_part;	/* 0.0 -> 1.0 during exit */
+
 
 /* Draws the "fsv" 3D letters */
 static void
@@ -61,18 +65,23 @@ draw_fsv( void )
 	/* Set up modelview matrix */
 	glmath_push_modelview( );
 	glmath_load_identity_modelview( );
-	if (about_part < 0.2) {
-		/* Zooming in to final position (no spinning) */
+
+	/* q is the "zoomed out" factor: 1 = far away/small, 0 = final resting */
+	if (about_exiting) {
+		/* Reverse: zoom back out to far-away starting pose */
+		q = pow( about_exit_part, 1.5 );
+	}
+	else if (about_part < 0.2) {
+		/* Zooming in to final position */
 		p = INTERVAL_PART(about_part, 0.0, 0.2);
 		q = pow( 1.0 - p, 1.5 );
-		glmath_translated( 0.0, 250.0 * (1.0 - q), -480.0 - 1000.0 * q );
-		glmath_rotated( 5.0, 1.0, 0.0, 0.0 );
 	}
 	else {
 		/* Holding at final position */
-		glmath_translated( 0.0, 250.0, -480.0 );
-		glmath_rotated( 5.0, 1.0, 0.0, 0.0 );
+		q = 0.0;
 	}
+	glmath_translated( 0.0, 250.0 * (1.0 - q), -480.0 - 1000.0 * q );
+	glmath_rotated( 5.0, 1.0, 0.0, 0.0 );
 
 	/* Draw "fsv" geometry */
 	geometry_gldraw_fsv( );
@@ -89,9 +98,9 @@ draw_text( void )
 {
         XYZvec tpos;
 	XYvec tdims;
-	double dy, p, q;
+	double dy, q;
 
-	if (about_part < 0.2)
+	if (!about_exiting && about_part < 0.2)
 		return;
 
 	/* Set up projection matrix */
@@ -104,11 +113,13 @@ draw_text( void )
 	glmath_push_modelview( );
 	glmath_load_identity_modelview( );
 
-	if (about_part < 0.4)
-		p = INTERVAL_PART(about_part, 0.2, 0.4);
+	/* q: 0 = initial (at camera, huge), 1 = final resting */
+	if (about_exiting)
+		q = 1.0 - SQR(about_exit_part);
+	else if (about_part < 0.4)
+		q = (1.0 - SQR(1.0 - INTERVAL_PART(about_part, 0.2, 0.4)));
 	else
-		p = 1.0;
-	q = (1.0 - SQR(1.0 - p));
+		q = 1.0;
 
 	text_pre( );
 
@@ -206,11 +217,11 @@ draw_help( void )
 	const int max_chars = 70;
 	const double line_spacing = 9.0;
 	const double para_spacing = 13.0;
-	double total_h, y, dy, p, q;
+	double total_h, y, dy, q;
 	XYZvec tpos;
 	XYvec tdims;
 
-	if (about_part < 0.4)
+	if (!about_exiting && about_part < 0.4)
 		return;
 
 	/* Word-wrap source into physical lines */
@@ -242,12 +253,13 @@ draw_help( void )
 	glmath_push_modelview( );
 	glmath_load_identity_modelview( );
 
-	/* Fade in (color scales from black to white) */
-	if (about_part < 0.6)
-		p = INTERVAL_PART(about_part, 0.4, 0.6);
+	/* Fade (color scales from black to white during entry; reverse on exit) */
+	if (about_exiting)
+		q = 1.0 - SQR(about_exit_part);
+	else if (about_part < 0.6)
+		q = 1.0 - SQR(1.0 - INTERVAL_PART(about_part, 0.4, 0.6));
 	else
-		p = 1.0;
-	q = 1.0 - SQR(1.0 - p);
+		q = 1.0;
 
 	text_pre( );
 	tdims.x = (max_len + 2) * char_w;
@@ -318,13 +330,13 @@ draw_shortcuts( void )
 	const double col_gap = 28.0;	/* gap between columns (world units) */
 	XYZvec tpos;
 	XYvec tdims;
-	double dy, p, q;
+	double dy, q;
 	double y_title, y_entry;
 	double col_left_x, col_right_x;
 	double block_w;
 	int i, llen, max_left, max_right, max_count, li;
 
-	if (about_part < 0.6)
+	if (!about_exiting && about_part < 0.6)
 		return;
 
 	/* Find column widths (longest line in each column) */
@@ -351,12 +363,13 @@ draw_shortcuts( void )
 	glmath_push_modelview( );
 	glmath_load_identity_modelview( );
 
-	/* Fade in (color scales from black up) */
-	if (about_part < 0.8)
-		p = INTERVAL_PART(about_part, 0.6, 0.8);
+	/* Fade (black->white during entry; reverse on exit) */
+	if (about_exiting)
+		q = 1.0 - SQR(about_exit_part);
+	else if (about_part < 0.8)
+		q = 1.0 - SQR(1.0 - INTERVAL_PART(about_part, 0.6, 0.8));
 	else
-		p = 1.0;
-	q = 1.0 - SQR(1.0 - p);
+		q = 1.0;
 
 	text_pre( );
 	tdims.x = 400.0;
@@ -377,7 +390,10 @@ draw_shortcuts( void )
 
 	/* Headers: cyan-ish, one line below title */
 	y_entry = y_title - line_spacing - title_gap;
-	text_set_color( 0.5f * (float)q, 0.9f * (float)q, 1.0f * (float)q );
+	text_set_color(
+		(float)(0.5 * q),
+		(float)(0.9 * q),
+		(float)(1.0 * q) );
 
 	llen = (int)strlen( left_col[0] );
 	tpos.x = col_left_x + 0.5 * (double)llen * char_w;
@@ -424,6 +440,16 @@ about_progress_cb( G_GNUC_UNUSED Morph *unused )
 }
 
 
+/* Called when exit animation completes: tears down the presentation */
+static void
+about_exit_done_cb( G_GNUC_UNUSED Morph *unused )
+{
+	about_exiting = FALSE;
+	about_active = FALSE;
+	globals.need_redraw = TRUE;
+}
+
+
 /* Control routine */
 boolean
 about( AboutMesg mesg )
@@ -432,6 +458,8 @@ about( AboutMesg mesg )
 		case ABOUT_BEGIN:
 		/* Begin the presentation */
 		morph_break( &about_part );
+		morph_break( &about_exit_part );
+		about_exiting = FALSE;
 		about_part = 0.0;
 		morph_full( &about_part, MORPH_LINEAR, 1.0, 2.0, about_progress_cb, about_progress_cb, NULL );
 		about_active = TRUE;
@@ -440,10 +468,14 @@ about( AboutMesg mesg )
 		case ABOUT_END:
 		if (!about_active)
 			return FALSE;
-		/* We now return you to your regularly scheduled program */
+		if (about_exiting)
+			return TRUE;	/* already flying away; swallow the event */
+		/* Snap entry animation to fully shown and start fly-away */
 		morph_break( &about_part );
-		redraw( );
-		about_active = FALSE;
+		about_part = 1.0;
+		about_exit_part = 0.0;
+		about_exiting = TRUE;
+		morph_full( &about_exit_part, MORPH_LINEAR, 1.0, 0.2, about_progress_cb, about_exit_done_cb, NULL );
 		return TRUE;
 
 		case ABOUT_DRAW:
