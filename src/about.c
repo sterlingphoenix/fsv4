@@ -195,7 +195,7 @@ draw_help( void )
 		"",
 		"Views can be rotated, panned, and zoomed.",
 		"",
-		"Nodes can be coloured based on wildcards, timestamps.",
+		"Nodes can be coloured based on wildcards, timestamps, and node type.",
 		"",
 		"Settings persist between sessions by default. This can be disabled using the Preferences menu."
 	};
