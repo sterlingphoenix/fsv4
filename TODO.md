@@ -799,6 +799,220 @@ Step 11.8 — Cleanup
   - Menu bar is gone
 
 
+PHASE 35: LARGE-DIRECTORY PERFORMANCE & HAZARD CLEANUP
+=======================================================
+
+Address the remaining pain points for very large filesystems and clean
+up subtle memory / thread-safety hazards identified in the codebase
+analysis. Steps are ordered by impact-to-effort ratio — the biggest
+user-visible win (dirtree hash map) comes first, risky refactors
+(background scan) come later.
+
+Design summary:
+- `dirtree.c` has an O(N) linear walk through the flat TreeListModel
+  on every selection change, expand/collapse, and right-click. For
+  trees with tens of thousands of rows this is the dominant UI stall.
+  A GHashTable keyed on GNode* fixes it.
+- `get_file_type_desc()` forks the `file` command per call via popen.
+  Caching by extension (or by (dev,ino) for extensionless files)
+  removes the per-call fork.
+- `scanfs.c` runs synchronously on the main thread, so the UI is
+  blocked during scans. Moving scan to a worker via GTask unblocks
+  input.
+- Per-visible-region VBO batching (spatial tiling) is deferred — only
+  tackle if 35.1–35.3 aren't sufficient.
+- `g_slice_*` has been deprecated since GLib 2.76; swap to `g_new0`
+  / `g_free`.
+- Static return buffers in `common.c` (ninfo, read_symlink,
+  absname_merge, node_absname, i64toa, abbrev_size) are thread-unsafe
+  and, in the case of `ninfo.target` / `ninfo.abstarget`, can clobber
+  each other. Blocks future threading.
+- `geometry_free_recursive()` is a no-op comment-wise labelled "kept
+  for API compatibility" — either remove it or make it mark the
+  relevant VBO batches dirty so stale node IDs are cleared on rescan.
+
+Step 35.1 — Directory tree fast lookup (dirtree.c)
+  [x] Replaced find_tree_list_row()'s O(N) flat-model scan with a
+      tree-walk from the root using gtk_tree_list_row_get_child_row()
+      at each level. O(depth * dir-siblings), effectively O(1) for
+      filesystem-shaped trees.
+  [x] Went with tree-walk instead of the originally-planned
+      GHashTable<GNode*, GtkTreeListRow*> because the TreeListModel
+      is dynamic (rows appear/disappear on expand/collapse). A hash
+      would have required listening on items-changed and careful ref
+      management; the tree-walk uses the existing GTK navigation API
+      and has no state to maintain. Same end result, simpler.
+  [x] Child models built by ctree_create_child_model contain only
+      directory children, so child_idx counts dir siblings directly.
+  [x] All call sites (dirtree_entry_show, dirtree_entry_expand,
+      dirtree_entry_collapse_recursive, dirtree_entry_expand_recursive)
+      unchanged — same function signature, same return semantics.
+  [x] Verify: builds cleanly, directory tree sidebar behaves
+      identically on small trees, and is visibly snappier on very
+      large trees (e.g. /usr with many subdirectories expanded).
+
+Step 35.2 — File-type description cache
+  [ ] In common.c, add a cache (GHashTable keyed on a stable key —
+      extension string for files with an extension, or a small
+      cache keyed on (dev,ino) for extensionless files) that maps
+      key → allocated description string.
+  [ ] get_file_type_desc() checks the cache before forking `file`.
+      On miss, runs popen(FILE_COMMAND) as today, stores the result,
+      returns it.
+  [ ] Cache is freed on program exit; per-rescan invalidation is not
+      needed (descriptions are based on content, which for a given
+      (dev,ino) is stable until the file is rewritten).
+  [ ] Verify: builds cleanly, Properties dialog shows the same file
+      type strings as before but opens visibly faster on second and
+      subsequent calls for files of the same type.
+
+Step 35.3 — Replace g_slice with g_new0
+  [ ] scanfs.c: replace g_slice_new0(DirNodeDesc) / g_slice_new0(
+      NodeDesc) with g_new0(DirNodeDesc, 1) / g_new0(NodeDesc, 1).
+  [ ] Replace all matching g_slice_free calls with g_free.
+  [ ] Audit the rest of the codebase for any other g_slice usage
+      (grep -rn 'g_slice_' src/) and convert consistently.
+  [ ] Verify: clean build with no deprecation warnings on newer
+      GLib, no functional change, no leaks under normal scan /
+      rescan cycles.
+
+Step 35.4 — Clean up geometry_free_recursive
+  [ ] Decide: either (a) remove the no-op function and all its call
+      sites, or (b) make it actually mark the relevant VBO batches
+      dirty so the next rebuild drops stale node IDs tied to the
+      previous tree.
+  [ ] Update the comment in geometry.c:4434 to match reality.
+  [ ] Verify: clean build, rescan works correctly, no visible
+      rendering artefacts immediately after a rescan.
+
+Step 35.5 — Fix static buffer hazards in common.c
+  [ ] Audit get_node_info() (common.c:677) and its callees
+      (read_symlink, absname_merge, node_absname, i64toa,
+      abbrev_size, get_file_type_desc). Document which fields alias
+      which static buffer.
+  [ ] Fix the ninfo.target / ninfo.abstarget aliasing: either
+      allocate per-call (with a clear ownership contract) or give
+      each its own dedicated static buffer so a single
+      get_node_info() call is self-consistent.
+  [ ] (Optional) Convert the remaining static buffers to
+      per-call allocation to unblock future threading. Defer if
+      scope creeps.
+  [ ] Verify: clean build, Properties dialog and tooltips display
+      correct values for symlinks (target + abstarget both visible
+      and distinct when the symlink is relative).
+
+Step 35.6 — Background filesystem scan (GTask)
+  [ ] Move scanfs.c's process_dir() recursion onto a GTask worker
+      thread. The worker builds the GNode tree; completion is
+      marshalled back to the main thread via g_idle_add /
+      g_task_return.
+  [ ] Ensure every data structure touched by the worker is either
+      thread-local or protected — NodeDesc allocation, GNode
+      insertion, scanfs-internal state. Do NOT touch GTK widgets
+      or globals from the worker.
+  [ ] Replace the 50ms throttled gui_update() calls with a proper
+      progress signal the main thread can consume.
+  [ ] Audit for any static buffers the scan path currently relies
+      on (see 35.5) — those must either be eliminated or made
+      worker-safe before this step.
+  [ ] Verify: scan of a large tree (e.g. /usr) does not freeze the
+      UI. Cancel, rescan, and close-during-scan all behave
+      correctly. No races observed over many runs.
+
+Step 35.7 — Spatial VBO tiling (deferred / optional)
+  [ ] Only tackle this step if 35.1–35.6 do not resolve the
+      large-directory pain.
+  [ ] Design: split each mode's single whole-tree VBO into a
+      quadtree (MapV) or angular sector grid (TreeV / DiscV) of
+      sub-batches. Cull whole tiles against the frustum before
+      drawing so zoomed-in views of huge expanded trees don't
+      pay for vertices they never see.
+  [ ] Preserve the build-once-draw-many invariant: each tile is
+      still GL_STATIC_DRAW with its own dirty flag.
+  [ ] Verify: frame cost at normal zoom is unchanged; zoomed-in
+      frame cost drops proportionally to visible area.
+
+  Checkpoint: User tests on a genuinely large filesystem:
+  - Directory tree sidebar stays responsive when expanding /
+    collapsing deep subtrees
+  - Properties dialog opens quickly on files of types already
+    seen this session
+  - Rescan on a large tree does not freeze the UI (after 35.6)
+  - All three vis modes still render correctly, no regressions
+  - Clean build, no GLib deprecation warnings, no GL errors
+
+
+PHASE 36: DECIDE WHAT TO DO WITH CGLM
+======================================
+
+cglm (our current matrix-math dependency) is not readily packaged on
+Fedora / RHEL / other RPM-based distros. This phase is a decision
+point, not yet an implementation plan — pick an option first, then
+flesh out the steps.
+
+Current state:
+- Entire cglm usage is confined to src/glmath.c (every `glm_*` call)
+  plus one `#include <cglm/cglm.h>` in src/glmath.h.
+- mat4 / mat3 / vec3 / vec4 typedefs from cglm leak into geometry.c
+  and tmaptext.c through the glmath_get_mvp / glmath_get_normal_matrix
+  return signatures.
+- Operations actually used: glm_mat4_identity / copy / mul / inv,
+  glm_frustum, glm_ortho, glm_translate, glm_rotate, glm_scale,
+  glm_rad. That's the whole surface area.
+
+Options on the table:
+
+  (A) Vendor cglm headers in-tree
+      - cglm is MIT-licensed and header-only.
+      - Drop the cglm header tree into lib/cglm/include/cglm/, remove
+        dependency('cglm') from meson.build, add
+        include_directories('lib/cglm/include') to fsv_inc.
+      - Zero code changes, zero performance delta, zero runtime dep.
+      - ~150 header files added to the repo (a few hundred KB).
+      - Bumping cglm upstream is a manual refresh — acceptable since
+        we use a tiny, stable subset.
+
+  (B) Swap for linmath.h
+      - Single public-domain header, ~500 lines.
+      - Rewrite glmath.c against linmath's API.
+      - Redefine mat4 / mat3 / vec3 typedefs (or adapt call sites in
+        geometry.c and tmaptext.c to linmath's mat4x4 / vec3 types).
+      - Leaner, but with real change surface and bug risk.
+
+  (C) Roll our own tiny matrix module
+      - ~150 lines of hand-written 4x4 float matrix math.
+      - Fully owned, zero external anything.
+      - Matrix inversion is a classic footgun; would want tests
+        before shipping, which we don't currently have infra for.
+
+Step 36.1 — Pick an option
+  [ ] Decide between (A), (B), (C), or something else entirely.
+  [ ] Record the decision in this section so the implementation
+      steps can be written against a concrete target.
+
+Step 36.2 — Implement the chosen option
+  [ ] To be written once 36.1 is decided. Will include: build-system
+      changes, header / include updates, any required rewrites of
+      glmath.c, and any typedef adjustments in geometry.c and
+      tmaptext.c.
+  [ ] Verify: clean build, no functional change, all three vis
+      modes render identically to before, no GL errors, no frame-
+      rate regression.
+
+Step 36.3 — Confirm RPM-friendly build
+  [ ] Confirm the project builds on a Fedora / RHEL system without
+      needing out-of-repo packages (or with only packages that are
+      trivially available there).
+  [ ] Update README.md dependency list if the cglm line goes away.
+  [ ] Verify: clean build on at least one RPM-based distro, same
+      runtime behaviour.
+
+  Checkpoint: User confirms the project builds on their target
+  RPM-based distro with the usual `meson setup build && ninja -C
+  build` flow, and the running binary behaves identically to the
+  current cglm-based build.
+
+
 NOTES
 =====
 - Each step should leave the code compilable and runnable
