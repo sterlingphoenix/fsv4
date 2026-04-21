@@ -28,7 +28,14 @@
 #define FSV_SCANFS_H
 
 
-void scanfs( const char *dir );
+/* Callback invoked on the main thread when scanfs() has finished.
+ * user_data is the same pointer passed to scanfs(). */
+typedef void (*ScanDoneCallback)( gpointer user_data );
+
+/* Begins a filesystem scan of `dir`. Returns immediately — the scan
+ * runs on a worker thread. When the scan is complete, `done_cb` is
+ * invoked on the main thread (may be NULL). */
+void scanfs( const char *dir, ScanDoneCallback done_cb, gpointer user_data );
 
 
 /* end scanfs.h */

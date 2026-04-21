@@ -53,13 +53,17 @@ int alphasort( const void *a, const void *b );
 /* Name strings are stored here */
 static GStringChunk *name_strchunk = NULL;
 
-/* Node ID counter */
+/* Node ID counter (worker-thread only during scan) */
 static unsigned int node_id;
 
-/* Numbers for the on-the-fly progress readout */
+/* Scan progress — all of the fields below are written by the worker
+ * thread during a scan and read by the main thread's scan_monitor
+ * timeout. They are protected by scan_stats_mutex. */
+static GMutex scan_stats_mutex;
 static int node_counts[NUM_NODE_TYPES];
 static int64 size_counts[NUM_NODE_TYPES];
 static int stat_count = 0;
+static char scan_current_dir[PATH_MAX];
 
 
 /* Official stat function. Returns 0 on success, -1 on error.
@@ -125,12 +129,12 @@ de_select( const struct dirent *de )
 }
 
 
-/* Minimum interval between UI updates during scan (seconds) */
-#define SCAN_UI_UPDATE_INTERVAL 0.05
-
-/* Timestamp of last UI update during scan */
-static double scan_last_ui_update;
-
+/* Recursive directory scanner.
+ *
+ * Runs on the scan worker thread (see scan_worker_thread). MUST NOT
+ * touch GTK widgets, globals.fsv_mode, or any other main-thread-owned
+ * state — only the tree being built, the name_strchunk, and the
+ * progress statics under scan_stats_mutex. */
 static int
 process_dir( const char *dir, GNode *dnode )
 {
@@ -139,7 +143,6 @@ process_dir( const char *dir, GNode *dnode )
 	GNode *node;
 	int num_entries, i;
 	int dir_len;
-	char strbuf[1024];
 	char pathbuf[PATH_MAX];
 
 	/* Scan in directory entries */
@@ -147,9 +150,11 @@ process_dir( const char *dir, GNode *dnode )
 	if (num_entries < 0)
 		return -1;
 
-	/* Update display */
-	snprintf( strbuf, sizeof(strbuf), _("Scanning: %s"), dir );
-	window_statusbar( SB_RIGHT, strbuf );
+	/* Publish current directory for the main-thread scan_monitor
+	 * timeout to display. */
+	g_mutex_lock( &scan_stats_mutex );
+	g_strlcpy( scan_current_dir, dir, sizeof(scan_current_dir) );
+	g_mutex_unlock( &scan_stats_mutex );
 
 	/* Prepare path buffer: "dir/" prefix, entry name appended per iteration */
 	dir_len = strlen( dir );
@@ -173,7 +178,6 @@ process_dir( const char *dir, GNode *dnode )
 			g_node_destroy( node );
 			continue;
 		}
-		++stat_count;
 		++node_id;
 
 		if (NODE_IS_DIR(node)) {
@@ -195,21 +199,14 @@ process_dir( const char *dir, GNode *dnode )
 			node->data = andesc;
 		}
 
-		/* Add to appropriate node/size counts
-		 * (for dynamic progress display) */
+		/* Publish progress for the main-thread monitor */
+		g_mutex_lock( &scan_stats_mutex );
+		++stat_count;
 		++node_counts[NODE_DESC(node)->type];
 		size_counts[NODE_DESC(node)->type] += NODE_DESC(node)->size;
+		g_mutex_unlock( &scan_stats_mutex );
 
 		free( dir_entries[i] ); /* !xfree */
-
-		/* Keep the user interface responsive (throttled) */
-		{
-			double now = xgettime( );
-			if (now - scan_last_ui_update >= SCAN_UI_UPDATE_INTERVAL) {
-				gui_update( );
-				scan_last_ui_update = now;
-			}
-		}
 	}
 
 	free( dir_entries ); /* !xfree */
@@ -218,22 +215,125 @@ process_dir( const char *dir, GNode *dnode )
 }
 
 
-/* Dynamic scan progress readout */
+/* Dynamic scan progress readout. Runs on the main thread while the
+ * scan worker is populating the counts under scan_stats_mutex. */
 static gboolean
 scan_monitor( G_GNUC_UNUSED gpointer user_data )
 {
-	char strbuf[64];
+	int local_node_counts[NUM_NODE_TYPES];
+	int64 local_size_counts[NUM_NODE_TYPES];
+	int local_stat_count;
+	char local_dir[PATH_MAX];
+	char strbuf[PATH_MAX + 64];
+
+	/* Snapshot worker-thread stats under the mutex. Reset stat_count
+	 * so the per-period rate stays sane. */
+	g_mutex_lock( &scan_stats_mutex );
+	memcpy( local_node_counts, node_counts, sizeof(local_node_counts) );
+	memcpy( local_size_counts, size_counts, sizeof(local_size_counts) );
+	local_stat_count = stat_count;
+	stat_count = 0;
+	g_strlcpy( local_dir, scan_current_dir, sizeof(local_dir) );
+	g_mutex_unlock( &scan_stats_mutex );
 
 	/* Running totals in file list area */
-	filelist_scan_monitor( node_counts, size_counts );
+	filelist_scan_monitor( local_node_counts, local_size_counts );
 
 	/* Stats-per-second readout in left statusbar */
-	sprintf( strbuf, _("%d stats/sec"), 1000 * stat_count / SCAN_MONITOR_PERIOD );
+	sprintf( strbuf, _("%d stats/sec"), 1000 * local_stat_count / SCAN_MONITOR_PERIOD );
 	window_statusbar( SB_LEFT, strbuf );
-	gui_update( );
-	stat_count = 0;
+
+	/* Currently scanning directory in right statusbar */
+	if (local_dir[0] != '\0') {
+		snprintf( strbuf, sizeof(strbuf), _("Scanning: %s"), local_dir );
+		window_statusbar( SB_RIGHT, strbuf );
+	}
 
 	return TRUE;
+}
+
+
+/* Forward declaration — definition is below with the other
+ * setup-once-scan-is-done helpers. */
+static void setup_fstree_recursive( GNode *node, GNode **node_table );
+
+
+/* Context for an in-flight async scan. Allocated on the heap, owned
+ * by the GTask, freed in scan_worker_done_cb (main thread) after the
+ * post-scan GTK work and user callback have run. */
+typedef struct {
+	char *root_dir;		/* owned */
+	GNode **node_table;	/* output, allocated on worker; ownership
+				 * transferred to viewport in done_cb */
+	unsigned int node_count; /* output */
+	ScanDoneCallback done_cb;
+	gpointer user_data;
+} ScanContext;
+
+
+static void
+scan_ctx_free( gpointer data )
+{
+	ScanContext *ctx = data;
+	g_free( ctx->root_dir );
+	g_free( ctx );
+}
+
+
+/* Main-thread source id for the periodic scan_monitor timeout; owned
+ * by the async scan, removed in scan_worker_done_cb. */
+static guint scan_monitor_source_id = 0;
+
+
+static void
+scan_worker_thread(
+	GTask *task,
+	G_GNUC_UNUSED gpointer source_object,
+	gpointer task_data,
+	G_GNUC_UNUSED GCancellable *cancellable )
+{
+	ScanContext *ctx = task_data;
+
+	/* Disk thrashing phase */
+	process_dir( ctx->root_dir, root_dnode );
+
+	/* Post-scan tree finalisation. No GTK calls — safe on worker. */
+	ctx->node_count = node_id;
+	ctx->node_table = NEW_ARRAY(GNode *, ctx->node_count);
+	setup_fstree_recursive( globals.fstree, ctx->node_table );
+
+	g_task_return_boolean( task, TRUE );
+}
+
+
+/* Main-thread callback fired when the scan worker finishes. Does all
+ * remaining GTK work (dirtree population, viewport handoff, statusbar
+ * clear) and then invokes the caller-supplied done_cb. */
+static void
+scan_worker_done_cb(
+	G_GNUC_UNUSED GObject *source,
+	GAsyncResult *res,
+	G_GNUC_UNUSED gpointer user_data )
+{
+	ScanContext *ctx = g_task_get_task_data( G_TASK(res) );
+
+	if (scan_monitor_source_id != 0) {
+		g_source_remove( scan_monitor_source_id );
+		scan_monitor_source_id = 0;
+	}
+	window_statusbar( SB_RIGHT, "" );
+	dirtree_no_more_entries( );
+
+	/* Hand node table ownership off to the viewport */
+	viewport_pass_node_table( ctx->node_table, ctx->node_count );
+	ctx->node_table = NULL;
+
+	/* Fire the user's continuation (e.g. fsv_load_after_scan) */
+	if (ctx->done_cb != NULL)
+		ctx->done_cb( ctx->user_data );
+
+	/* GTask will be unref'd after this returns, which frees ctx via
+	 * scan_ctx_free. */
 }
 
 
@@ -323,13 +423,19 @@ free_node_data_cb( GNode *node, G_GNUC_UNUSED gpointer data )
 }
 
 
-/* Top-level call to recursively scan a filesystem */
+/* Top-level call to recursively scan a filesystem.
+ *
+ * Returns immediately — the scan runs on a worker thread so the GTK
+ * main loop stays live (widgets paint, events dispatch, window
+ * close/minimise work normally). When the scan completes, done_cb is
+ * invoked on the main thread with user_data; that's where the caller
+ * (fsv_load) runs its own post-scan logic. */
 void
-scanfs( const char *dir )
+scanfs( const char *dir, ScanDoneCallback done_cb, gpointer user_data )
 {
 	const char *root_dir;
-        GNode **node_table;
-	guint handler_id;
+	ScanContext *ctx;
+	GTask *task;
 	char *name;
 
 	if (globals.fstree != NULL) {
@@ -358,8 +464,13 @@ scanfs( const char *dir )
 	node_id = 0;
 
 	/* Get absolute path of desired root (top-level) directory */
-	if (chdir( dir ) != 0)
+	if (chdir( dir ) != 0) {
+		/* Nothing to scan — still fire the callback so the caller
+		 * doesn't deadlock waiting for a scan that never happened. */
+		if (done_cb != NULL)
+			done_cb( user_data );
 		return;
+	}
 	root_dir = xgetcwd( );
 
 	/* Set up fstree metanode */
@@ -382,26 +493,31 @@ scanfs( const char *dir )
 	stat_node( root_dnode, root_dir );
 	dirtree_entry_new( root_dnode );
 
+	/* Reset progress counters for the new scan */
+	g_mutex_lock( &scan_stats_mutex );
+	memset( node_counts, 0, sizeof(node_counts) );
+	memset( size_counts, 0, sizeof(size_counts) );
+	stat_count = 0;
+	scan_current_dir[0] = '\0';
+	g_mutex_unlock( &scan_stats_mutex );
+
 	/* GUI stuff */
 	filelist_scan_monitor_init( );
-	handler_id = g_timeout_add( SCAN_MONITOR_PERIOD, scan_monitor, NULL );
-	scan_last_ui_update = xgettime( );
+	scan_monitor_source_id = g_timeout_add( SCAN_MONITOR_PERIOD, scan_monitor, NULL );
 
-	/* Let the disk thrashing begin */
-	process_dir( root_dir, root_dnode );
+	/* Dispatch the disk-thrashing phase to a worker thread. When the
+	 * worker finishes, scan_worker_done_cb fires on the main thread
+	 * and does all remaining GTK work + invokes done_cb. */
+	ctx = g_new0( ScanContext, 1 );
+	ctx->root_dir = g_strdup( root_dir );
+	ctx->done_cb = done_cb;
+	ctx->user_data = user_data;
 
-	/* GUI stuff again */
-	g_source_remove( handler_id );
-	window_statusbar( SB_RIGHT, "" );
-	dirtree_no_more_entries( );
-	gui_update( );
-
-	/* Allocate node table and perform final tree setup */
-	node_table = NEW_ARRAY(GNode *, node_id);
-	setup_fstree_recursive( globals.fstree, node_table );
-
-	/* Pass off new node table to the viewport handler */
-	viewport_pass_node_table( node_table, node_id );
+	task = g_task_new( NULL, NULL, scan_worker_done_cb, NULL );
+	g_task_set_task_data( task, ctx, scan_ctx_free );
+	g_task_run_in_thread( task, scan_worker_thread );
+	g_object_unref( task );	/* GTask holds its own ref during the
+				 * in-thread run; drop ours */
 }
 
 

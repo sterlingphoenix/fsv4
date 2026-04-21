@@ -470,7 +470,30 @@ fsv_set_mode( FsvMode mode )
 }
 
 
-/* Performs filesystem scan and first-time initialization */
+/* Post-scan continuation — runs on main thread once scanfs() has
+ * finished building the tree. Split out of fsv_load so scanfs can
+ * run async. */
+static void
+fsv_load_after_scan( G_GNUC_UNUSED gpointer user_data )
+{
+	/* Clear/reset node history */
+	g_list_free( globals.history );
+	globals.history = NULL;
+	globals.current_node = root_dnode;
+
+	/* Initialize file list */
+	filelist_init( );
+
+	/* Initialize visualization */
+	globals.fsv_mode = FSV_NONE;
+	fsv_set_mode( initial_fsv_mode );
+}
+
+
+/* Performs filesystem scan and first-time initialization. Returns
+ * immediately — the scan runs on a worker thread while the GTK main
+ * loop stays live. fsv_load_after_scan runs on the main thread once
+ * the scan completes. */
 void
 fsv_load( const char *dir )
 {
@@ -484,23 +507,8 @@ fsv_load( const char *dir )
 	/* Reset scrollbars (disable scrolling) */
 	camera_update_scrollbars( TRUE );
 
-	gui_update( );
-
-	/* Scan filesystem */
-	scanfs( dir );
-
-	/* Clear/reset node history */
-	g_list_free( globals.history );
-	globals.history = NULL;
-	globals.current_node = root_dnode;
-
-	/* Initialize file list */
-	filelist_init( );
-	gui_update( );
-
-	/* Initialize visualization */
-	globals.fsv_mode = FSV_NONE;
-	fsv_set_mode( initial_fsv_mode );
+	/* Kick off scan on worker thread; continuation fires later. */
+	scanfs( dir, fsv_load_after_scan, NULL );
 }
 
 

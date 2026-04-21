@@ -939,22 +939,97 @@ Step 35.5 — Fix static buffer hazards in common.c
       relative).
 
 Step 35.6 — Background filesystem scan (GTask)
-  [ ] Move scanfs.c's process_dir() recursion onto a GTask worker
+  [x] Move scanfs.c's process_dir() recursion onto a GTask worker
       thread. The worker builds the GNode tree; completion is
       marshalled back to the main thread via g_idle_add /
       g_task_return.
-  [ ] Ensure every data structure touched by the worker is either
+      - Worker entry is scan_worker_thread(); it runs process_dir
+        + setup_fstree_recursive and returns via
+        g_task_return_boolean().
+      - scanfs() now runs a nested GMainLoop while the worker
+        executes, so the GTK main loop keeps pumping events
+        (redraws, input, splash animation) during the scan.
+        The loop is quit by the task completion callback.
+      - node_table allocation + setup_fstree_recursive moved onto
+        the worker (no GTK calls involved).
+  [x] Ensure every data structure touched by the worker is either
       thread-local or protected — NodeDesc allocation, GNode
       insertion, scanfs-internal state. Do NOT touch GTK widgets
       or globals from the worker.
-  [ ] Replace the 50ms throttled gui_update() calls with a proper
+      - Progress statics (node_counts, size_counts, stat_count,
+        scan_current_dir) are now protected by scan_stats_mutex;
+        writer is the worker, reader is the main-thread
+        scan_monitor timeout.
+      - name_strchunk is worker-only during scan; the main thread
+        does not touch it until the worker has returned.
+      - dirtree_entry_new() is called from the worker (via
+        process_dir), but it has been pre-reduced to a pure data
+        write on the node being built (tree_expanded = FALSE) —
+        no GTK widget access. All real GtkListStore/dirtree model
+        work happens in dirtree_no_more_entries() on the main
+        thread after the worker returns.
+      - window_statusbar / gui_update calls removed from process_dir;
+        the per-dir "Scanning: …" line is published to
+        scan_current_dir and displayed by scan_monitor on main.
+  [x] Replace the 50ms throttled gui_update() calls with a proper
       progress signal the main thread can consume.
-  [ ] Audit for any static buffers the scan path currently relies
+      - The 0.05s throttled gui_update() loop in process_dir is
+        gone; responsiveness is now provided by the nested
+        GMainLoop running continuously on the main thread.
+      - scan_monitor (still a 500ms g_timeout on main) is the
+        "progress signal"; it snapshots stats under the mutex,
+        displays them, and resets stat_count per period.
+  [x] Audit for any static buffers the scan path currently relies
       on (see 35.5) — those must either be eliminated or made
       worker-safe before this step.
+      - xgetcwd() uses a static, but it's called once on the main
+        thread before the worker starts; its return is borrowed
+        read-only by the worker and no one else calls xgetcwd
+        during the scan. Safe.
+      - All other path manipulations in process_dir use per-call
+        pathbuf[PATH_MAX] / strbuf on the stack — thread-local.
+      - i64toa / abbrev_size / node_absname statics are used only
+        by the main thread (from scan_monitor, dialog, etc.) —
+        not touched by the worker.
   [ ] Verify: scan of a large tree (e.g. /usr) does not freeze the
       UI. Cancel, rescan, and close-during-scan all behave
       correctly. No races observed over many runs.
+      NOTE: explicit user-triggered cancel is NOT wired up in this
+      step — the worker does not check a GCancellable. The
+      "rescan" and "close-during-scan" cases rely on the existing
+      window_set_access(FALSE) lockout during scan. If
+      close-during-scan proves to crash, we'll add a cancellation
+      token in a follow-up.
+
+      UPDATE — first attempt used a nested GMainLoop inside
+      scanfs() to keep the synchronous API. User testing showed
+      three problems: (1) the scan-monitor file list never
+      visually updated during scans, (2) GNOME WM marked the
+      window "not responding" frequently, (3) close-during-scan
+      stalled until the worker finished. All three trace back to
+      the nested loop interfering with GtkGLArea's frame clock
+      and with GApplication shutdown. Refactored to proper async:
+      scanfs() now returns immediately, continuation runs via
+      scan_worker_done_cb on main once the worker completes.
+      fsv_load split into fsv_load + fsv_load_after_scan (the
+      post-scan part runs from the callback).
+
+      UPDATE 2 — the async refactor fixed the "not responding"
+      during scans and let close-during-scan dispatch cleanly,
+      but the scan-monitor sidebar still appeared blank. Root
+      cause was in gui.c's clist binding: gui_clist_set_row_text
+      called g_list_store_splice with the same FsvListRow pointer
+      in and out of the same position, expecting GtkColumnView to
+      unbind+rebind the list item. It did not — same-item splices
+      at the same index are treated as a no-op by the view. Fixed
+      by switching the text columns to property bindings: the
+      factory's bind handler now does g_object_bind_property on
+      the row's "textN" → label's "label", and gui_clist_set_row_text
+      uses g_object_set, which emits notify and causes the bound
+      label to refresh automatically without needing a rebind.
+      Unbind handler releases the binding. Col 0 (icon + name)
+      uses a direct set for the icon (icons don't update
+      in-place) and a property binding for text0.
 
 Step 35.7 — Spatial VBO tiling (deferred / optional)
   [ ] Only tackle this step if 35.1–35.6 do not resolve the
@@ -1048,6 +1123,133 @@ Step 36.3 — Confirm RPM-friendly build
   RPM-based distro with the usual `meson setup build && ninja -C
   build` flow, and the running binary behaves identically to the
   current cglm-based build.
+
+
+PHASE 37 — SYMLINK USABILITY IMPROVEMENTS
+==========================================
+
+Symlinks are currently rendered using their own on-disk size (the
+byte length of the target pathname), which makes them visually
+near-invisible, and both the hover statusbar and Properties dialog
+treat them like any other file. This phase improves their display
+and identification without changing their identity as distinct
+nodes in the tree.
+
+Decisions already made (from the Step 35.5 follow-up discussion):
+  - Symlink-to-file: use the target file's size (`stat`, not `lstat`).
+  - Symlink-to-directory: look up the target in the scanned GNode
+    tree and use that dnode's `subtree.size` if present. If the
+    target is outside the scanned root, fall back to the target's
+    entry `st.st_size` from `stat`.
+  - Broken symlink (`stat` fails): leave the tiny `lstat` size as-is
+    so we don't lie about sizes. Properties dialog should note the
+    link is broken.
+  - Hover statusbar for symlinks: show `/path/to/symlink -> /path/to/target`.
+  - Properties "Type:" field for symlinks: show the target's type /
+    wildcard group (if resolvable) and always append "(symlink)",
+    mirroring the existing "(executable)" suffix.
+
+Step 37.1 — Symlink size follows the target
+  [ ] In scanfs.c `stat_node()` (around line 68), for NODE_SYMLINK
+      nodes, additionally `stat()` the path. Store the result in a
+      new NodeDesc field (or a parallel symlink-only struct) so we
+      preserve both the symlink's own identity and the effective
+      "display size".
+  [ ] After scan completes, do a second pass that resolves any
+      symlink whose target lies inside the scanned tree: look up
+      the target by absname and use that dnode's `subtree.size`
+      when it is a directory. This has to happen AFTER the tree
+      is fully built so all subtree totals are finalised.
+  [ ] Update geometry (MapV / DiscV / TreeV) to consult the
+      effective display size rather than NODE_DESC(node)->size for
+      symlinks. Do this with a single helper — something like
+      `node_display_size(node)` — so the three modes stay in sync.
+  [ ] Preserve the existing NODE_DESC(node)->size field as-is for
+      "actual on-disk size" readouts (Properties "Size:" line). The
+      display-size change is purely for geometry.
+  [ ] Verify: symlinks to files render at their target's size;
+      symlinks to directories inside the scanned tree render at the
+      target's subtree size; broken / unreachable symlinks stay
+      tiny. No regression in MapV / DiscV / TreeV for non-symlinks.
+
+Step 37.2 — Hover statusbar shows symlink target
+  [ ] In viewport.c, at the three `window_statusbar(SB_RIGHT,
+      node_absname(...))` sites (click, right-click, hover), if the
+      indicated node is a NODE_SYMLINK build a composed string of
+      the form "<absname> -> <target-abs>" and display that.
+  [ ] Use a single helper in common.c so the three call sites stay
+      consistent (e.g. `node_hover_label(node)` returning a
+      statically-owned string in the same style as `node_absname`).
+  [ ] For broken / unreachable targets, fall back to just the
+      readlink() output so the user still sees what the link
+      claims to point to.
+  [ ] Verify: hovering a symlink shows "<symlink> -> <target>";
+      hovering a regular file/directory shows just the absname
+      (no regression); hovering a broken symlink shows
+      "<symlink> -> <dangling-target>".
+
+Step 37.3 — Properties dialog marks symlinks and shows target type
+  [ ] In dialog.c, in the `Type:` field construction (around line
+      1254), when the node is a NODE_SYMLINK:
+       - Compute the target's wildcard-group name (apply the
+         existing `color_wpattern_group_name()` logic against the
+         target path, not the symlink path).
+       - If that differs from the symlink's own wildcard group,
+         display "<symlink-group> -> <target-group>". Otherwise
+         just show the group once.
+       - Always append "(symlink)" (mirrors "(executable)").
+       - If the target is unreachable (stat fails), append
+         "(broken symlink)" instead.
+  [ ] Consider adding a "File type" notebook page to the NODE_SYMLINK
+      switch case in dialog.c so users can see the full `file`
+      command description of the target (not just the short wildcard
+      group name). This is optional — keep scope small if it gets
+      hairy.
+  [ ] Verify: Properties on a symlink-to-executable shows e.g.
+      "Shared library -> Shared library (symlink)" or similar, with
+      the broken-symlink path clearly marked when relevant.
+
+  Checkpoint: User confirms that symlinks are visible in the 3D
+  view at a size matching their target, that hovering shows the
+  target, and that Properties clearly identifies the node as a
+  symlink and describes what it points to (including broken links).
+
+
+PHASE 38 — COLLAPSE "NOT RESPONDING" HANG
+==========================================
+
+User reported during 35.6 testing that collapsing a deeply-populated
+directory in the 3D view triggers GNOME's "application is not
+responding" banner (it eventually recovers). The filesystem scan has
+already been moved off the main thread in 35.6, so this is a
+separate, synchronous main-thread hot path — most likely the
+collapse animation invalidating / rebuilding the affected subtree's
+geometry and VBO batches in a single frame.
+
+Step 38.1 — Profile the collapse path
+  [ ] Find the dominant cost: is it geometry_free_recursive on
+      the collapsing subtree, VBO invalidation + rebuild, or the
+      dirtree-model updates driven by colexp.c?
+  [ ] Instrument with a simple main-thread stopwatch (g_get_monotonic_time
+      around the collapse handler) and a printf of the millisecond
+      duration for a known directory — no need for perf/flamegraph
+      yet.
+
+Step 38.2 — Reduce or amortise the cost
+  [ ] If the cost is in VBO rebuild, consider: (a) incremental
+      invalidation per frame, (b) deferring the rebuild to an
+      idle callback so the first collapse frame at least paints,
+      (c) splitting the subtree into tiles (overlaps with 35.7).
+  [ ] If the cost is in geometry_free_recursive, consider freeing
+      lazily on the next geometry rebuild instead of synchronously
+      during the collapse event.
+  [ ] If the cost is in dirtree model churn, batch the store
+      updates (g_list_store_splice with a single contiguous
+      removal rather than per-entry removes).
+
+  Checkpoint: User confirms that collapsing a large directory no
+  longer trips "not responding", and visual / interaction behaviour
+  is unchanged.
 
 
 NOTES

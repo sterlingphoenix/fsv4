@@ -404,7 +404,9 @@ clist_col0_setup_cb( G_GNUC_UNUSED GtkListItemFactory *factory, GtkListItem *lis
 	gtk_list_item_set_child( list_item, box );
 }
 
-/* Factory bind for column 0: set icon + text from item */
+/* Factory bind for column 0: set icon from item (direct — icons do not
+ * update in-place), and bind text0 via property so label refreshes on
+ * row property notify. */
 static void
 clist_col0_bind_cb( G_GNUC_UNUSED GtkListItemFactory *factory, GtkListItem *list_item, G_GNUC_UNUSED gpointer user_data )
 {
@@ -412,21 +414,28 @@ clist_col0_bind_cb( G_GNUC_UNUSED GtkListItemFactory *factory, GtkListItem *list
 	GtkWidget *image = gtk_widget_get_first_child( box );
 	GtkWidget *label = gtk_widget_get_next_sibling( image );
 	FsvListRow *row = FSV_LIST_ROW(gtk_list_item_get_item( list_item ));
+	GBinding *binding;
 
 	if (row->icon != NULL)
 		gtk_image_set_from_paintable( GTK_IMAGE(image), GDK_PAINTABLE(row->icon) );
 	else
 		gtk_image_clear( GTK_IMAGE(image) );
 
-	gtk_label_set_text( GTK_LABEL(label), row->col_text[0] != NULL ? row->col_text[0] : "" );
+	binding = g_object_bind_property( row, "text0", label, "label", G_BINDING_SYNC_CREATE );
+	g_object_set_data( G_OBJECT(list_item), "text-binding", binding );
 }
 
-/* Factory unbind for column 0: clear content */
+/* Factory unbind for column 0: release the text binding, clear icon */
 static void
 clist_col0_unbind_cb( G_GNUC_UNUSED GtkListItemFactory *factory, GtkListItem *list_item, G_GNUC_UNUSED gpointer user_data )
 {
 	GtkWidget *box = gtk_list_item_get_child( list_item );
 	GtkWidget *image = gtk_widget_get_first_child( box );
+	GBinding *binding;
+
+	binding = g_object_get_data( G_OBJECT(list_item), "text-binding" );
+	if (binding != NULL) g_binding_unbind( binding );
+	g_object_set_data( G_OBJECT(list_item), "text-binding", NULL );
 
 	gtk_image_clear( GTK_IMAGE(image) );
 }
@@ -440,15 +449,35 @@ clist_text_setup_cb( G_GNUC_UNUSED GtkListItemFactory *factory, GtkListItem *lis
 	gtk_list_item_set_child( list_item, label );
 }
 
-/* Factory bind for text-only columns */
+/* Factory bind for text-only columns — uses a property binding so that
+ * updating the row's text property via g_object_set propagates to the
+ * label without requiring items-changed to re-fire bind. */
 static void
 clist_text_bind_cb( GtkListItemFactory *factory, GtkListItem *list_item, G_GNUC_UNUSED gpointer user_data )
 {
 	GtkWidget *label = gtk_list_item_get_child( list_item );
 	FsvListRow *row = FSV_LIST_ROW(gtk_list_item_get_item( list_item ));
 	int col = GPOINTER_TO_INT(g_object_get_data( G_OBJECT(factory), "col_index" ));
+	char prop_name[16];
+	GBinding *binding;
 
-	gtk_label_set_text( GTK_LABEL(label), (col >= 0 && col < 4 && row->col_text[col] != NULL) ? row->col_text[col] : "" );
+	if (col < 0 || col >= 4) {
+		gtk_label_set_text( GTK_LABEL(label), "" );
+		return;
+	}
+
+	g_snprintf( prop_name, sizeof(prop_name), "text%d", col );
+	binding = g_object_bind_property( row, prop_name, label, "label", G_BINDING_SYNC_CREATE );
+	g_object_set_data( G_OBJECT(list_item), "text-binding", binding );
+}
+
+/* Factory unbind for text-only columns: release the property binding */
+static void
+clist_text_unbind_cb( G_GNUC_UNUSED GtkListItemFactory *factory, GtkListItem *list_item, G_GNUC_UNUSED gpointer user_data )
+{
+	GBinding *binding = g_object_get_data( G_OBJECT(list_item), "text-binding" );
+	if (binding != NULL) g_binding_unbind( binding );
+	g_object_set_data( G_OBJECT(list_item), "text-binding", NULL );
 }
 
 
@@ -497,6 +526,7 @@ gui_clist_add( GtkWidget *parent_w, int num_cols, char *col_titles[] )
 		g_object_set_data( G_OBJECT(factory), "col_index", GINT_TO_POINTER(i) );
 		g_signal_connect( factory, "setup", G_CALLBACK(clist_text_setup_cb), NULL );
 		g_signal_connect( factory, "bind", G_CALLBACK(clist_text_bind_cb), NULL );
+		g_signal_connect( factory, "unbind", G_CALLBACK(clist_text_unbind_cb), NULL );
 		column = gtk_column_view_column_new( (col_titles != NULL) ? col_titles[i] : NULL, factory );
 		gtk_column_view_column_set_resizable( column, TRUE );
 		gtk_column_view_append_column( GTK_COLUMN_VIEW(column_view_w), column );
@@ -618,21 +648,23 @@ gui_clist_get_row_data( GtkWidget *clist_w, int position )
 }
 
 
-/* Sets a text column value on an existing row and forces the view to update */
+/* Sets a text column value on an existing row. Uses g_object_set so the
+ * "textN" property notification fires, which the factory's property
+ * binding picks up to refresh the label automatically. */
 void
 gui_clist_set_row_text( GtkWidget *clist_w, int position, int col, const char *text )
 {
 	GListStore *store = g_object_get_data( G_OBJECT(clist_w), "list_store" );
-	FsvListRow *row = g_list_model_get_item( G_LIST_MODEL(store), (guint)position );
-	gpointer items[1];
+	FsvListRow *row;
+	char prop_name[16];
 
-	if (row == NULL || col < 0 || col >= 4)
+	if (col < 0 || col >= 4)
 		return;
-	g_free( row->col_text[col] );
-	row->col_text[col] = g_strdup( text );
-	/* Replace item at same position to trigger items-changed and rebind */
-	items[0] = row;
-	g_list_store_splice( store, (guint)position, 1, items, 1 );
+	row = g_list_model_get_item( G_LIST_MODEL(store), (guint)position );
+	if (row == NULL)
+		return;
+	g_snprintf( prop_name, sizeof(prop_name), "text%d", col );
+	g_object_set( G_OBJECT(row), prop_name, text, NULL );
 	g_object_unref( row );
 }
 
