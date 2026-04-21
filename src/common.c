@@ -787,16 +787,20 @@ get_node_info( GNode *node )
 	else
 		ninfo.file_type_desc = blank;
 
-	/* For symbolic links: target name(s) */
+	/* For symbolic links: target name(s).
+	 * read_symlink( ) and absname_merge( ) both return pointers into their
+	 * own per-call static buffers. Copy those into ninfo-owned storage via
+	 * xstrredup( ) so the returned struct fields are stable heap pointers,
+	 * not pointers into foreign statics that the next call would clobber. */
 	if (NODE_DESC(node)->type == NODE_SYMLINK) {
-		ninfo.target = read_symlink( absname );
+		ninfo.target = xstrredup( ninfo.target, read_symlink( absname ) );
 		str = g_path_get_dirname( absname );
-		ninfo.abstarget = absname_merge( str, ninfo.target );
+		ninfo.abstarget = xstrredup( ninfo.abstarget, absname_merge( str, ninfo.target ) );
 		g_free( str );
 	}
 	else {
-		ninfo.target = blank;
-		ninfo.abstarget = blank;
+		ninfo.target = xstrredup( ninfo.target, blank );
+		ninfo.abstarget = xstrredup( ninfo.abstarget, blank );
 	}
 
 	return &ninfo;

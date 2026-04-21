@@ -898,20 +898,45 @@ Step 35.4 — Clean up geometry_free_recursive
       correctly with no ghost geometry.
 
 Step 35.5 — Fix static buffer hazards in common.c
-  [ ] Audit get_node_info() (common.c:677) and its callees
+  [x] Audit get_node_info() (common.c:677) and its callees
       (read_symlink, absname_merge, node_absname, i64toa,
       abbrev_size, get_file_type_desc). Document which fields alias
       which static buffer.
-  [ ] Fix the ninfo.target / ninfo.abstarget aliasing: either
-      allocate per-call (with a clear ownership contract) or give
-      each its own dedicated static buffer so a single
-      get_node_info() call is self-consistent.
-  [ ] (Optional) Convert the remaining static buffers to
-      per-call allocation to unblock future threading. Defer if
-      scope creeps.
-  [ ] Verify: clean build, Properties dialog and tooltips display
-      correct values for symlinks (target + abstarget both visible
-      and distinct when the symlink is relative).
+      - read_symlink: static `target` buffer (common.c:551), only
+        caller is get_node_info.
+      - absname_merge: static `absname` buffer (common.c:615), only
+        caller is get_node_info. Distinct from read_symlink's buffer.
+      - node_absname: heap-reallocated each call (xfree + NEW_ARRAY)
+        at common.c:342-344; caller gets a pointer that is stable
+        until the next node_absname() call.
+      - i64toa: static strbuf1[256]. All six callers in get_node_info
+        pass its return straight into xstrredup, so ninfo copies it
+        before the next i64toa() overwrites.
+      - abbrev_size: static strbuf[64]. Same pattern — copied via
+        xstrredup immediately.
+      - get_file_type_desc: returns cached pointer stable for the
+        program lifetime (step 35.2); safe to store directly.
+      - ctime(): libc per-thread static buffer; copied via xstrredup.
+      - Pre-fix hazard: ninfo.target aliased read_symlink's static
+        and ninfo.abstarget aliased absname_merge's static — returning
+        &ninfo leaked those pointers out of common.c. Any future
+        caller of read_symlink/absname_merge would clobber them.
+  [x] Fix the ninfo.target / ninfo.abstarget aliasing: ninfo.target
+      and ninfo.abstarget now copied via xstrredup() into ninfo-owned
+      heap storage, matching all other ninfo fields. The blank-case
+      branch also uses xstrredup for consistent ownership (both
+      branches leave ninfo.target/abstarget as free-able heap).
+  [ ] (Optional) Convert the remaining static buffers (i64toa,
+      abbrev_size, node_absname) to per-call allocation to unblock
+      future threading. Deferred — get_node_info() already copies
+      their outputs via xstrredup before the next call, so they
+      are not a correctness hazard under single-threaded use.
+      Revisit in step 35.6 if the background scan worker needs any
+      of these.
+  [x] Verify: clean build. User to confirm Properties dialog and
+      tooltips display correct values for symlinks (target +
+      abstarget both visible and distinct when the symlink is
+      relative).
 
 Step 35.6 — Background filesystem scan (GTask)
   [ ] Move scanfs.c's process_dir() recursion onto a GTask worker
