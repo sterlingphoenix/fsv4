@@ -852,19 +852,20 @@ Step 35.1 — Directory tree fast lookup (dirtree.c)
       large trees (e.g. /usr with many subdirectories expanded).
 
 Step 35.2 — File-type description cache
-  [ ] In common.c, add a cache (GHashTable keyed on a stable key —
-      extension string for files with an extension, or a small
-      cache keyed on (dev,ino) for extensionless files) that maps
-      key → allocated description string.
-  [ ] get_file_type_desc() checks the cache before forking `file`.
-      On miss, runs popen(FILE_COMMAND) as today, stores the result,
-      returns it.
-  [ ] Cache is freed on program exit; per-rescan invalidation is not
-      needed (descriptions are based on content, which for a given
-      (dev,ino) is stable until the file is rewritten).
-  [ ] Verify: builds cleanly, Properties dialog shows the same file
-      type strings as before but opens visibly faster on second and
-      subsequent calls for files of the same type.
+  [x] In common.c, added a GHashTable keyed on absolute pathname →
+      allocated description string. Keyed on pathname rather than
+      extension because `file` inspects content, not extension, so
+      extension-keyed caching would conflate different files.
+  [x] get_file_type_desc() checks the cache first; on miss, runs
+      popen(FILE_COMMAND) as before, stores the result, returns the
+      cached pointer. Errors / timeouts are NOT cached so retries can
+      succeed.
+  [x] Returned pointers are now stable for the program lifetime
+      (previously they pointed into a static buffer that got clobbered
+      on the next call — a latent hazard, now fixed as a side effect).
+  [x] Cache leaks on program exit (program-lifetime memory).
+  [x] Verify: builds cleanly. User to confirm Properties dialog opens
+      visibly faster on subsequent calls for the same file.
 
 Step 35.3 — Replace g_slice with g_new0
   [ ] scanfs.c: replace g_slice_new0(DirNodeDesc) / g_slice_new0(

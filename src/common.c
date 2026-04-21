@@ -462,19 +462,39 @@ node_named( const char *absname )
 
 
 #ifdef HAVE_FILE_COMMAND
+
+/* Cache: absolute pathname -> file-type description string. Results
+ * are cached for the lifetime of the program. Same-file-same-output is
+ * a reasonable approximation since `file` inspects content and content
+ * rarely changes mid-session; the payoff is no fork+exec on every
+ * Properties dialog for a previously-seen file. */
+static GHashTable *file_type_cache = NULL;
+
 /* Runs the 'file' command on the given file, and returns the output
- * (a verbose description of the file type) */
+ * (a verbose description of the file type). The returned pointer is
+ * owned by the cache (or by a static scratch buffer on error/timeout)
+ * — the caller must not free it. */
 static char *
 get_file_type_desc( const char *filename )
 {
-	static char *cmd_output = NULL;
+	static char *scratch = NULL;
+	char *cached;
 	FILE *cmd;
 	double t0;
 	int len, c, i = 0;
 	char *cmd_line;
+	char *result, *cached_copy;
 
-	/* Allocate output buffer */
-	RESIZE(cmd_output, strlen( filename ) + 1024, char);
+	if (file_type_cache == NULL)
+		file_type_cache = g_hash_table_new_full(
+			g_str_hash, g_str_equal, g_free, g_free );
+
+	cached = g_hash_table_lookup( file_type_cache, filename );
+	if (cached != NULL)
+		return cached;
+
+	/* Allocate scratch buffer for `file` output */
+	RESIZE(scratch, strlen( filename ) + 1024, char);
 
 	/* Construct command line */
 	len = strlen( FILE_COMMAND ) + strlen( filename ) - 1;
@@ -485,8 +505,8 @@ get_file_type_desc( const char *filename )
 	cmd = popen( cmd_line, "r" );
 	xfree( cmd_line );
 	if (cmd == NULL) {
-		strcpy( cmd_output, _("Could not execute 'file' command") );
-		return cmd_output;
+		strcpy( scratch, _("Could not execute 'file' command") );
+		return scratch;		/* not cached — let next call retry */
 	}
 
 	/* Read loop */
@@ -495,28 +515,31 @@ get_file_type_desc( const char *filename )
 		/* Read command's stdout */
 		c = fgetc( cmd );
 		if (c != EOF)
-			cmd_output[i++] = c;
+			scratch[i++] = c;
 
 		/* Check for timeout condition */
 		if ((xgettime( ) - t0) > 5.0) {
 			pclose( cmd );
-			strcpy( cmd_output, _("('file' command timed out)") );
-			return cmd_output;
+			strcpy( scratch, _("('file' command timed out)") );
+			return scratch;	/* not cached — let next call retry */
 		}
 
 		/* Keep the GUI responsive */
 		gui_update( );
 	}
 	pclose( cmd );
-	cmd_output[i] = '\0';
+	scratch[i] = '\0';
 
 	len = strlen( filename );
-	if (!strncmp( filename, cmd_output, len )) {
-		/* Remove prepended "filename: " from output */
-		return &cmd_output[len + 2];
-	}
+	if (!strncmp( filename, scratch, len ))
+		result = &scratch[len + 2];	/* strip "filename: " prefix */
+	else
+		result = scratch;
 
-	return cmd_output;
+	/* Cache a private copy and return it. The cache owns both strings. */
+	cached_copy = g_strdup( result );
+	g_hash_table_insert( file_type_cache, g_strdup( filename ), cached_copy );
+	return cached_copy;
 }
 #endif /* HAVE_FILE_COMMAND */
 
