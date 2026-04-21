@@ -868,23 +868,34 @@ Step 35.2 — File-type description cache
       visibly faster on subsequent calls for the same file.
 
 Step 35.3 — Replace g_slice with g_new0
-  [ ] scanfs.c: replace g_slice_new0(DirNodeDesc) / g_slice_new0(
-      NodeDesc) with g_new0(DirNodeDesc, 1) / g_new0(NodeDesc, 1).
-  [ ] Replace all matching g_slice_free calls with g_free.
-  [ ] Audit the rest of the codebase for any other g_slice usage
-      (grep -rn 'g_slice_' src/) and convert consistently.
-  [ ] Verify: clean build with no deprecation warnings on newer
-      GLib, no functional change, no leaks under normal scan /
-      rescan cycles.
+  [x] scanfs.c: replaced the 4 g_slice_new0(DirNodeDesc) /
+      g_slice_new0(NodeDesc) sites with g_new0(..., 1).
+  [x] Replaced the 2 matching g_slice_free calls in
+      free_node_data_cb with g_free (collapsed the dir/regular
+      branch since g_free doesn't care about the type).
+  [x] grep -rn 'g_slice_' src/ returns nothing. No other g_slice
+      usage anywhere in the codebase.
+  [x] Verify: clean build, no deprecation warnings. User to confirm
+      scan / rescan still works and nothing leaks under normal use.
 
 Step 35.4 — Clean up geometry_free_recursive
-  [ ] Decide: either (a) remove the no-op function and all its call
-      sites, or (b) make it actually mark the relevant VBO batches
-      dirty so the next rebuild drops stale node IDs tied to the
-      previous tree.
-  [ ] Update the comment in geometry.c:4434 to match reality.
-  [ ] Verify: clean build, rescan works correctly, no visible
-      rendering artefacts immediately after a rescan.
+  [x] Went with option (b): geometry_free_recursive() now
+      unconditionally invalidates every initialized VBO batch across
+      all three modes, plus the pick FBO cache and TreeV arrangement
+      state. Must be unconditional because on rescan fsv_mode is
+      FSV_NONE, so geometry_queue_rebuild's mode-gated invalidation
+      does nothing.
+  [x] Found by user-visible bug: after Open Root → same directory,
+      the old tree's geometry stayed on the GPU and rendered on top
+      of the new root.
+  [x] Related fix in scanfs.c: call dirtree_clear() BEFORE tearing
+      down the GNode tree so GTK drops its FsvDirItem refs to the
+      soon-to-be-freed nodes; then set globals.fstree and
+      globals.current_node to NULL immediately after destroy. Also
+      guarded find_tree_list_row() in dirtree.c against NULL fstree.
+  [x] Verify: builds cleanly. User to confirm Open Root → same
+      directory and Open Root → different directory both render
+      correctly with no ghost geometry.
 
 Step 35.5 — Fix static buffer hazards in common.c
   [ ] Audit get_node_info() (common.c:677) and its callees

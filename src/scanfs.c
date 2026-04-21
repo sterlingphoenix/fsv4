@@ -184,13 +184,13 @@ process_dir( const char *dir, GNode *dnode )
 			process_dir( pathbuf, node );
 
 			/* Move new descriptor into working memory */
-			andesc = (union AnyNodeDesc *)g_slice_new0( DirNodeDesc );
+			andesc = (union AnyNodeDesc *)g_new0( DirNodeDesc, 1 );
 			memcpy( andesc, DIR_NODE_DESC(node), sizeof(DirNodeDesc) );
 			node->data = andesc;
 		}
 		else {
 			/* Move new descriptor into working memory */
-			andesc = (union AnyNodeDesc *)g_slice_new0( NodeDesc );
+			andesc = (union AnyNodeDesc *)g_new0( NodeDesc, 1 );
 			memcpy( andesc, NODE_DESC(node), sizeof(NodeDesc) );
 			node->data = andesc;
 		}
@@ -317,12 +317,8 @@ setup_fstree_recursive( GNode *node, GNode **node_table )
 static gboolean
 free_node_data_cb( GNode *node, G_GNUC_UNUSED gpointer data )
 {
-	if (node->data != NULL) {
-		if (NODE_IS_DIR(node))
-			g_slice_free( DirNodeDesc, node->data );
-		else
-			g_slice_free( NodeDesc, node->data );
-	}
+	if (node->data != NULL)
+		g_free( node->data );
 	return FALSE;
 }
 
@@ -337,20 +333,26 @@ scanfs( const char *dir )
 	char *name;
 
 	if (globals.fstree != NULL) {
-		/* Free existing geometry and filesystem tree */
+		/* Tear down the UI first so GTK drops its FsvDirItem refs to
+		 * the GNode pointers before we free them. Otherwise stale
+		 * dnode pointers can be dereferenced during teardown. */
+		dirtree_clear( );
+
 		geometry_free_recursive( globals.fstree );
 		/* Free node descriptors */
 		g_node_traverse( globals.fstree, G_PRE_ORDER, G_TRAVERSE_ALL, -1, free_node_data_cb, NULL );
 		g_node_destroy( globals.fstree );
+		globals.fstree = NULL;
+		globals.current_node = NULL;
+	}
+	else {
+		dirtree_clear( );
 	}
 
 	/* ...and string chunks to hold name strings */
 	if (name_strchunk != NULL)
 		g_string_chunk_free( name_strchunk );
 	name_strchunk = g_string_chunk_new( 8192 );
-
-	/* Clear out directory tree */
-	dirtree_clear( );
 
 	/* Reset node numbering */
 	node_id = 0;
@@ -361,7 +363,7 @@ scanfs( const char *dir )
 	root_dir = xgetcwd( );
 
 	/* Set up fstree metanode */
-	globals.fstree = g_node_new( g_slice_new0( DirNodeDesc ) );
+	globals.fstree = g_node_new( g_new0( DirNodeDesc, 1 ) );
 	NODE_DESC(globals.fstree)->type = NODE_METANODE;
 	NODE_DESC(globals.fstree)->id = node_id++;
 	name = g_path_get_dirname( root_dir );
@@ -370,7 +372,7 @@ scanfs( const char *dir )
 	DIR_NODE_DESC(globals.fstree)->tree_expanded = FALSE;
 
 	/* Set up root directory node */
-	g_node_append_data( globals.fstree, g_slice_new0( DirNodeDesc ) );
+	g_node_append_data( globals.fstree, g_new0( DirNodeDesc, 1 ) );
 	/* Note: We can now use root_dnode to refer to the node just
 	 * created (it is an alias for globals.fstree->children) */
 	NODE_DESC(root_dnode)->id = node_id++;

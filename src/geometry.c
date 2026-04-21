@@ -4429,13 +4429,28 @@ geometry_highlight_node( GNode *node, boolean strong )
 
 
 /* Frees geometry resources in the subtree rooted at the given node.
- * Invalidates VBO batches so they are rebuilt on next draw. */
+ * Invalidates VBO batches unconditionally so they are rebuilt on next
+ * draw. Called from scanfs() on rescan — at that point fsv_mode may
+ * already be FSV_NONE / FSV_SPLASH so we cannot rely on
+ * geometry_queue_rebuild's mode-gated invalidation path. */
 void
 geometry_free_recursive( G_GNUC_UNUSED GNode *dnode )
 {
-	/* VBO batches are invalidated via geometry_highlight_node /
-	 * geometry_color_changed / colexp, so nothing to do here.
-	 * The function is kept for API compatibility with scanfs.c. */
+	if (discv_batch_initialized)
+		vbo_batch_invalidate( &discv_solid_batch );
+	if (mapv_batch_initialized) {
+		vbo_batch_invalidate( &mapv_solid_batch );
+		vbo_batch_invalidate( &mapv_outline_batch );
+	}
+	if (treev_batch_initialized) {
+		vbo_batch_invalidate( &treev_solid_batch );
+		vbo_batch_invalidate( &treev_branch_batch );
+		vbo_batch_invalidate( &treev_outline_batch );
+	}
+
+	/* Invalidate pick FBO cache and TreeV arrangement state too */
+	treev_needs_arrange = TRUE;
+	ogl_pick_invalidate( );
 }
 
 

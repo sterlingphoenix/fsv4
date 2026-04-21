@@ -79,7 +79,7 @@ find_tree_list_row( GNode *dnode, guint *out_position )
 	GtkTreeListRow *row;
 	int i;
 
-	if (dnode == NULL || tree_list_model == NULL)
+	if (dnode == NULL || tree_list_model == NULL || globals.fstree == NULL)
 		return NULL;
 
 	/* Build ancestor chain from dnode up to root_dnode. chain[0] is
