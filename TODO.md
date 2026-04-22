@@ -991,7 +991,7 @@ Step 35.6 — Background filesystem scan (GTask)
       - i64toa / abbrev_size / node_absname statics are used only
         by the main thread (from scan_monitor, dialog, etc.) —
         not touched by the worker.
-  [ ] Verify: scan of a large tree (e.g. /usr) does not freeze the
+  [x] Verify: scan of a large tree (e.g. /usr) does not freeze the
       UI. Cancel, rescan, and close-during-scan all behave
       correctly. No races observed over many runs.
       NOTE: explicit user-triggered cancel is NOT wired up in this
