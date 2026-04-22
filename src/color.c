@@ -307,19 +307,20 @@ wpattern_color( GNode *node )
 
 
 /* Returns the display name of the wildcard group whose pattern matches
- * the given node, or NULL if no group matches (or if node is a directory).
- * Used by the Properties dialog to show the wildcard-based file type. */
+ * the given filename basename, or NULL if no group matches. The
+ * filename is treated exactly the way color_wpattern_group_name()
+ * treats NODE_DESC(node)->name — fnmatch with FNM_CASEFOLD etc. Used
+ * by the Properties dialog to look up the wildcard group for a
+ * symlink's target without requiring a GNode. */
 const char *
-color_wpattern_group_name( GNode *node )
+color_wpattern_group_name_for_filename( const char *name )
 {
 	struct WPatternGroup *wpgroup;
 	GList *wpgroup_llink, *wp_llink;
-	const char *name, *wpattern;
+	const char *wpattern;
 
-	if (node == NULL || NODE_IS_DIR(node))
+	if (name == NULL || name[0] == '\0')
 		return NULL;
-
-	name = NODE_DESC(node)->name;
 
 	wpgroup_llink = color_config.by_wpattern.wpgroup_list;
 	while (wpgroup_llink != NULL) {
@@ -335,6 +336,18 @@ color_wpattern_group_name( GNode *node )
 	}
 
 	return NULL;
+}
+
+
+/* Returns the display name of the wildcard group whose pattern matches
+ * the given node, or NULL if no group matches (or if node is a directory).
+ * Used by the Properties dialog to show the wildcard-based file type. */
+const char *
+color_wpattern_group_name( GNode *node )
+{
+	if (node == NULL || NODE_IS_DIR(node))
+		return NULL;
+	return color_wpattern_group_name_for_filename( NODE_DESC(node)->name );
 }
 
 

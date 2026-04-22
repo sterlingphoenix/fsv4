@@ -27,6 +27,7 @@
 
 #include <time.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <gtk/gtk.h>
 
 #include "animation.h"
@@ -1249,8 +1250,10 @@ dialog_node_properties( GNode *node )
 
 	proptext = xstrdup( "" );
 	/* Type — wildcard group name for files (falls back to node type
-	 * if nothing matches), node type for directories. Append
-	 * "(executable)" when the file has the execute bit set. */
+	 * if nothing matches), node type for directories. For symlinks,
+	 * show "<symlink-group> -> <target-group>" when the two differ,
+	 * and append "(symlink)" or "(broken symlink)". Append
+	 * "(executable)" for regular files with the execute bit set. */
 	{
 		const char *type_label = NULL;
 		if (!NODE_IS_DIR(node))
@@ -1258,8 +1261,45 @@ dialog_node_properties( GNode *node )
 		if (type_label == NULL)
 			type_label = _(node_type_names[NODE_DESC(node)->type]);
 		STRRECAT(proptext, type_label);
-		if (node_is_executable( node ))
+
+		if (NODE_DESC(node)->type == NODE_SYMLINK) {
+			const char *target_label = NULL;
+			boolean broken = FALSE;
+
+			if (node_info->abstarget != NULL && node_info->abstarget[0] != '\0') {
+				const char *tname = strrchr( node_info->abstarget, '/' );
+				tname = (tname != NULL) ? tname + 1 : node_info->abstarget;
+				target_label = color_wpattern_group_name_for_filename( tname );
+				if (target_label == NULL) {
+					struct stat tst;
+					if (stat( node_info->abstarget, &tst ) == 0) {
+						if (S_ISDIR(tst.st_mode))
+							target_label = _(node_type_names[NODE_DIRECTORY]);
+						else
+							target_label = _(node_type_names[NODE_REGFILE]);
+					}
+					else {
+						broken = TRUE;
+					}
+				}
+			}
+			else {
+				broken = TRUE;
+			}
+
+			if (target_label != NULL && strcmp( target_label, type_label ) != 0) {
+				STRRECAT(proptext, " -> ");
+				STRRECAT(proptext, target_label);
+			}
+
+			if (broken)
+				STRRECAT(proptext, _(" (broken symlink)"));
+			else
+				STRRECAT(proptext, _(" (symlink)"));
+		}
+		else if (node_is_executable( node )) {
 			STRRECAT(proptext, _(" (executable)"));
+		}
 	}
 	STRRECAT(proptext, "\n\n");
 	/* Location */

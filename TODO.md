@@ -1251,7 +1251,7 @@ Step 37.2 — Hover statusbar shows symlink target
       "<symlink> -> <dangling-target>".
 
 Step 37.3 — Properties dialog marks symlinks and shows target type
-  [ ] In dialog.c, in the `Type:` field construction (around line
+  [x] In dialog.c, in the `Type:` field construction (around line
       1254), when the node is a NODE_SYMLINK:
        - Compute the target's wildcard-group name (apply the
          existing `color_wpattern_group_name()` logic against the
@@ -1262,6 +1262,13 @@ Step 37.3 — Properties dialog marks symlinks and shows target type
        - Always append "(symlink)" (mirrors "(executable)").
        - If the target is unreachable (stat fails), append
          "(broken symlink)" instead.
+      - color.c gained color_wpattern_group_name_for_filename()
+        (the existing GNode-flavoured version now delegates to
+        it). dialog.c's Type block consults it for the target
+        basename extracted from node_info->abstarget. Falls
+        back to node_type_names[] for Directory / Regular File
+        when no wildcard group matches and stat() succeeds.
+        Appends "(symlink)" or "(broken symlink)" as appropriate.
   [ ] Consider adding a "File type" notebook page to the NODE_SYMLINK
       switch case in dialog.c so users can see the full `file`
       command description of the target (not just the short wildcard
