@@ -192,6 +192,15 @@ process_dir( const char *dir, GNode *dnode )
 			memcpy( andesc, DIR_NODE_DESC(node), sizeof(DirNodeDesc) );
 			node->data = andesc;
 		}
+		else if (NODE_DESC(node)->type == NODE_SYMLINK) {
+			/* Symlinks get an extended descriptor so the
+			 * post-scan resolve_symlinks pass can record the
+			 * target's display size. target_size defaults to 0
+			 * (unresolved). */
+			andesc = (union AnyNodeDesc *)g_new0( SymlinkNodeDesc, 1 );
+			memcpy( andesc, NODE_DESC(node), sizeof(NodeDesc) );
+			node->data = andesc;
+		}
 		else {
 			/* Move new descriptor into working memory */
 			andesc = (union AnyNodeDesc *)g_new0( NodeDesc, 1 );
@@ -256,6 +265,9 @@ scan_monitor( G_GNUC_UNUSED gpointer user_data )
 /* Forward declaration — definition is below with the other
  * setup-once-scan-is-done helpers. */
 static void setup_fstree_recursive( GNode *node, GNode **node_table );
+static void resolve_symlinks_recursive( GNode *node, const char *root_abs );
+static int node_abspath_worker( GNode *node, char *buf, size_t buflen );
+static int64 scan_out_of_root_dir_size( const char *abs_path );
 
 
 /* Context for an in-flight async scan. Allocated on the heap, owned
@@ -301,6 +313,16 @@ scan_worker_thread(
 	ctx->node_count = node_id;
 	ctx->node_table = NEW_ARRAY(GNode *, ctx->node_count);
 	setup_fstree_recursive( globals.fstree, ctx->node_table );
+
+	/* Resolve symlink target sizes now that subtree totals exist.
+	 * Pure tree walk + stat() calls; no GTK access. Precompute the
+	 * root's absolute path so the recursive pass doesn't touch
+	 * node_absname's main-thread-owned static buffer. */
+	{
+		char root_abs[PATH_MAX];
+		if (node_abspath_worker( root_dnode, root_abs, sizeof(root_abs) ) == 0)
+			resolve_symlinks_recursive( globals.fstree, root_abs );
+	}
 
 	g_task_return_boolean( task, TRUE );
 }
@@ -409,6 +431,226 @@ setup_fstree_recursive( GNode *node, GNode **node_table )
 		DIR_NODE_DESC(node->parent)->subtree.size += DIR_NODE_DESC(node)->subtree.size;
 		for (i = 0; i < NUM_NODE_TYPES; i++)
 			DIR_NODE_DESC(node->parent)->subtree.counts[i] += DIR_NODE_DESC(node)->subtree.counts[i];
+	}
+}
+
+
+/* Build the absolute pathname of `node` into `buf` without touching
+ * the static buffer inside node_absname() — that static is shared
+ * with main-thread callers (dirtree / filelist selection handlers)
+ * and cannot be assumed race-free during the post-scan symlink pass
+ * on the worker thread. Returns 0 on success, -1 if the path would
+ * overflow buflen or the tree is pathologically deep. */
+static int
+node_abspath_worker( GNode *node, char *buf, size_t buflen )
+{
+	GNode *chain[256];
+	int depth = 0;
+	size_t pos = 0;
+	int i;
+
+	while (node != NULL) {
+		if (depth >= (int)G_N_ELEMENTS(chain))
+			return -1;
+		chain[depth++] = node;
+		node = node->parent;
+	}
+
+	for (i = depth - 1; i >= 0; i--) {
+		const char *name = NODE_DESC(chain[i])->name;
+		size_t nlen = strlen( name );
+		if (pos > 0) {
+			if (pos + 1 >= buflen) return -1;
+			buf[pos++] = '/';
+		}
+		if (pos + nlen >= buflen) return -1;
+		memcpy( &buf[pos], name, nlen );
+		pos += nlen;
+	}
+	if (pos >= buflen) return -1;
+	buf[pos] = '\0';
+
+	/* node_absname() special-cases a root of "/" by stripping a
+	 * leading double-slash; do the same here for consistency. */
+	if (pos >= 2 && buf[0] == '/' && buf[1] == '/')
+		memmove( buf, buf + 1, pos );
+
+	return 0;
+}
+
+
+/* Worker-thread variant of node_named() that takes a pre-computed
+ * root absolute path (so it doesn't call node_absname() and race
+ * with the main thread's static buffer). Otherwise identical to
+ * the component-by-component match in node_named(). */
+static GNode *
+node_named_worker( const char *absname, const char *root_abs )
+{
+	GNode *node;
+	size_t root_len;
+	const char *tail;
+	char *tail_copy, *name;
+
+	root_len = strlen( root_abs );
+	if (strncmp( root_abs, absname, root_len ) != 0)
+		return NULL;
+
+	/* Handle root == "/" so tail starts at absname itself */
+	if (root_len == 1 && root_abs[0] == '/')
+		root_len = 0;
+
+	tail = &absname[root_len];
+	if (tail[0] == '\0' || (tail[0] == '/' && tail[1] == '\0'))
+		return root_dnode;
+
+	tail_copy = xstrdup( tail );
+	name = strtok( tail_copy, "/" );
+	node = root_dnode->children;
+	while (node != NULL && name != NULL) {
+		if (strcmp( name, NODE_DESC(node)->name ) == 0) {
+			name = strtok( NULL, "/" );
+			if (name == NULL)
+				break;
+			node = node->children;
+			continue;
+		}
+		node = node->next;
+	}
+
+	xfree( tail_copy );
+	return node;
+}
+
+
+/* Bounded recursive directory size calculator for out-of-root
+ * symlink targets. Walks the target directory summing file sizes,
+ * recursing into subdirectories but NOT following symlinks (uses
+ * lstat). Capped at a few thousand entries so a symlink pointing
+ * outside the scanned root (e.g. /usr, /home) returns a meaningful
+ * number without the scan hanging on pathological targets. */
+#define OUT_OF_ROOT_MAX_ENTRIES 20000
+#define OUT_OF_ROOT_MAX_DEPTH   12
+
+static void
+scan_out_of_root_walk( const char *path, int depth, int64 *total, int *budget )
+{
+	DIR *dir;
+	struct dirent *ent;
+
+	if (depth >= OUT_OF_ROOT_MAX_DEPTH)
+		return;
+	if (*budget <= 0)
+		return;
+
+	dir = opendir( path );
+	if (dir == NULL)
+		return;
+
+	while ((ent = readdir( dir )) != NULL) {
+		char child[PATH_MAX];
+		struct stat st;
+
+		if (*budget <= 0)
+			break;
+		if (ent->d_name[0] == '.'
+		    && (ent->d_name[1] == '\0'
+		        || (ent->d_name[1] == '.' && ent->d_name[2] == '\0')))
+			continue;
+
+		if ((int)(strlen( path ) + 1 + strlen( ent->d_name )) >= PATH_MAX)
+			continue;
+		snprintf( child, sizeof(child), "%s/%s", path, ent->d_name );
+
+		if (lstat( child, &st ) != 0)
+			continue;
+		(*budget)--;
+
+		if (S_ISDIR(st.st_mode))
+			scan_out_of_root_walk( child, depth + 1, total, budget );
+		else if (S_ISREG(st.st_mode))
+			*total += (int64)st.st_size;
+	}
+
+	closedir( dir );
+}
+
+static int64
+scan_out_of_root_dir_size( const char *abs_path )
+{
+	int64 total = 0;
+	int budget = OUT_OF_ROOT_MAX_ENTRIES;
+	scan_out_of_root_walk( abs_path, 0, &total, &budget );
+	return total;
+}
+
+
+/* Post-scan pass: for every symlink, resolve what it points at and
+ * record the target's "display size" so MapV / DiscV / TreeV can lay
+ * the symlink out at something closer to its effective weight. The
+ * symlink keeps its own NODE_DESC(node)->size (the lstat byte count
+ * of the pathname) — that's what Properties shows.
+ *
+ * Strategy:
+ *   - stat() (follows symlinks) the absolute pathname of the symlink.
+ *   - If stat fails → broken link, leave target_size = 0.
+ *   - If stat succeeds and S_ISDIR: try to find the target inside
+ *     the scanned tree via node_named() + realpath resolution. If
+ *     found, use that dnode's subtree.size + own size. If target
+ *     is outside the scanned root, fall back to st.st_size.
+ *   - Otherwise (regular file / fifo / etc.), use st.st_size.
+ *
+ * Runs on the scan worker thread between setup_fstree_recursive()
+ * and g_task_return_boolean(). No GTK access. node_absname() is not
+ * called here — see node_abspath_worker(). */
+static void
+resolve_symlinks_recursive( GNode *node, const char *root_abs )
+{
+	GNode *child;
+
+	if (NODE_IS_SYMLINK(node)) {
+		char symlink_abs[PATH_MAX];
+		struct stat st;
+
+		if (node_abspath_worker( node, symlink_abs, sizeof(symlink_abs) ) == 0
+		    && stat( symlink_abs, &st ) == 0) {
+			int64 target_size = 0;
+			boolean target_is_dir = FALSE;
+
+			if (S_ISDIR(st.st_mode)) {
+				target_is_dir = TRUE;
+				char resolved[PATH_MAX];
+				if (realpath( symlink_abs, resolved ) != NULL) {
+					GNode *target_node = node_named_worker( resolved, root_abs );
+					if (target_node != NULL && NODE_IS_DIR(target_node)) {
+						target_size = NODE_DESC(target_node)->size
+							    + DIR_NODE_DESC(target_node)->subtree.size;
+					}
+					else {
+						/* Out-of-root (or unscanned) directory:
+						 * walk the target ourselves to get a
+						 * meaningful size — bounded so a symlink
+						 * to / doesn't hang the scan. */
+						target_size = scan_out_of_root_dir_size( resolved );
+					}
+				}
+				if (target_size == 0)
+					target_size = st.st_size;
+			}
+			else {
+				target_size = st.st_size;
+			}
+
+			SYMLINK_NODE_DESC(node)->target_size = target_size;
+			SYMLINK_NODE_DESC(node)->target_is_dir = target_is_dir;
+		}
+		/* else: broken link — target_size stays 0 */
+	}
+
+	/* Recurse */
+	child = node->children;
+	while (child != NULL) {
+		resolve_symlinks_recursive( child, root_abs );
+		child = child->next;
 	}
 }
 

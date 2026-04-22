@@ -1098,31 +1098,25 @@ Options on the table:
         before shipping, which we don't currently have infra for.
 
 Step 36.1 — Pick an option
-  [ ] Decide between (A), (B), (C), or something else entirely.
-  [ ] Record the decision in this section so the implementation
+  [x] Decide between (A), (B), (C), or something else entirely.
+  [x] Record the decision in this section so the implementation
       steps can be written against a concrete target.
 
+  DECISION (2026-04): none of (A)/(B)/(C) chosen. Vendoring ~150
+  third-party headers is unappealing; a hand-rolled or linmath
+  swap is rewrite work with no user-visible upside. cglm stays as
+  an external dependency; the RPM-packaging shortfall is pushed
+  upstream — Fedora/RHEL users will need cglm from a side repo or
+  a local build until the distros pick it up. Revisit only if a
+  concrete user report makes this painful.
+
 Step 36.2 — Implement the chosen option
-  [ ] To be written once 36.1 is decided. Will include: build-system
-      changes, header / include updates, any required rewrites of
-      glmath.c, and any typedef adjustments in geometry.c and
-      tmaptext.c.
-  [ ] Verify: clean build, no functional change, all three vis
-      modes render identically to before, no GL errors, no frame-
-      rate regression.
+  [—] N/A (no option chosen).
 
 Step 36.3 — Confirm RPM-friendly build
-  [ ] Confirm the project builds on a Fedora / RHEL system without
-      needing out-of-repo packages (or with only packages that are
-      trivially available there).
-  [ ] Update README.md dependency list if the cglm line goes away.
-  [ ] Verify: clean build on at least one RPM-based distro, same
-      runtime behaviour.
+  [—] N/A (no option chosen).
 
-  Checkpoint: User confirms the project builds on their target
-  RPM-based distro with the usual `meson setup build && ninja -C
-  build` flow, and the running binary behaves identically to the
-  current cglm-based build.
+  Checkpoint: N/A — phase closed without code changes.
 
 
 PHASE 37 — SYMLINK USABILITY IMPROVEMENTS
@@ -1150,27 +1144,82 @@ Decisions already made (from the Step 35.5 follow-up discussion):
     mirroring the existing "(executable)" suffix.
 
 Step 37.1 — Symlink size follows the target
-  [ ] In scanfs.c `stat_node()` (around line 68), for NODE_SYMLINK
+  [x] In scanfs.c `stat_node()` (around line 68), for NODE_SYMLINK
       nodes, additionally `stat()` the path. Store the result in a
       new NodeDesc field (or a parallel symlink-only struct) so we
       preserve both the symlink's own identity and the effective
       "display size".
-  [ ] After scan completes, do a second pass that resolves any
+      - Chose the parallel-struct route: added SymlinkNodeDesc
+        (NodeDesc + int64 target_size) to common.h, plus the
+        SYMLINK_NODE_DESC / NODE_IS_SYMLINK macros. process_dir in
+        scanfs.c now allocates a SymlinkNodeDesc for NODE_SYMLINK
+        nodes; target_size defaults to 0.
+  [x] After scan completes, do a second pass that resolves any
       symlink whose target lies inside the scanned tree: look up
       the target by absname and use that dnode's `subtree.size`
       when it is a directory. This has to happen AFTER the tree
       is fully built so all subtree totals are finalised.
-  [ ] Update geometry (MapV / DiscV / TreeV) to consult the
+      - resolve_symlinks_recursive() runs on the worker thread
+        right after setup_fstree_recursive(), walks the tree,
+        stat()s each symlink's absolute path, and fills in
+        target_size. For directory targets inside the scanned
+        tree it uses realpath()+node_named_worker() to find the
+        matching dnode and reads subtree.size. For directory
+        targets outside the tree, falls back to stat().st_size.
+        For non-directory targets, uses stat().st_size.
+      - Worker-local helpers (node_abspath_worker,
+        node_named_worker) are used in place of the main-thread
+        node_absname / node_named to avoid racing on their
+        shared static buffers.
+  [x] Update geometry (MapV / DiscV / TreeV) to consult the
       effective display size rather than NODE_DESC(node)->size for
       symlinks. Do this with a single helper — something like
       `node_display_size(node)` — so the three modes stay in sync.
-  [ ] Preserve the existing NODE_DESC(node)->size field as-is for
+      - node_display_size() added to common.c. Returns
+        size+subtree.size for directories, target_size for
+        resolved symlinks, size otherwise. All four geometry
+        sites (discv_node_compare, discv_init_recursive,
+        mapv_init_recursive x2, treev_init_recursive) now go
+        through this helper.
+  [x] Preserve the existing NODE_DESC(node)->size field as-is for
       "actual on-disk size" readouts (Properties "Size:" line). The
       display-size change is purely for geometry.
+      - NODE_DESC(node)->size is still the lstat size; only the
+        derived display size consulted by geometry changes.
   [ ] Verify: symlinks to files render at their target's size;
       symlinks to directories inside the scanned tree render at the
       target's subtree size; broken / unreachable symlinks stay
       tiny. No regression in MapV / DiscV / TreeV for non-symlinks.
+
+  UPDATE 1: During testing, user reported two issues with 37.1:
+    (a) In MapV, a symlink-to-file renders with the steep-slant
+        symlink silhouette, which looks different from neighbouring
+        regular files. Before the size fix this was barely visible
+        because symlinks were pixel-sized — it only became obvious
+        once they inflated to match their target.
+        Fix: SymlinkNodeDesc now carries a `target_is_dir` boolean
+        set during resolve_symlinks_recursive. A new helper
+        `mapv_node_slant(node)` in geometry.c picks the slant
+        based on the symlink's resolved target: symlink-to-file
+        uses the regular-file slant; symlink-to-directory uses
+        the directory slant. Unresolved / broken symlinks keep
+        the distinctive steep symlink slant. All four mapv
+        slant-ratio call sites go through the helper.
+        Visual differentiation of symlinks (vs. their targets) is
+        deferred to future texturing work rather than using shape.
+    (b) Directory symlinks pointing outside the scanned root (the
+        common case, since users rarely link within a root they're
+        exploring) fell back to stat()'s st_size, which for a
+        directory is the inode allocation (~4kB) — effectively
+        invisible in MapV and DiscV. TreeV's log scale masked it.
+        Fix: added scan_out_of_root_dir_size() in scanfs.c — a
+        bounded recursive walk (lstat only, no symlink-following)
+        capped at OUT_OF_ROOT_MAX_ENTRIES (20 000) and
+        OUT_OF_ROOT_MAX_DEPTH (12) so a symlink to /
+        can't hang the scan. resolve_symlinks_recursive calls
+        this when realpath() places the target outside the tree,
+        then falls back to st.st_size if even that returns zero
+        (empty / unreadable dir).
 
 Step 37.2 — Hover statusbar shows symlink target
   [ ] In viewport.c, at the three `window_statusbar(SB_RIGHT,

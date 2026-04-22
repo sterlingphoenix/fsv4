@@ -118,8 +118,10 @@
 /* Returns information about the given node */
 #define NODE_DESC(node)		((NodeDesc *)(node)->data)
 #define DIR_NODE_DESC(dnode)	((DirNodeDesc *)(dnode)->data)
+#define SYMLINK_NODE_DESC(node)	((SymlinkNodeDesc *)(node)->data)
 #define NODE_IS_DIR(node)	(NODE_DESC(node)->type == NODE_DIRECTORY)
 #define NODE_IS_METANODE(node)	(NODE_DESC(node)->type == NODE_METANODE)
+#define NODE_IS_SYMLINK(node)	(NODE_DESC(node)->type == NODE_SYMLINK)
 #define DIR_COLLAPSED(dnode)	(DIR_NODE_DESC(dnode)->deployment < EPSILON)
 #define DIR_EXPANDED(dnode)	(DIR_NODE_DESC(dnode)->deployment > (1.0 - EPSILON))
 
@@ -232,10 +234,28 @@ struct _DirNodeDesc {
 	bitfield	geom_expanded : 1;
 };
 
+/* Symbolic links have their own extended descriptor so they can carry
+ * a resolved target display-size without bloating every NodeDesc. */
+typedef struct _SymlinkNodeDesc SymlinkNodeDesc;
+struct _SymlinkNodeDesc {
+	NodeDesc	node_desc;
+	/* Effective display size: size of what the symlink points to.
+	 * For a symlink-to-file, the target file's size. For a symlink
+	 * to a scanned directory, that dnode's subtree.size. 0 means
+	 * unresolved or broken — geometry falls back to node_desc.size. */
+	int64		target_size;
+	/* TRUE if the symlink target resolved to a directory (in- or
+	 * out-of-root). Used by MapV so symlinks-to-files render with
+	 * the same shape as regular files, while symlinks-to-dirs keep
+	 * the distinctive symlink silhouette. */
+	boolean		target_is_dir;
+};
+
 /* Generalized node descriptor */
 union AnyNodeDesc {
-	NodeDesc	node_desc;
-	DirNodeDesc	dir_node_desc;
+	NodeDesc		node_desc;
+	DirNodeDesc		dir_node_desc;
+	SymlinkNodeDesc		symlink_node_desc;
 };
 
 /* Node information struct. Everything here is a string.
@@ -310,6 +330,7 @@ const char *abbrev_size( int64 size );
 const char *node_absname( GNode *node );
 GNode *node_named( const char *absname );
 boolean node_is_executable( GNode *node );
+int64 node_display_size( GNode *node );
 const struct NodeInfo *get_node_info( GNode *node );
 const char *rgb2hex( RGBcolor *color );
 RGBcolor hex2rgb( const char *hex_color );

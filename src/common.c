@@ -383,6 +383,34 @@ node_is_executable( GNode *node )
 }
 
 
+/* Effective size for visual layout. Directories add their subtree
+ * total on top of the directory entry's own size. Symlinks, if their
+ * target has been resolved, report the target's size so they look
+ * like what they point to; unresolved or broken symlinks fall back
+ * to the raw lstat size (pathname length — intentionally tiny). */
+int64
+node_display_size( GNode *node )
+{
+	NodeType type;
+
+	if (node == NULL)
+		return 0;
+
+	type = NODE_DESC(node)->type;
+
+	if (type == NODE_DIRECTORY || type == NODE_METANODE)
+		return NODE_DESC(node)->size + DIR_NODE_DESC(node)->subtree.size;
+
+	if (type == NODE_SYMLINK) {
+		int64 target = SYMLINK_NODE_DESC(node)->target_size;
+		if (target > 0)
+			return target;
+	}
+
+	return NODE_DESC(node)->size;
+}
+
+
 /* This does roughly the opposite of node_absname( ): given an (absolute)
  * filename, return the corresponding node if it is present in the current
  * filesystem tree (NULL otherwise) */
