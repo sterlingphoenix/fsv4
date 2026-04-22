@@ -331,6 +331,7 @@ const char *node_absname( GNode *node );
 GNode *node_named( const char *absname );
 boolean node_is_executable( GNode *node );
 int64 node_display_size( GNode *node );
+const char *node_hover_label( GNode *node );
 const struct NodeInfo *get_node_info( GNode *node );
 const char *rgb2hex( RGBcolor *color );
 RGBcolor hex2rgb( const char *hex_color );

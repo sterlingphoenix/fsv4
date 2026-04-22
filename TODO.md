@@ -1222,16 +1222,29 @@ Step 37.1 — Symlink size follows the target
         (empty / unreadable dir).
 
 Step 37.2 — Hover statusbar shows symlink target
-  [ ] In viewport.c, at the three `window_statusbar(SB_RIGHT,
+  [x] In viewport.c, at the three `window_statusbar(SB_RIGHT,
       node_absname(...))` sites (click, right-click, hover), if the
       indicated node is a NODE_SYMLINK build a composed string of
       the form "<absname> -> <target-abs>" and display that.
-  [ ] Use a single helper in common.c so the three call sites stay
+      - All three viewport sites plus the two filelist sites now
+        call node_hover_label instead of node_absname. Dirtree
+        sites still call node_absname (dirtree only holds
+        directory nodes, so symlinks can't appear there).
+  [x] Use a single helper in common.c so the three call sites stay
       consistent (e.g. `node_hover_label(node)` returning a
       statically-owned string in the same style as `node_absname`).
-  [ ] For broken / unreachable targets, fall back to just the
+      - node_hover_label() added to common.c. For non-symlinks
+        it returns node_absname(node) unchanged. For symlinks it
+        readlink()s the absname, builds "<absname> -> <target>"
+        in a private static-buffer slot, and returns that.
+  [x] For broken / unreachable targets, fall back to just the
       readlink() output so the user still sees what the link
       claims to point to.
+      - readlink() reports the stored target text regardless of
+        whether the target exists, so broken symlinks still show
+        "<symlink> -> <stored-target>". If readlink itself fails
+        (permissions, racing unlink) the helper falls back to the
+        plain absname.
   [ ] Verify: hovering a symlink shows "<symlink> -> <target>";
       hovering a regular file/directory shows just the absname
       (no regression); hovering a broken symlink shows

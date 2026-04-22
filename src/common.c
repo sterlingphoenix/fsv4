@@ -27,6 +27,8 @@
 #include <pwd.h>
 #include <grp.h>
 #include <unistd.h>
+#include <limits.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 
 #include "gui.h" /* gui_update( ) */
@@ -408,6 +410,54 @@ node_display_size( GNode *node )
 	}
 
 	return NODE_DESC(node)->size;
+}
+
+
+/* Statusbar hover/selection label. For most nodes this is just the
+ * absolute name (same as node_absname). For symlinks it returns
+ * "<absname> -> <target>" where <target> is the readlink() output
+ * (the path as literally stored in the link, e.g. "../foo" rather
+ * than the fully-resolved realpath — that's what users expect to
+ * see for a symlink hover).
+ *
+ * Returns a pointer to a function-local static buffer; callers must
+ * not free it, and a subsequent call invalidates the previous
+ * result (same contract as node_absname). */
+const char *
+node_hover_label( GNode *node )
+{
+	static char *label = NULL;
+	const char *absname;
+	char target[PATH_MAX];
+	ssize_t n;
+	size_t need;
+
+	absname = node_absname( node );
+	if (node == NULL || NODE_DESC(node)->type != NODE_SYMLINK)
+		return absname;
+
+	/* node_absname returns a static-buffer pointer that readlink()
+	 * won't touch, but we must copy it before writing our composed
+	 * string into the `label` we're about to rebuild — that realloc
+	 * might collide with the same allocator path. Copy onto the
+	 * stack for safety. */
+	char abscopy[PATH_MAX];
+	strncpy( abscopy, absname, sizeof(abscopy) - 1 );
+	abscopy[sizeof(abscopy) - 1] = '\0';
+
+	n = readlink( abscopy, target, sizeof(target) - 1 );
+	if (n < 0) {
+		/* readlink failed — just return the absname. */
+		return absname;
+	}
+	target[n] = '\0';
+
+	if (label != NULL)
+		xfree( label );
+	need = strlen( abscopy ) + 4 + (size_t)n + 1;  /* " -> " plus NUL */
+	label = NEW_ARRAY(char, need);
+	snprintf( label, need, "%s -> %s", abscopy, target );
+	return label;
 }
 
 

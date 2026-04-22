@@ -211,7 +211,7 @@ filelist_selection_changed_cb( GtkSingleSelection *sel, G_GNUC_UNUSED GParamSpec
 		return;
 
 	geometry_highlight_node( node, FALSE );
-	window_statusbar( SB_RIGHT, node_absname( node ) );
+	window_statusbar( SB_RIGHT, node_hover_label( node ) );
 }
 
 
@@ -251,7 +251,7 @@ filelist_right_click_cb( GtkGestureClick *gesture, G_GNUC_UNUSED int n_press,
 		return;
 
 	geometry_highlight_node( node, FALSE );
-	window_statusbar( SB_RIGHT, node_absname( node ) );
+	window_statusbar( SB_RIGHT, node_hover_label( node ) );
 	context_menu( node, cv_w, x, y );
 }
 

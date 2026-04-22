@@ -202,7 +202,7 @@ viewport_click_pressed_cb( GtkGestureClick *gesture, int n_press, double x, doub
 			}
 			else {
 				geometry_highlight_node( indicated_node, TRUE );
-				window_statusbar( SB_RIGHT, node_absname( indicated_node ) );
+				window_statusbar( SB_RIGHT, node_hover_label( indicated_node ) );
 			}
 		}
 		else if (button == 2) {
@@ -215,7 +215,7 @@ viewport_click_pressed_cb( GtkGestureClick *gesture, int n_press, double x, doub
 			indicated_node = menu_node;
 			if (menu_node != NULL) {
 				geometry_highlight_node( menu_node, FALSE );
-				window_statusbar( SB_RIGHT, node_absname( menu_node ) );
+				window_statusbar( SB_RIGHT, node_hover_label( menu_node ) );
 				context_menu( menu_node, viewport_gl_area, x, y );
 				filelist_show_entry( menu_node );
 			}
@@ -308,7 +308,7 @@ viewport_motion_cb( G_GNUC_UNUSED GtkEventControllerMotion *controller,
 						geometry_highlight_node( indicated_node, FALSE );
 					else
 						geometry_highlight_node( NULL, FALSE );
-					window_statusbar( SB_RIGHT, node_absname( indicated_node ) );
+					window_statusbar( SB_RIGHT, node_hover_label( indicated_node ) );
 				}
 			}
 		}
