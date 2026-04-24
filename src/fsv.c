@@ -439,7 +439,12 @@ fsv_set_mode( FsvMode mode )
 	}
 
 	/* Generate appropriate visualization geometry */
-	geometry_init( mode );
+	{
+		gint64 t0 = g_get_monotonic_time( );
+		geometry_init( mode );
+		g_printerr( "[fsv_set_mode] geometry_init=%.1fms\n",
+			(double)(g_get_monotonic_time( ) - t0) / 1000.0 );
+	}
 
 	/* Set up initial camera state */
 	camera_init( mode, first_init );
@@ -476,17 +481,32 @@ fsv_set_mode( FsvMode mode )
 static void
 fsv_load_after_scan( G_GNUC_UNUSED gpointer user_data )
 {
+	gint64 t_start, t0, t_filelist, t_setmode;
+
+	t_start = g_get_monotonic_time( );
+
 	/* Clear/reset node history */
 	g_list_free( globals.history );
 	globals.history = NULL;
 	globals.current_node = root_dnode;
 
 	/* Initialize file list */
+	t0 = g_get_monotonic_time( );
 	filelist_init( );
+	t_filelist = g_get_monotonic_time( ) - t0;
 
 	/* Initialize visualization */
 	globals.fsv_mode = FSV_NONE;
+	t0 = g_get_monotonic_time( );
 	fsv_set_mode( initial_fsv_mode );
+	t_setmode = g_get_monotonic_time( ) - t0;
+
+	g_printerr(
+		"[load_after_scan] total=%.1fms filelist_init=%.1fms "
+		"fsv_set_mode=%.1fms\n",
+		(double)(g_get_monotonic_time( ) - t_start) / 1000.0,
+		(double)t_filelist / 1000.0,
+		(double)t_setmode / 1000.0 );
 }
 
 
@@ -503,6 +523,10 @@ fsv_load( const char *dir )
 	/* Bring up splash screen */
 	globals.fsv_mode = FSV_SPLASH;
 	redraw( );
+
+	/* Flush the wait cursor + any pending redraw to screen before the
+	 * scan worker starts thrashing the disk. */
+	gui_update( );
 
 	/* Reset scrollbars (disable scrolling) */
 	camera_update_scrollbars( TRUE );

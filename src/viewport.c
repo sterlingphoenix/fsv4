@@ -78,6 +78,24 @@ static double pan_last_time = 0.0;
 /* Saved reference to the GL area widget */
 static GtkWidget *viewport_gl_area = NULL;
 
+/* When TRUE, the GL area shows a wait cursor and normal cursor
+ * changes from motion / click handlers are suppressed. */
+static boolean viewport_cursor_busy = FALSE;
+
+
+/* Forces the 3D viewport's own cursor on/off. GTK4 widgets with an
+ * explicit cursor do not always fall back to their ancestor's cursor,
+ * so toggling the main window's cursor alone isn't enough to show a
+ * wait cursor over the GL area during long operations. */
+void
+viewport_set_busy_cursor( boolean busy )
+{
+	viewport_cursor_busy = busy;
+	if (viewport_gl_area == NULL)
+		return;
+	gui_cursor( viewport_gl_area, busy ? "wait" : NULL );
+}
+
 
 /* Receives a newly created node table from scanfs( ) */
 void
@@ -244,7 +262,7 @@ viewport_click_released_cb( G_GNUC_UNUSED GtkGestureClick *gesture, G_GNUC_UNUSE
 		btn1_pressed = FALSE;
 		btn1_is_dragging = FALSE;
 	}
-	if (viewport_gl_area != NULL)
+	if (viewport_gl_area != NULL && !viewport_cursor_busy)
 		gui_cursor( viewport_gl_area, NULL );
 }
 
@@ -261,6 +279,11 @@ viewport_motion_cb( G_GNUC_UNUSED GtkEventControllerMotion *controller,
 	boolean btn1, btn2;
 
 	if (globals.fsv_mode == FSV_SPLASH)
+		return;
+
+	/* While a long operation is underway, keep the wait cursor and
+	 * skip hover / drag bookkeeping entirely. */
+	if (viewport_cursor_busy)
 		return;
 
 	/* Get current modifier state for button detection during drag */
@@ -324,7 +347,7 @@ viewport_leave_cb( G_GNUC_UNUSED GtkEventControllerMotion *controller, G_GNUC_UN
 {
 	geometry_highlight_node( NULL, FALSE );
 	window_statusbar( SB_RIGHT, "" );
-	if (viewport_gl_area != NULL)
+	if (viewport_gl_area != NULL && !viewport_cursor_busy)
 		gui_cursor( viewport_gl_area, NULL );
 	indicated_node = NULL;
 	btn1_pressed = FALSE;

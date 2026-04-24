@@ -33,6 +33,7 @@ void filelist_pass_widget( GtkWidget *clist_w );
 GtkWidget *dir_contents_list( GNode *dnode );
 #endif
 void filelist_reset_access( void );
+void filelist_refresh_cursor( void );
 void filelist_populate( GNode *dnode );
 void filelist_show_entry( GNode *node );
 void filelist_init( void );

@@ -956,10 +956,14 @@ mapv_init_recursive( GNode *dnode )
 		block = NEW(struct MapVBlock);
 		block->node = node;
 		block->area = area;
-		G_LIST_APPEND(block_list, block);
+		/* Prepend + reverse: g_list_append is O(N), which made this
+		 * loop O(N^2) for wide directories and cost ~18 s on a
+		 * 125 k-directory tree during geometry_init. */
+		block_list = g_list_prepend( block_list, block );
 
 		node = node->next;
 	}
+	block_list = g_list_reverse( block_list );
 
 	/* The blocks are going to have a total area greater than the
 	 * directory can provide, so they'll have to be scaled down */
@@ -978,7 +982,8 @@ mapv_init_recursive( GNode *dnode )
 			row = NEW(struct MapVRow);
 			row->first_block = block;
 			row->area = 0.0;
-			G_LIST_APPEND(row_list, row);
+			/* Same O(N) -> O(1) rationale as block_list above. */
+			row_list = g_list_prepend( row_list, row );
 		}
 
 		/* Add block to row */
@@ -996,6 +1001,7 @@ mapv_init_recursive( GNode *dnode )
 
 		block_llink = block_llink->next;
 	}
+	row_list = g_list_reverse( row_list );
 
 	/* Third pass - optimize layout */
 	/* Note to self: write layout optimization routine sometime */
@@ -3976,9 +3982,14 @@ geometry_queue_rebuild( G_GNUC_UNUSED GNode *dnode )
 void
 geometry_init( FsvMode mode )
 {
+	gint64 t0, t_queue, t_modeinit, t_color;
+
+	t0 = g_get_monotonic_time( );
 	DIR_NODE_DESC(globals.fstree)->deployment = 1.0;
 	geometry_queue_rebuild( globals.fstree );
+	t_queue = g_get_monotonic_time( ) - t0;
 
+	t0 = g_get_monotonic_time( );
 	switch (mode) {
 		case FSV_DISCV:
 		discv_init( );
@@ -3994,8 +4005,19 @@ geometry_init( FsvMode mode )
 
 		SWITCH_FAIL
 	}
+	t_modeinit = g_get_monotonic_time( ) - t0;
 
+	t0 = g_get_monotonic_time( );
 	color_assign_recursive( globals.fstree );
+	t_color = g_get_monotonic_time( ) - t0;
+
+	g_printerr(
+		"[geometry_init] mode=%d queue_rebuild=%.1fms mode_init=%.1fms "
+		"color_assign=%.1fms\n",
+		(int)mode,
+		(double)t_queue / 1000.0,
+		(double)t_modeinit / 1000.0,
+		(double)t_color / 1000.0 );
 }
 
 

@@ -338,21 +338,39 @@ scan_worker_done_cb(
 	G_GNUC_UNUSED gpointer user_data )
 {
 	ScanContext *ctx = g_task_get_task_data( G_TASK(res) );
+	gint64 t_start, t0, t_dirtree, t_viewport, t_donecb;
+
+	t_start = g_get_monotonic_time( );
 
 	if (scan_monitor_source_id != 0) {
 		g_source_remove( scan_monitor_source_id );
 		scan_monitor_source_id = 0;
 	}
 	window_statusbar( SB_RIGHT, "" );
+
+	t0 = g_get_monotonic_time( );
 	dirtree_no_more_entries( );
+	t_dirtree = g_get_monotonic_time( ) - t0;
 
 	/* Hand node table ownership off to the viewport */
+	t0 = g_get_monotonic_time( );
 	viewport_pass_node_table( ctx->node_table, ctx->node_count );
 	ctx->node_table = NULL;
+	t_viewport = g_get_monotonic_time( ) - t0;
 
 	/* Fire the user's continuation (e.g. fsv_load_after_scan) */
+	t0 = g_get_monotonic_time( );
 	if (ctx->done_cb != NULL)
 		ctx->done_cb( ctx->user_data );
+	t_donecb = g_get_monotonic_time( ) - t0;
+
+	g_printerr(
+		"[scan done_cb] total=%.1fms dirtree_no_more_entries=%.1fms "
+		"viewport_pass_node_table=%.1fms done_cb=%.1fms\n",
+		(double)(g_get_monotonic_time( ) - t_start) / 1000.0,
+		(double)t_dirtree / 1000.0,
+		(double)t_viewport / 1000.0,
+		(double)t_donecb / 1000.0 );
 
 	/* GTask will be unref'd after this returns, which frees ctx via
 	 * scan_ctx_free. */

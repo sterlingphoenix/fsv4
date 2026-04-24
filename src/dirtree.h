@@ -39,6 +39,7 @@ boolean dirtree_entry_expanded( GNode *dnode );
 void dirtree_entry_collapse_recursive( GNode *dnode );
 void dirtree_entry_expand( GNode *dnode );
 void dirtree_entry_expand_recursive( GNode *dnode );
+void dirtree_refresh_cursor( void );
 
 
 /* end dirtree.h */

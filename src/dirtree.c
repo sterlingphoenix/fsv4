@@ -421,6 +421,22 @@ dirtree_right_click_cb( GtkGestureClick *gesture,
 }
 
 
+/* Called from window_set_access to push a wait cursor onto the
+ * directory tree pane when the window is busy. Without this, cursors
+ * set by internal GTK machinery (eg. on list rows during hover) can
+ * take precedence over the main window's inherited wait cursor. */
+void
+dirtree_refresh_cursor( void )
+{
+	if (dir_tree_w == NULL)
+		return;
+	if (window_is_busy( ))
+		gui_cursor( dir_tree_w, "wait" );
+	else
+		gui_cursor( dir_tree_w, NULL );
+}
+
+
 /* Correspondence from window_init( ) */
 void
 dirtree_pass_widget( GtkWidget *tree_w )
@@ -622,7 +638,14 @@ dirtree_entry_expand( GNode *dnode )
 
 /* Helper: recursively expand a row and all its children.
  * Uses gtk_tree_list_row_get_child_row for O(1) child lookup
- * instead of scanning the flat model. */
+ * instead of scanning the flat model.
+ *
+ * Pumps the GTK main loop every EXPAND_PUMP_EVERY expansions so the
+ * window stays responsive on huge trees (Phase 38). colexp_blocked
+ * is already TRUE for the duration of this call, so any expand /
+ * collapse signals fired during the pump are no-ops. */
+#define EXPAND_PUMP_EVERY 2048
+static guint expand_pump_counter = 0;
 static void
 expand_recursive_via_row( GtkTreeListRow *row, GNode *dnode )
 {
@@ -632,6 +655,9 @@ expand_recursive_via_row( GtkTreeListRow *row, GNode *dnode )
 	/* Expand this row first (making children visible in the model) */
 	gtk_tree_list_row_set_expanded( row, TRUE );
 	DIR_NODE_DESC(dnode)->tree_expanded = TRUE;
+
+	if ((++expand_pump_counter % EXPAND_PUMP_EVERY) == 0)
+		gui_update( );
 
 	/* Then expand each directory child via O(1) child_row lookup */
 	child = dnode->children;
@@ -668,6 +694,7 @@ dirtree_entry_expand_recursive( GNode *dnode )
 #endif
 
 	colexp_blocked = TRUE;
+	expand_pump_counter = 0;
 	row = find_tree_list_row( dnode, NULL );
 	if (row != NULL) {
 		expand_recursive_via_row( row, dnode );

@@ -168,6 +168,15 @@ colexp( GNode *dnode, ColExpMesg mesg )
 	static double colexp_time;
 	static int depth = 0;
 	static int max_depth;
+	/* Phase 38 profiling: totals are accumulated across the
+	 * recursive call chain and reported once at depth==0 return. */
+	static gint64 prof_t_entry = 0;
+	static gint64 prof_t_dirtree = 0;
+	static gint64 prof_t_gui_update = 0;
+	static gint64 prof_t_geom_init = 0;
+	static int prof_geom_init_count = 0;
+	static const char *prof_mesg_name = "";
+	gint64 prof_t0;
 	GNode *node;
 	double wait_time;
 	double pan_time;
@@ -184,6 +193,29 @@ colexp( GNode *dnode, ColExpMesg mesg )
 			return;
 		colexp_in_progress = TRUE;
 
+		prof_t_entry = g_get_monotonic_time( );
+		prof_t_dirtree = 0;
+		prof_t_gui_update = 0;
+		prof_t_geom_init = 0;
+		prof_geom_init_count = 0;
+		switch (mesg) {
+			case COLEXP_COLLAPSE_RECURSIVE: prof_mesg_name = "collapse-recursive"; break;
+			case COLEXP_EXPAND:             prof_mesg_name = "expand"; break;
+			case COLEXP_EXPAND_ANY:         prof_mesg_name = "expand-any"; break;
+			case COLEXP_EXPAND_RECURSIVE:   prof_mesg_name = "expand-recursive"; break;
+			default:                        prof_mesg_name = "?"; break;
+		}
+
+		/* Recursive operations can take several seconds on large
+		 * trees. Lock down the interface and show a wait cursor
+		 * up-front, then pump the GUI once so the cursor is
+		 * actually painted before we start the long work. */
+		if (mesg == COLEXP_COLLAPSE_RECURSIVE
+		    || mesg == COLEXP_EXPAND_RECURSIVE) {
+			window_set_access( FALSE );
+			gui_update( );
+		}
+
 #ifdef DEBUG
 		if (mesg != COLEXP_EXPAND_ANY) {
 			/* All ancestor directories must be expanded */
@@ -196,6 +228,7 @@ colexp( GNode *dnode, ColExpMesg mesg )
 #endif
 
 		/* Update ctree and determine maximum recursion depth */
+		prof_t0 = g_get_monotonic_time( );
 		switch (mesg) {
 			case COLEXP_COLLAPSE_RECURSIVE:
 			dirtree_entry_collapse_recursive( dnode );
@@ -220,11 +253,14 @@ colexp( GNode *dnode, ColExpMesg mesg )
 
 			SWITCH_FAIL
 		}
+		prof_t_dirtree = g_get_monotonic_time( ) - prof_t0;
 
 		/* Make file list appropriately (in)accessible */
 		filelist_reset_access( );
 
+		prof_t0 = g_get_monotonic_time( );
 		gui_update( );
+		prof_t_gui_update = g_get_monotonic_time( ) - prof_t0;
 
 		/* Collapse/expand time for current visualization mode */
 		switch (globals.fsv_mode) {
@@ -306,7 +342,10 @@ colexp( GNode *dnode, ColExpMesg mesg )
 	switch (mesg) {
 		case COLEXP_EXPAND:
 		/* Initial collapse/expand notify */
+		prof_t0 = g_get_monotonic_time( );
 		geometry_colexp_initiated( dnode );
+		prof_t_geom_init += g_get_monotonic_time( ) - prof_t0;
+		prof_geom_init_count++;
 		/* EXPAND does not walk the tree */
 		break;
 
@@ -318,13 +357,19 @@ colexp( GNode *dnode, ColExpMesg mesg )
 			--depth;
 		}
 		/* Initial collapse/expand notify */
+		prof_t0 = g_get_monotonic_time( );
 		geometry_colexp_initiated( dnode );
+		prof_t_geom_init += g_get_monotonic_time( ) - prof_t0;
+		prof_geom_init_count++;
 		break;
 
 		case COLEXP_COLLAPSE_RECURSIVE:
 		case COLEXP_EXPAND_RECURSIVE:
 		/* Initial collapse/expand notify */
+		prof_t0 = g_get_monotonic_time( );
 		geometry_colexp_initiated( dnode );
+		prof_t_geom_init += g_get_monotonic_time( ) - prof_t0;
+		prof_geom_init_count++;
 		/* Perform action on subdirectories */
 		++depth;
 		node = dnode->children;
@@ -423,6 +468,23 @@ colexp( GNode *dnode, ColExpMesg mesg )
 		scrollbars_colexp_adjust = FALSE;
 		if (curnode_is_ancestor && (globals.fsv_mode == FSV_TREEV))
 			scrollbars_colexp_adjust = TRUE;
+
+		/* Phase 38 profiling: report synchronous main-thread cost. */
+		{
+			gint64 total_us = g_get_monotonic_time( ) - prof_t_entry;
+			gint64 other_us = total_us - prof_t_dirtree - prof_t_gui_update - prof_t_geom_init;
+			g_printerr(
+				"[colexp %s] total=%.1fms dirtree=%.1fms "
+				"gui_update=%.1fms geom_init=%.1fms (x%d) other=%.1fms max_depth=%d\n",
+				prof_mesg_name,
+				(double)total_us / 1000.0,
+				(double)prof_t_dirtree / 1000.0,
+				(double)prof_t_gui_update / 1000.0,
+				(double)prof_t_geom_init / 1000.0,
+				prof_geom_init_count,
+				(double)other_us / 1000.0,
+				max_depth );
+		}
 
 		colexp_in_progress = FALSE;
 	}

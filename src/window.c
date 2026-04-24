@@ -460,12 +460,27 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 }
 
 
+/* TRUE while the interface is locked down for a long operation
+ * (scan, recursive expand/collapse, camera pan). gui_cursor( ) reads
+ * this to force a wait cursor onto every widget regardless of what
+ * the caller requested. */
+static boolean window_busy_flag = FALSE;
+
+boolean
+window_is_busy( void )
+{
+	return window_busy_flag;
+}
+
+
 /* This enables/disables the switchable widgets */
 void
 window_set_access( boolean enabled )
 {
 	GtkWidget *widget;
 	GList *llink;
+
+	window_busy_flag = !enabled;
 
 	llink = sw_widget_list;
 	while (llink != NULL) {
@@ -484,6 +499,14 @@ window_set_access( boolean enabled )
 	/* Show busy cursor when access is disabled */
 	if (main_window_w_saved != NULL)
 		gui_cursor( main_window_w_saved, enabled ? NULL : "wait" );
+
+	/* Force wait cursor onto the panes that manage their own cursors.
+	 * GTK4 widget cursor inheritance does not reliably propagate
+	 * through GtkListView / GtkGLArea, so we have to push the wait
+	 * cursor explicitly onto each one. */
+	viewport_set_busy_cursor( !enabled );
+	dirtree_refresh_cursor( );
+	filelist_refresh_cursor( );
 }
 
 

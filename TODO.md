@@ -1186,7 +1186,7 @@ Step 37.1 — Symlink size follows the target
       display-size change is purely for geometry.
       - NODE_DESC(node)->size is still the lstat size; only the
         derived display size consulted by geometry changes.
-  [ ] Verify: symlinks to files render at their target's size;
+  [x] Verify: symlinks to files render at their target's size;
       symlinks to directories inside the scanned tree render at the
       target's subtree size; broken / unreachable symlinks stay
       tiny. No regression in MapV / DiscV / TreeV for non-symlinks.
@@ -1245,7 +1245,7 @@ Step 37.2 — Hover statusbar shows symlink target
         "<symlink> -> <stored-target>". If readlink itself fails
         (permissions, racing unlink) the helper falls back to the
         plain absname.
-  [ ] Verify: hovering a symlink shows "<symlink> -> <target>";
+  [x] Verify: hovering a symlink shows "<symlink> -> <target>";
       hovering a regular file/directory shows just the absname
       (no regression); hovering a broken symlink shows
       "<symlink> -> <dangling-target>".
@@ -1269,12 +1269,14 @@ Step 37.3 — Properties dialog marks symlinks and shows target type
         back to node_type_names[] for Directory / Regular File
         when no wildcard group matches and stat() succeeds.
         Appends "(symlink)" or "(broken symlink)" as appropriate.
-  [ ] Consider adding a "File type" notebook page to the NODE_SYMLINK
+  [-] Consider adding a "File type" notebook page to the NODE_SYMLINK
       switch case in dialog.c so users can see the full `file`
       command description of the target (not just the short wildcard
       group name). This is optional — keep scope small if it gets
       hairy.
-  [ ] Verify: Properties on a symlink-to-executable shows e.g.
+      - Skipped per user: "We can skip that, I like what properties
+        looks like now."
+  [x] Verify: Properties on a symlink-to-executable shows e.g.
       "Shared library -> Shared library (symlink)" or similar, with
       the broken-symlink path clearly marked when relevant.
 
@@ -1296,25 +1298,44 @@ collapse animation invalidating / rebuilding the affected subtree's
 geometry and VBO batches in a single frame.
 
 Step 38.1 — Profile the collapse path
-  [ ] Find the dominant cost: is it geometry_free_recursive on
+  [x] Find the dominant cost: is it geometry_free_recursive on
       the collapsing subtree, VBO invalidation + rebuild, or the
       dirtree-model updates driven by colexp.c?
-  [ ] Instrument with a simple main-thread stopwatch (g_get_monotonic_time
+  [x] Instrument with a simple main-thread stopwatch (g_get_monotonic_time
       around the collapse handler) and a printf of the millisecond
       duration for a known directory — no need for perf/flamegraph
       yet.
+      - colexp() entry function instrumented with sub-bucket
+        timers for dirtree, gui_update, geom_init (and the
+        remaining "other"). On a 125 392-directory tree:
+          Expand All:   total=108 s  dirtree=12 s  other=96 s
+          Collapse All: total=87 s   dirtree=0.07 s  other=87 s
+        "other" dominates — almost all of it is
+        morph_break + morph_full linear scans of morph_queue.
+        With 125 k directories each call pays O(N) on an
+        N-growing queue ≈ 15.7 billion compares total, which
+        matches the 87-96 s figure.
 
 Step 38.2 — Reduce or amortise the cost
-  [ ] If the cost is in VBO rebuild, consider: (a) incremental
-      invalidation per frame, (b) deferring the rebuild to an
-      idle callback so the first collapse frame at least paints,
-      (c) splitting the subtree into tiles (overlaps with 35.7).
-  [ ] If the cost is in geometry_free_recursive, consider freeing
-      lazily on the next geometry rebuild instead of synchronously
-      during the collapse event.
-  [ ] If the cost is in dirtree model churn, batch the store
-      updates (g_list_store_splice with a single contiguous
-      removal rather than per-entry removes).
+  [x] Root cause was morph_queue linear scan, not any of the
+      originally-suspected candidates. Replaced the GList with
+      a GHashTable keyed by the `double *var` pointer so
+      morph_break / morph_full lookups go O(N) -> O(1).
+      morph_iteration still walks every active morph (that cost
+      is fundamental — N updates per frame), but queue insertion
+      and removal no longer scale with queue size.
+
+Step 38.3 — Visual feedback during long expand/collapse
+  [x] User feedback: "An action taking a while is less bad if
+      the user knows the program is still working on it."
+      Two small changes:
+        - colexp() now calls window_set_access(FALSE) + gui_update()
+          at the TOP of the depth==0 block for COLLAPSE_RECURSIVE /
+          EXPAND_RECURSIVE so the wait cursor appears before the
+          long dirtree / geometry work, not after.
+        - dirtree.c's expand_recursive_via_row pumps the GTK main
+          loop every 2048 expansions so Expand All on a 125k-node
+          tree no longer trips GTK's "Not Responding" watchdog.
 
   Checkpoint: User confirms that collapsing a large directory no
   longer trips "not responding", and visual / interaction behaviour

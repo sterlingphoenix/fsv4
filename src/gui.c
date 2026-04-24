@@ -28,6 +28,7 @@
 
 #include "animation.h"
 #include "ogl.h" /* ogl_widget_new( ) */
+#include "window.h" /* window_is_busy( ) */
 
 
 /* Box packing flags (stored via g_object_set_data on box widgets) */
@@ -887,10 +888,16 @@ gui_ctree_add( GtkWidget *parent_w )
 
 
 /* Changes the mouse cursor associated with the given widget.
- * In GTK4, uses gtk_widget_set_cursor with gdk_cursor_new_from_name. */
+ * In GTK4, uses gtk_widget_set_cursor with gdk_cursor_new_from_name.
+ * While the window is in a "busy" state (long operation in progress),
+ * every cursor request is forced to "wait" so motion/click handlers
+ * on various widgets can't reset the cursor back to the pointer. */
 void
 gui_cursor( GtkWidget *widget, const char *name )
 {
+	if (window_is_busy( ))
+		name = "wait";
+
 	if (name != NULL) {
 		GdkCursor *cursor = gdk_cursor_new_from_name( name, NULL );
 		gtk_widget_set_cursor( widget, cursor );

@@ -38,6 +38,7 @@ typedef enum {
 void window_init( GtkApplication *app, FsvMode fsv_mode );
 #endif
 void window_set_access( boolean enabled );
+boolean window_is_busy( void );
 void window_set_vis_mode( FsvMode mode );
 #ifdef FSV_COLOR_H
 void window_set_color_mode( ColorMode mode );
