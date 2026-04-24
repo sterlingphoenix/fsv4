@@ -438,8 +438,12 @@ fsv_set_mode( FsvMode mode )
 		break;
 	}
 
-	/* Generate appropriate visualization geometry */
-	{
+	/* Generate appropriate visualization geometry (unless the scan
+	 * worker already pre-laid it out for this mode). */
+	if (geometry_consume_prebuilt( mode )) {
+		g_printerr( "[fsv_set_mode] geometry_init=prebuilt\n" );
+	}
+	else {
 		gint64 t0 = g_get_monotonic_time( );
 		geometry_init( mode );
 		g_printerr( "[fsv_set_mode] geometry_init=%.1fms\n",
@@ -531,8 +535,10 @@ fsv_load( const char *dir )
 	/* Reset scrollbars (disable scrolling) */
 	camera_update_scrollbars( TRUE );
 
-	/* Kick off scan on worker thread; continuation fires later. */
-	scanfs( dir, fsv_load_after_scan, NULL );
+	/* Kick off scan on worker thread; continuation fires later.
+	 * Pass initial_fsv_mode so the worker can pre-lay out + color
+	 * the initial visualization before the main thread consumes it. */
+	scanfs( dir, initial_fsv_mode, fsv_load_after_scan, NULL );
 }
 
 

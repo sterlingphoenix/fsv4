@@ -3978,6 +3978,12 @@ geometry_queue_rebuild( G_GNUC_UNUSED GNode *dnode )
 }
 
 
+/* When scanfs() runs geometry_init() on the worker thread, it stamps
+ * the mode here so the main thread can skip the redundant call. See
+ * geometry_consume_prebuilt(). */
+static FsvMode geometry_prebuilt_mode = FSV_NONE;
+
+
 /* Sets up filesystem tree geometry for the specified mode */
 void
 geometry_init( FsvMode mode )
@@ -4011,6 +4017,8 @@ geometry_init( FsvMode mode )
 	color_assign_recursive( globals.fstree );
 	t_color = g_get_monotonic_time( ) - t0;
 
+	geometry_prebuilt_mode = mode;
+
 	g_printerr(
 		"[geometry_init] mode=%d queue_rebuild=%.1fms mode_init=%.1fms "
 		"color_assign=%.1fms\n",
@@ -4018,6 +4026,22 @@ geometry_init( FsvMode mode )
 		(double)t_queue / 1000.0,
 		(double)t_modeinit / 1000.0,
 		(double)t_color / 1000.0 );
+}
+
+
+/* If geometry_init() has already been run for `mode` (e.g. pre-laid
+ * out on the scan worker thread), consume that prebuilt state and
+ * return TRUE — the caller should skip its own geometry_init() call.
+ * Returns FALSE if no prebuilt layout is available for this mode, in
+ * which case the caller must call geometry_init() itself. */
+boolean
+geometry_consume_prebuilt( FsvMode mode )
+{
+	if (geometry_prebuilt_mode == mode) {
+		geometry_prebuilt_mode = FSV_NONE;
+		return TRUE;
+	}
+	return FALSE;
 }
 
 

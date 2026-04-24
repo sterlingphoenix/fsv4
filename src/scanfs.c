@@ -64,6 +64,10 @@ static int node_counts[NUM_NODE_TYPES];
 static int64 size_counts[NUM_NODE_TYPES];
 static int stat_count = 0;
 static char scan_current_dir[PATH_MAX];
+/* Set to TRUE by the worker once the disk-scan phase is done and the
+ * post-scan geometry_init / color_assign is running. scan_monitor
+ * uses this to change the statusbar readout to "Preparing...". */
+static boolean scan_preparing = FALSE;
 
 
 /* Official stat function. Returns 0 on success, -1 on error.
@@ -233,6 +237,7 @@ scan_monitor( G_GNUC_UNUSED gpointer user_data )
 	int64 local_size_counts[NUM_NODE_TYPES];
 	int local_stat_count;
 	char local_dir[PATH_MAX];
+	boolean local_preparing;
 	char strbuf[PATH_MAX + 64];
 
 	/* Snapshot worker-thread stats under the mutex. Reset stat_count
@@ -243,19 +248,27 @@ scan_monitor( G_GNUC_UNUSED gpointer user_data )
 	local_stat_count = stat_count;
 	stat_count = 0;
 	g_strlcpy( local_dir, scan_current_dir, sizeof(local_dir) );
+	local_preparing = scan_preparing;
 	g_mutex_unlock( &scan_stats_mutex );
 
 	/* Running totals in file list area */
 	filelist_scan_monitor( local_node_counts, local_size_counts );
 
-	/* Stats-per-second readout in left statusbar */
-	sprintf( strbuf, _("%d stats/sec"), 1000 * local_stat_count / SCAN_MONITOR_PERIOD );
-	window_statusbar( SB_LEFT, strbuf );
+	if (local_preparing) {
+		/* Post-scan layout/color pass is running on the worker. */
+		window_statusbar( SB_LEFT, "" );
+		window_statusbar( SB_RIGHT, _("Preparing visualisation...") );
+	}
+	else {
+		/* Stats-per-second readout in left statusbar */
+		sprintf( strbuf, _("%d stats/sec"), 1000 * local_stat_count / SCAN_MONITOR_PERIOD );
+		window_statusbar( SB_LEFT, strbuf );
 
-	/* Currently scanning directory in right statusbar */
-	if (local_dir[0] != '\0') {
-		snprintf( strbuf, sizeof(strbuf), _("Scanning: %s"), local_dir );
-		window_statusbar( SB_RIGHT, strbuf );
+		/* Currently scanning directory in right statusbar */
+		if (local_dir[0] != '\0') {
+			snprintf( strbuf, sizeof(strbuf), _("Scanning: %s"), local_dir );
+			window_statusbar( SB_RIGHT, strbuf );
+		}
 	}
 
 	return TRUE;
@@ -278,6 +291,7 @@ typedef struct {
 	GNode **node_table;	/* output, allocated on worker; ownership
 				 * transferred to viewport in done_cb */
 	unsigned int node_count; /* output */
+	FsvMode initial_mode;	/* mode to pre-initialise on the worker */
 	ScanDoneCallback done_cb;
 	gpointer user_data;
 } ScanContext;
@@ -323,6 +337,21 @@ scan_worker_thread(
 		if (node_abspath_worker( root_dnode, root_abs, sizeof(root_abs) ) == 0)
 			resolve_symlinks_recursive( globals.fstree, root_abs );
 	}
+
+	/* Pre-lay out + color the initial visualization on the worker
+	 * thread so the main thread doesn't freeze for seconds after
+	 * the scan completes. geometry_init() is pure data over the
+	 * GNode tree — no GTK widgets, no GL calls (vbo_batch_invalidate
+	 * and ogl_pick_invalidate only flip bool flags). Main thread
+	 * consumes the prebuilt layout via geometry_consume_prebuilt().
+	 *
+	 * Flip scan_preparing so the next scan_monitor tick on the main
+	 * thread swaps the statusbar readout to "Preparing...". */
+	g_mutex_lock( &scan_stats_mutex );
+	scan_preparing = TRUE;
+	g_mutex_unlock( &scan_stats_mutex );
+
+	geometry_init( ctx->initial_mode );
 
 	g_task_return_boolean( task, TRUE );
 }
@@ -691,7 +720,8 @@ free_node_data_cb( GNode *node, G_GNUC_UNUSED gpointer data )
  * invoked on the main thread with user_data; that's where the caller
  * (fsv_load) runs its own post-scan logic. */
 void
-scanfs( const char *dir, ScanDoneCallback done_cb, gpointer user_data )
+scanfs( const char *dir, FsvMode initial_mode,
+        ScanDoneCallback done_cb, gpointer user_data )
 {
 	const char *root_dir;
 	ScanContext *ctx;
@@ -759,6 +789,7 @@ scanfs( const char *dir, ScanDoneCallback done_cb, gpointer user_data )
 	memset( size_counts, 0, sizeof(size_counts) );
 	stat_count = 0;
 	scan_current_dir[0] = '\0';
+	scan_preparing = FALSE;
 	g_mutex_unlock( &scan_stats_mutex );
 
 	/* GUI stuff */
@@ -770,6 +801,7 @@ scanfs( const char *dir, ScanDoneCallback done_cb, gpointer user_data )
 	 * and does all remaining GTK work + invokes done_cb. */
 	ctx = g_new0( ScanContext, 1 );
 	ctx->root_dir = g_strdup( root_dir );
+	ctx->initial_mode = initial_mode;
 	ctx->done_cb = done_cb;
 	ctx->user_data = user_data;
 
