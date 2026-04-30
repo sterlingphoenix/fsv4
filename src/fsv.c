@@ -39,6 +39,7 @@
 #include "filelist.h"
 #include "geometry.h"
 #include "gui.h" /* gui_update( ) */
+#include "lazy_render.h" /* lazy_render_load_config( ) */
 #include "ogl.h" /* ogl_gl_query( ) */
 #include "scanfs.h"
 #include "window.h"
@@ -759,6 +760,9 @@ main( int argc, char **argv )
 		g_free( cfg_path );
 		g_key_file_free( kf );
 	}
+
+	/* Load lazy-render settings from config (Phase 39) */
+	lazy_render_load_config( );
 
 	/* Parse command-line options */
 	for (;;) {

@@ -1342,6 +1342,190 @@ Step 38.3 — Visual feedback during long expand/collapse
   is unchanged.
 
 
+PHASE 39 — LAZY RENDER
+=======================
+
+Very large directory trees (the user's reference set: 19 levels deep,
+~1.4 M entries) make scanning slow and rendering unusable. Even with
+the Phase 35 / 38 fixes, "Expand All" on a deep subtree still produces
+an overwhelming amount of geometry. The fix is to bound how much of
+the tree is actually rendered at any one time, with a small buffer
+scanned ahead so navigation feels instant.
+
+Design summary
+--------------
+
+  Two limits, both enforced together (whichever is hit first):
+    - render_depth N (default 7)   — max levels rendered below an anchor
+    - object_limit  M (default 250 000) — max total nodes per Expand All
+
+  Plus:
+    - readahead_depth R (default 3) — scan R extra levels past the
+      visible frontier so the next interaction needs no I/O wait
+
+  Anchors. A directory becomes an anchor when the user (a) opens it as
+  the root, (b) navigates into it (current_node moves), or (c) invokes
+  Expand All on it. Each anchor carries a fresh N-level render budget
+  for its own subtree. Sibling subtrees retain whatever state they
+  already had — anchoring /a/b/c/d/e does NOT reset siblings of /e.
+
+  Expand All semantics. BFS, level-by-level. Every node at depth K is
+  processed before any at depth K+1. When the depth limit or object
+  limit is reached mid-traversal, finish the current level and stop —
+  so the user always sees a uniform-depth subtree rather than ragged
+  stops.
+
+  Layout fidelity. All three modes size a parent by the recursive byte
+  total of its subtree, including unrendered descendants. To keep
+  layout exact without paying full-scan cost, the scanner does a
+  size-only walk past depth N+R: readdir + stat to accumulate byte
+  totals into ancestors, but no per-node descriptor allocation. Far
+  cheaper than today's full scan, and ancestor sizes stay correct.
+
+  Read-ahead. Background pass that keeps the scanned frontier R levels
+  past the visible frontier on every active branch. Triggered eagerly
+  whenever user interaction (navigation, expand, anchor) extends the
+  visible frontier.
+
+  Indicator. Whenever the current view contains at least one truncated
+  subtree, the toolbar shows the text "Lazy Render Limit Reached"
+  centered between the Timestamp and Preferences buttons.
+
+  Preferences. New "Performance" page with an enable toggle (default
+  ON) and three numeric fields: render_depth, readahead_depth,
+  object_limit. Above the controls, a clearly-marked WARNING:
+  disabling lazy render or raising the limits can cause severe
+  slowdowns on large directories.
+
+Step 39.1 — Settings infrastructure
+  [x] Add four GKeyFile keys with defaults under [LazyRender] in
+      ~/.config/fsv4/fsvrc:
+        enabled          (bool, default TRUE)
+        render_depth     (int,  default 7)
+        readahead_depth  (int,  default 3)
+        object_limit     (int,  default 250 000)
+      (The TODO design note said "nvstore", but the codebase uses
+      GKeyFile for all other settings; matched that pattern.)
+  [x] Expose via a small lazy_render.c/h API:
+        boolean lazy_render_enabled( void );
+        int     lazy_render_depth( void );
+        int     lazy_readahead_depth( void );
+        int     lazy_object_limit( void );
+        void    lazy_render_set_*( ... );  /* in-memory only */
+        void    lazy_render_load_config( void );
+        void    lazy_render_write_config( void );
+  [x] No behavior change yet — values are read but not used.
+
+Step 39.2 — Bounded scanfs with size-only deep walk
+  [ ] scanfs.c: accept a max-full-scan depth parameter (= N+R when
+      lazy is enabled; INT_MAX otherwise).
+  [ ] Up to that depth, behave as today: allocate per-node
+      descriptors and link into the GNode tree.
+  [ ] Beyond that depth, do a size-only walk: readdir + stat on each
+      entry, sum bytes/counts into the deepest scanned ancestor's
+      subtree totals, but do NOT allocate NodeDesc / DirNodeDesc /
+      add to the GNode tree.
+  [ ] Add a per-DirNodeDesc flag scan_state ∈
+        { UNSCANNED, SIZE_ONLY, FULL }
+      so other modules can tell whether children exist as nodes.
+  [ ] With lazy disabled, depth = INT_MAX so behavior is identical
+      to today.
+
+Step 39.3 — Render-depth gate in geometry
+  [ ] Per-anchor budget tracking. Add to DirNodeDesc:
+        boolean is_anchor;
+        int     anchor_depth_remaining;  /* N when anchored, else inherited */
+  [ ] On node visit during geometry_init / draw, compute effective
+      remaining depth = max over all ancestor anchors of
+      (anchor.N - distance_to_anchor). If <= 0, do not render.
+  [ ] Initial anchors: the root passed to fsv on launch.
+  [ ] Verify all three modes (MapV, DiscV, TreeV) honor the gate.
+  [ ] No anchor changes from navigation/Expand All yet — that comes
+      in 39.4.
+
+Step 39.4 — Anchor on navigation
+  [ ] When current_node moves (camera_look_at on a directory, or
+      double-click navigation), mark that directory as an anchor and
+      reset its anchor_depth_remaining to N.
+  [ ] Trigger geometry rebuild for the anchored subtree only.
+  [ ] Confirm: navigating into ~/src/mame/build/linux extends the
+      visible frontier from /linux but does NOT alter sibling
+      subtrees of /linux.
+
+Step 39.5 — Expand All as BFS with object cap
+  [ ] Refactor the COLEXP_EXPAND_RECURSIVE path in colexp.c to a
+      level-by-level BFS instead of DFS recursion.
+  [ ] Track total nodes scheduled-to-expand across the BFS. Between
+      levels, check against object_limit; if exceeded, stop after
+      the current level completes (no partial level).
+  [ ] Mark the Expand All target directory as an anchor (so the
+      depth limit is also measured from that point).
+  [ ] Truncated branches keep their scan_state from 39.2; visible
+      indicator (39.7) reflects their truncation.
+
+Step 39.6 — Background read-ahead
+  [ ] After any operation that exposes a new render frontier (initial
+      load, navigation, expand), schedule a background pass that
+      extends each frontier directory's scan_state to FULL down to
+      depth N+R.
+  [ ] Run on a worker thread (reuse the GTask worker pattern from
+      35.6 / 38). On completion, marshal back to the main thread to
+      mark the new descriptors and request a redraw.
+  [ ] Do NOT proactively scan branches the user has not anchored or
+      expanded toward.
+
+Step 39.7 — Toolbar indicator
+  [ ] Add a non-interactive label widget to the toolbar, placed in
+      the toolbar_hbox between the Color Mode cluster and the Utility
+      cluster, centered horizontally in the available space.
+  [ ] Text: "Lazy Render Limit Reached" — visible only when at least
+      one currently-rendered anchor's subtree was truncated by either
+      depth or object limit. Hidden otherwise.
+  [ ] Track per-anchor "was_truncated" boolean during the BFS /
+      geometry pass; the label aggregates an OR across all visible
+      anchors.
+
+Step 39.8 — Preferences UI
+  [ ] Add a "Performance" page (or section in the existing Preferences
+      dialog) with:
+        - Top: a clearly-styled WARNING block explaining that
+          disabling or raising these values can cause severe
+          slowdowns on large directory trees.
+        - Toggle: "Enable lazy render" (default ON).
+        - Numeric inputs: Render depth (N), Read-ahead (R),
+          Object limit (M).
+  [ ] Changes apply to FUTURE operations only — already-truncated
+      trees are not re-scanned automatically. (Closing and reopening
+      the directory picks up the new values.)
+  [ ] Persist via nvstore from 39.1.
+
+Step 39.9 — Cross-mode validation and cleanup
+  [ ] Verify all three modes (MapV, DiscV, TreeV) on:
+        - small tree (no truncation expected)
+        - medium tree (~/src, slight truncation)
+        - large tree (1.4 M entries, severe truncation, fast first
+          paint, indicator visible)
+  [ ] Verify Expand All: BFS, uniform depth, indicator updates.
+  [ ] Verify navigation extends one branch only (B-anchor model).
+  [ ] Strip any temporary profiling printfs.
+
+  Checkpoint: With lazy render ON (default), large trees paint
+  quickly and remain interactive; the indicator appears whenever the
+  view is truncated; the user can navigate deeper to extend the view
+  branch by branch. With lazy render OFF (via Preferences), behaviour
+  matches the pre-Phase-39 codebase.
+
+  Deferred (note for later, do NOT do in 39):
+    - Memory / eviction policy for scanned data the user has wandered
+      far from. Keep everything in memory for now and revisit only if
+      memory pressure becomes a real issue.
+    - Streaming render during scan (start drawing while still
+      readdir-ing). Achievable but adds significant complexity and is
+      not essential given depth bounds make initial scan fast.
+    - "Scan everything now" button in preferences for users who turn
+      lazy off mid-session and want immediate fill.
+
+
 NOTES
 =====
 - Each step should leave the code compilable and runnable
