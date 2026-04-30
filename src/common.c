@@ -27,6 +27,8 @@
 #include <pwd.h>
 #include <grp.h>
 #include <unistd.h>
+#include <limits.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 
 #include "gui.h" /* gui_update( ) */
@@ -383,6 +385,82 @@ node_is_executable( GNode *node )
 }
 
 
+/* Effective size for visual layout. Directories add their subtree
+ * total on top of the directory entry's own size. Symlinks, if their
+ * target has been resolved, report the target's size so they look
+ * like what they point to; unresolved or broken symlinks fall back
+ * to the raw lstat size (pathname length — intentionally tiny). */
+int64
+node_display_size( GNode *node )
+{
+	NodeType type;
+
+	if (node == NULL)
+		return 0;
+
+	type = NODE_DESC(node)->type;
+
+	if (type == NODE_DIRECTORY || type == NODE_METANODE)
+		return NODE_DESC(node)->size + DIR_NODE_DESC(node)->subtree.size;
+
+	if (type == NODE_SYMLINK) {
+		int64 target = SYMLINK_NODE_DESC(node)->target_size;
+		if (target > 0)
+			return target;
+	}
+
+	return NODE_DESC(node)->size;
+}
+
+
+/* Statusbar hover/selection label. For most nodes this is just the
+ * absolute name (same as node_absname). For symlinks it returns
+ * "<absname> -> <target>" where <target> is the readlink() output
+ * (the path as literally stored in the link, e.g. "../foo" rather
+ * than the fully-resolved realpath — that's what users expect to
+ * see for a symlink hover).
+ *
+ * Returns a pointer to a function-local static buffer; callers must
+ * not free it, and a subsequent call invalidates the previous
+ * result (same contract as node_absname). */
+const char *
+node_hover_label( GNode *node )
+{
+	static char *label = NULL;
+	const char *absname;
+	char target[PATH_MAX];
+	ssize_t n;
+	size_t need;
+
+	absname = node_absname( node );
+	if (node == NULL || NODE_DESC(node)->type != NODE_SYMLINK)
+		return absname;
+
+	/* node_absname returns a static-buffer pointer that readlink()
+	 * won't touch, but we must copy it before writing our composed
+	 * string into the `label` we're about to rebuild — that realloc
+	 * might collide with the same allocator path. Copy onto the
+	 * stack for safety. */
+	char abscopy[PATH_MAX];
+	strncpy( abscopy, absname, sizeof(abscopy) - 1 );
+	abscopy[sizeof(abscopy) - 1] = '\0';
+
+	n = readlink( abscopy, target, sizeof(target) - 1 );
+	if (n < 0) {
+		/* readlink failed — just return the absname. */
+		return absname;
+	}
+	target[n] = '\0';
+
+	if (label != NULL)
+		xfree( label );
+	need = strlen( abscopy ) + 4 + (size_t)n + 1;  /* " -> " plus NUL */
+	label = NEW_ARRAY(char, need);
+	snprintf( label, need, "%s -> %s", abscopy, target );
+	return label;
+}
+
+
 /* This does roughly the opposite of node_absname( ): given an (absolute)
  * filename, return the corresponding node if it is present in the current
  * filesystem tree (NULL otherwise) */
@@ -462,19 +540,39 @@ node_named( const char *absname )
 
 
 #ifdef HAVE_FILE_COMMAND
+
+/* Cache: absolute pathname -> file-type description string. Results
+ * are cached for the lifetime of the program. Same-file-same-output is
+ * a reasonable approximation since `file` inspects content and content
+ * rarely changes mid-session; the payoff is no fork+exec on every
+ * Properties dialog for a previously-seen file. */
+static GHashTable *file_type_cache = NULL;
+
 /* Runs the 'file' command on the given file, and returns the output
- * (a verbose description of the file type) */
+ * (a verbose description of the file type). The returned pointer is
+ * owned by the cache (or by a static scratch buffer on error/timeout)
+ * — the caller must not free it. */
 static char *
 get_file_type_desc( const char *filename )
 {
-	static char *cmd_output = NULL;
+	static char *scratch = NULL;
+	char *cached;
 	FILE *cmd;
 	double t0;
 	int len, c, i = 0;
 	char *cmd_line;
+	char *result, *cached_copy;
 
-	/* Allocate output buffer */
-	RESIZE(cmd_output, strlen( filename ) + 1024, char);
+	if (file_type_cache == NULL)
+		file_type_cache = g_hash_table_new_full(
+			g_str_hash, g_str_equal, g_free, g_free );
+
+	cached = g_hash_table_lookup( file_type_cache, filename );
+	if (cached != NULL)
+		return cached;
+
+	/* Allocate scratch buffer for `file` output */
+	RESIZE(scratch, strlen( filename ) + 1024, char);
 
 	/* Construct command line */
 	len = strlen( FILE_COMMAND ) + strlen( filename ) - 1;
@@ -485,8 +583,8 @@ get_file_type_desc( const char *filename )
 	cmd = popen( cmd_line, "r" );
 	xfree( cmd_line );
 	if (cmd == NULL) {
-		strcpy( cmd_output, _("Could not execute 'file' command") );
-		return cmd_output;
+		strcpy( scratch, _("Could not execute 'file' command") );
+		return scratch;		/* not cached — let next call retry */
 	}
 
 	/* Read loop */
@@ -495,28 +593,31 @@ get_file_type_desc( const char *filename )
 		/* Read command's stdout */
 		c = fgetc( cmd );
 		if (c != EOF)
-			cmd_output[i++] = c;
+			scratch[i++] = c;
 
 		/* Check for timeout condition */
 		if ((xgettime( ) - t0) > 5.0) {
 			pclose( cmd );
-			strcpy( cmd_output, _("('file' command timed out)") );
-			return cmd_output;
+			strcpy( scratch, _("('file' command timed out)") );
+			return scratch;	/* not cached — let next call retry */
 		}
 
 		/* Keep the GUI responsive */
 		gui_update( );
 	}
 	pclose( cmd );
-	cmd_output[i] = '\0';
+	scratch[i] = '\0';
 
 	len = strlen( filename );
-	if (!strncmp( filename, cmd_output, len )) {
-		/* Remove prepended "filename: " from output */
-		return &cmd_output[len + 2];
-	}
+	if (!strncmp( filename, scratch, len ))
+		result = &scratch[len + 2];	/* strip "filename: " prefix */
+	else
+		result = scratch;
 
-	return cmd_output;
+	/* Cache a private copy and return it. The cache owns both strings. */
+	cached_copy = g_strdup( result );
+	g_hash_table_insert( file_type_cache, g_strdup( filename ), cached_copy );
+	return cached_copy;
 }
 #endif /* HAVE_FILE_COMMAND */
 
@@ -764,16 +865,20 @@ get_node_info( GNode *node )
 	else
 		ninfo.file_type_desc = blank;
 
-	/* For symbolic links: target name(s) */
+	/* For symbolic links: target name(s).
+	 * read_symlink( ) and absname_merge( ) both return pointers into their
+	 * own per-call static buffers. Copy those into ninfo-owned storage via
+	 * xstrredup( ) so the returned struct fields are stable heap pointers,
+	 * not pointers into foreign statics that the next call would clobber. */
 	if (NODE_DESC(node)->type == NODE_SYMLINK) {
-		ninfo.target = read_symlink( absname );
+		ninfo.target = xstrredup( ninfo.target, read_symlink( absname ) );
 		str = g_path_get_dirname( absname );
-		ninfo.abstarget = absname_merge( str, ninfo.target );
+		ninfo.abstarget = xstrredup( ninfo.abstarget, absname_merge( str, ninfo.target ) );
 		g_free( str );
 	}
 	else {
-		ninfo.target = blank;
-		ninfo.abstarget = blank;
+		ninfo.target = xstrredup( ninfo.target, blank );
+		ninfo.abstarget = xstrredup( ninfo.abstarget, blank );
 	}
 
 	return &ninfo;

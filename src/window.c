@@ -460,12 +460,102 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 }
 
 
+/* TRUE while the interface is locked down for a long operation
+ * (scan, recursive expand/collapse, camera pan). gui_cursor( ) reads
+ * this to force a wait cursor onto every widget regardless of what
+ * the caller requested. */
+static boolean window_busy_flag = FALSE;
+
+boolean
+window_is_busy( void )
+{
+	return window_busy_flag;
+}
+
+
+/* CSS provider that forces `cursor: wait` on every widget. We attach
+ * it to the default GdkDisplay at USER+100 priority while busy and
+ * remove it when idle. This overrides theme rules like
+ * `button { cursor: pointer }` that otherwise win against
+ * gtk_widget_set_cursor when the mouse moves over toolbar buttons or
+ * list rows. */
+static GtkCssProvider *busy_cursor_provider = NULL;
+static boolean busy_cursor_css_active = FALSE;
+
+static void
+window_set_busy_cursor_css( boolean busy )
+{
+	GdkDisplay *display = gdk_display_get_default( );
+	if (display == NULL)
+		return;
+
+	if (busy_cursor_provider == NULL) {
+		busy_cursor_provider = gtk_css_provider_new( );
+		/* !important on every selector so theme rules with higher
+		 * specificity (e.g. `button.toggle:hover`) cannot win.
+		 * `> *` (universal child) reaches every widget node in
+		 * the GTK4 widget tree — `*` alone misses some types. */
+		gtk_css_provider_load_from_string( busy_cursor_provider,
+			"* { cursor: wait !important; } "
+			"window, window * { cursor: wait !important; } "
+			"button, button * { cursor: wait !important; } "
+			"row, row * { cursor: wait !important; }" );
+	}
+
+	if (busy && !busy_cursor_css_active) {
+		gtk_style_context_add_provider_for_display( display,
+			GTK_STYLE_PROVIDER(busy_cursor_provider),
+			GTK_STYLE_PROVIDER_PRIORITY_USER + 100 );
+		busy_cursor_css_active = TRUE;
+	}
+	else if (!busy && busy_cursor_css_active) {
+		gtk_style_context_remove_provider_for_display( display,
+			GTK_STYLE_PROVIDER(busy_cursor_provider) );
+		busy_cursor_css_active = FALSE;
+	}
+}
+
+
+/* Set the cursor on the toplevel GdkSurface directly. The surface
+ * cursor is the most authoritative cursor source in GTK4 — it is
+ * applied whenever no widget under the pointer has its own cursor
+ * set, and it persists across redraws. We use it as a belt-and-
+ * suspenders override alongside per-widget cursors and CSS. */
+static void
+window_set_surface_cursor( boolean busy )
+{
+	GdkSurface *surface;
+	GdkCursor *cursor;
+
+	if (main_window_w_saved == NULL)
+		return;
+
+	surface = gtk_native_get_surface( GTK_NATIVE(main_window_w_saved) );
+	if (surface == NULL)
+		return;
+
+	if (busy) {
+		cursor = gdk_cursor_new_from_name( "wait", NULL );
+		gdk_surface_set_cursor( surface, cursor );
+		if (cursor != NULL)
+			g_object_unref( cursor );
+	}
+	else {
+		gdk_surface_set_cursor( surface, NULL );
+	}
+}
+
+
 /* This enables/disables the switchable widgets */
 void
 window_set_access( boolean enabled )
 {
 	GtkWidget *widget;
 	GList *llink;
+
+	window_busy_flag = !enabled;
+	window_set_busy_cursor_css( !enabled );
+	window_set_surface_cursor( !enabled );
 
 	llink = sw_widget_list;
 	while (llink != NULL) {
@@ -484,6 +574,14 @@ window_set_access( boolean enabled )
 	/* Show busy cursor when access is disabled */
 	if (main_window_w_saved != NULL)
 		gui_cursor( main_window_w_saved, enabled ? NULL : "wait" );
+
+	/* Force wait cursor onto the panes that manage their own cursors.
+	 * GTK4 widget cursor inheritance does not reliably propagate
+	 * through GtkListView / GtkGLArea, so we have to push the wait
+	 * cursor explicitly onto each one. */
+	viewport_set_busy_cursor( !enabled );
+	dirtree_refresh_cursor( );
+	filelist_refresh_cursor( );
 }
 
 

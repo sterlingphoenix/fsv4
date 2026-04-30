@@ -1,3 +1,5 @@
 
  * In DiscV, discs render underneath other discs. 
  * In TreeV, Expand All can be flickery. 
+ * When expanding/collapsing massive directories, the cursor can change from "busy" to regular pointer. 
+

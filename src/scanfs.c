@@ -53,13 +53,21 @@ int alphasort( const void *a, const void *b );
 /* Name strings are stored here */
 static GStringChunk *name_strchunk = NULL;
 
-/* Node ID counter */
+/* Node ID counter (worker-thread only during scan) */
 static unsigned int node_id;
 
-/* Numbers for the on-the-fly progress readout */
+/* Scan progress — all of the fields below are written by the worker
+ * thread during a scan and read by the main thread's scan_monitor
+ * timeout. They are protected by scan_stats_mutex. */
+static GMutex scan_stats_mutex;
 static int node_counts[NUM_NODE_TYPES];
 static int64 size_counts[NUM_NODE_TYPES];
 static int stat_count = 0;
+static char scan_current_dir[PATH_MAX];
+/* Set to TRUE by the worker once the disk-scan phase is done and the
+ * post-scan geometry_init / color_assign is running. scan_monitor
+ * uses this to change the statusbar readout to "Preparing...". */
+static boolean scan_preparing = FALSE;
 
 
 /* Official stat function. Returns 0 on success, -1 on error.
@@ -125,12 +133,12 @@ de_select( const struct dirent *de )
 }
 
 
-/* Minimum interval between UI updates during scan (seconds) */
-#define SCAN_UI_UPDATE_INTERVAL 0.05
-
-/* Timestamp of last UI update during scan */
-static double scan_last_ui_update;
-
+/* Recursive directory scanner.
+ *
+ * Runs on the scan worker thread (see scan_worker_thread). MUST NOT
+ * touch GTK widgets, globals.fsv_mode, or any other main-thread-owned
+ * state — only the tree being built, the name_strchunk, and the
+ * progress statics under scan_stats_mutex. */
 static int
 process_dir( const char *dir, GNode *dnode )
 {
@@ -139,7 +147,6 @@ process_dir( const char *dir, GNode *dnode )
 	GNode *node;
 	int num_entries, i;
 	int dir_len;
-	char strbuf[1024];
 	char pathbuf[PATH_MAX];
 
 	/* Scan in directory entries */
@@ -147,9 +154,11 @@ process_dir( const char *dir, GNode *dnode )
 	if (num_entries < 0)
 		return -1;
 
-	/* Update display */
-	snprintf( strbuf, sizeof(strbuf), _("Scanning: %s"), dir );
-	window_statusbar( SB_RIGHT, strbuf );
+	/* Publish current directory for the main-thread scan_monitor
+	 * timeout to display. */
+	g_mutex_lock( &scan_stats_mutex );
+	g_strlcpy( scan_current_dir, dir, sizeof(scan_current_dir) );
+	g_mutex_unlock( &scan_stats_mutex );
 
 	/* Prepare path buffer: "dir/" prefix, entry name appended per iteration */
 	dir_len = strlen( dir );
@@ -173,7 +182,6 @@ process_dir( const char *dir, GNode *dnode )
 			g_node_destroy( node );
 			continue;
 		}
-		++stat_count;
 		++node_id;
 
 		if (NODE_IS_DIR(node)) {
@@ -184,32 +192,34 @@ process_dir( const char *dir, GNode *dnode )
 			process_dir( pathbuf, node );
 
 			/* Move new descriptor into working memory */
-			andesc = (union AnyNodeDesc *)g_slice_new0( DirNodeDesc );
+			andesc = (union AnyNodeDesc *)g_new0( DirNodeDesc, 1 );
 			memcpy( andesc, DIR_NODE_DESC(node), sizeof(DirNodeDesc) );
+			node->data = andesc;
+		}
+		else if (NODE_DESC(node)->type == NODE_SYMLINK) {
+			/* Symlinks get an extended descriptor so the
+			 * post-scan resolve_symlinks pass can record the
+			 * target's display size. target_size defaults to 0
+			 * (unresolved). */
+			andesc = (union AnyNodeDesc *)g_new0( SymlinkNodeDesc, 1 );
+			memcpy( andesc, NODE_DESC(node), sizeof(NodeDesc) );
 			node->data = andesc;
 		}
 		else {
 			/* Move new descriptor into working memory */
-			andesc = (union AnyNodeDesc *)g_slice_new0( NodeDesc );
+			andesc = (union AnyNodeDesc *)g_new0( NodeDesc, 1 );
 			memcpy( andesc, NODE_DESC(node), sizeof(NodeDesc) );
 			node->data = andesc;
 		}
 
-		/* Add to appropriate node/size counts
-		 * (for dynamic progress display) */
+		/* Publish progress for the main-thread monitor */
+		g_mutex_lock( &scan_stats_mutex );
+		++stat_count;
 		++node_counts[NODE_DESC(node)->type];
 		size_counts[NODE_DESC(node)->type] += NODE_DESC(node)->size;
+		g_mutex_unlock( &scan_stats_mutex );
 
 		free( dir_entries[i] ); /* !xfree */
-
-		/* Keep the user interface responsive (throttled) */
-		{
-			double now = xgettime( );
-			if (now - scan_last_ui_update >= SCAN_UI_UPDATE_INTERVAL) {
-				gui_update( );
-				scan_last_ui_update = now;
-			}
-		}
 	}
 
 	free( dir_entries ); /* !xfree */
@@ -218,22 +228,181 @@ process_dir( const char *dir, GNode *dnode )
 }
 
 
-/* Dynamic scan progress readout */
+/* Dynamic scan progress readout. Runs on the main thread while the
+ * scan worker is populating the counts under scan_stats_mutex. */
 static gboolean
 scan_monitor( G_GNUC_UNUSED gpointer user_data )
 {
-	char strbuf[64];
+	int local_node_counts[NUM_NODE_TYPES];
+	int64 local_size_counts[NUM_NODE_TYPES];
+	int local_stat_count;
+	char local_dir[PATH_MAX];
+	boolean local_preparing;
+	char strbuf[PATH_MAX + 64];
+
+	/* Snapshot worker-thread stats under the mutex. Reset stat_count
+	 * so the per-period rate stays sane. */
+	g_mutex_lock( &scan_stats_mutex );
+	memcpy( local_node_counts, node_counts, sizeof(local_node_counts) );
+	memcpy( local_size_counts, size_counts, sizeof(local_size_counts) );
+	local_stat_count = stat_count;
+	stat_count = 0;
+	g_strlcpy( local_dir, scan_current_dir, sizeof(local_dir) );
+	local_preparing = scan_preparing;
+	g_mutex_unlock( &scan_stats_mutex );
 
 	/* Running totals in file list area */
-	filelist_scan_monitor( node_counts, size_counts );
+	filelist_scan_monitor( local_node_counts, local_size_counts );
 
-	/* Stats-per-second readout in left statusbar */
-	sprintf( strbuf, _("%d stats/sec"), 1000 * stat_count / SCAN_MONITOR_PERIOD );
-	window_statusbar( SB_LEFT, strbuf );
-	gui_update( );
-	stat_count = 0;
+	if (local_preparing) {
+		/* Post-scan layout/color pass is running on the worker. */
+		window_statusbar( SB_LEFT, "" );
+		window_statusbar( SB_RIGHT, _("Preparing visualisation...") );
+	}
+	else {
+		/* Stats-per-second readout in left statusbar */
+		sprintf( strbuf, _("%d stats/sec"), 1000 * local_stat_count / SCAN_MONITOR_PERIOD );
+		window_statusbar( SB_LEFT, strbuf );
+
+		/* Currently scanning directory in right statusbar */
+		if (local_dir[0] != '\0') {
+			snprintf( strbuf, sizeof(strbuf), _("Scanning: %s"), local_dir );
+			window_statusbar( SB_RIGHT, strbuf );
+		}
+	}
 
 	return TRUE;
+}
+
+
+/* Forward declaration — definition is below with the other
+ * setup-once-scan-is-done helpers. */
+static void setup_fstree_recursive( GNode *node, GNode **node_table );
+static void resolve_symlinks_recursive( GNode *node, const char *root_abs );
+static int node_abspath_worker( GNode *node, char *buf, size_t buflen );
+static int64 scan_out_of_root_dir_size( const char *abs_path );
+
+
+/* Context for an in-flight async scan. Allocated on the heap, owned
+ * by the GTask, freed in scan_worker_done_cb (main thread) after the
+ * post-scan GTK work and user callback have run. */
+typedef struct {
+	char *root_dir;		/* owned */
+	GNode **node_table;	/* output, allocated on worker; ownership
+				 * transferred to viewport in done_cb */
+	unsigned int node_count; /* output */
+	FsvMode initial_mode;	/* mode to pre-initialise on the worker */
+	ScanDoneCallback done_cb;
+	gpointer user_data;
+} ScanContext;
+
+
+static void
+scan_ctx_free( gpointer data )
+{
+	ScanContext *ctx = data;
+	g_free( ctx->root_dir );
+	g_free( ctx );
+}
+
+
+/* Main-thread source id for the periodic scan_monitor timeout; owned
+ * by the async scan, removed in scan_worker_done_cb. */
+static guint scan_monitor_source_id = 0;
+
+
+static void
+scan_worker_thread(
+	GTask *task,
+	G_GNUC_UNUSED gpointer source_object,
+	gpointer task_data,
+	G_GNUC_UNUSED GCancellable *cancellable )
+{
+	ScanContext *ctx = task_data;
+
+	/* Disk thrashing phase */
+	process_dir( ctx->root_dir, root_dnode );
+
+	/* Post-scan tree finalisation. No GTK calls — safe on worker. */
+	ctx->node_count = node_id;
+	ctx->node_table = NEW_ARRAY(GNode *, ctx->node_count);
+	setup_fstree_recursive( globals.fstree, ctx->node_table );
+
+	/* Resolve symlink target sizes now that subtree totals exist.
+	 * Pure tree walk + stat() calls; no GTK access. Precompute the
+	 * root's absolute path so the recursive pass doesn't touch
+	 * node_absname's main-thread-owned static buffer. */
+	{
+		char root_abs[PATH_MAX];
+		if (node_abspath_worker( root_dnode, root_abs, sizeof(root_abs) ) == 0)
+			resolve_symlinks_recursive( globals.fstree, root_abs );
+	}
+
+	/* Pre-lay out + color the initial visualization on the worker
+	 * thread so the main thread doesn't freeze for seconds after
+	 * the scan completes. geometry_init() is pure data over the
+	 * GNode tree — no GTK widgets, no GL calls (vbo_batch_invalidate
+	 * and ogl_pick_invalidate only flip bool flags). Main thread
+	 * consumes the prebuilt layout via geometry_consume_prebuilt().
+	 *
+	 * Flip scan_preparing so the next scan_monitor tick on the main
+	 * thread swaps the statusbar readout to "Preparing...". */
+	g_mutex_lock( &scan_stats_mutex );
+	scan_preparing = TRUE;
+	g_mutex_unlock( &scan_stats_mutex );
+
+	geometry_init( ctx->initial_mode );
+
+	g_task_return_boolean( task, TRUE );
+}
+
+
+/* Main-thread callback fired when the scan worker finishes. Does all
+ * remaining GTK work (dirtree population, viewport handoff, statusbar
+ * clear) and then invokes the caller-supplied done_cb. */
+static void
+scan_worker_done_cb(
+	G_GNUC_UNUSED GObject *source,
+	GAsyncResult *res,
+	G_GNUC_UNUSED gpointer user_data )
+{
+	ScanContext *ctx = g_task_get_task_data( G_TASK(res) );
+	gint64 t_start, t0, t_dirtree, t_viewport, t_donecb;
+
+	t_start = g_get_monotonic_time( );
+
+	if (scan_monitor_source_id != 0) {
+		g_source_remove( scan_monitor_source_id );
+		scan_monitor_source_id = 0;
+	}
+	window_statusbar( SB_RIGHT, "" );
+
+	t0 = g_get_monotonic_time( );
+	dirtree_no_more_entries( );
+	t_dirtree = g_get_monotonic_time( ) - t0;
+
+	/* Hand node table ownership off to the viewport */
+	t0 = g_get_monotonic_time( );
+	viewport_pass_node_table( ctx->node_table, ctx->node_count );
+	ctx->node_table = NULL;
+	t_viewport = g_get_monotonic_time( ) - t0;
+
+	/* Fire the user's continuation (e.g. fsv_load_after_scan) */
+	t0 = g_get_monotonic_time( );
+	if (ctx->done_cb != NULL)
+		ctx->done_cb( ctx->user_data );
+	t_donecb = g_get_monotonic_time( ) - t0;
+
+	g_printerr(
+		"[scan done_cb] total=%.1fms dirtree_no_more_entries=%.1fms "
+		"viewport_pass_node_table=%.1fms done_cb=%.1fms\n",
+		(double)(g_get_monotonic_time( ) - t_start) / 1000.0,
+		(double)t_dirtree / 1000.0,
+		(double)t_viewport / 1000.0,
+		(double)t_donecb / 1000.0 );
+
+	/* GTask will be unref'd after this returns, which frees ctx via
+	 * scan_ctx_free. */
 }
 
 
@@ -313,35 +482,267 @@ setup_fstree_recursive( GNode *node, GNode **node_table )
 }
 
 
+/* Build the absolute pathname of `node` into `buf` without touching
+ * the static buffer inside node_absname() — that static is shared
+ * with main-thread callers (dirtree / filelist selection handlers)
+ * and cannot be assumed race-free during the post-scan symlink pass
+ * on the worker thread. Returns 0 on success, -1 if the path would
+ * overflow buflen or the tree is pathologically deep. */
+static int
+node_abspath_worker( GNode *node, char *buf, size_t buflen )
+{
+	GNode *chain[256];
+	int depth = 0;
+	size_t pos = 0;
+	int i;
+
+	while (node != NULL) {
+		if (depth >= (int)G_N_ELEMENTS(chain))
+			return -1;
+		chain[depth++] = node;
+		node = node->parent;
+	}
+
+	for (i = depth - 1; i >= 0; i--) {
+		const char *name = NODE_DESC(chain[i])->name;
+		size_t nlen = strlen( name );
+		if (pos > 0) {
+			if (pos + 1 >= buflen) return -1;
+			buf[pos++] = '/';
+		}
+		if (pos + nlen >= buflen) return -1;
+		memcpy( &buf[pos], name, nlen );
+		pos += nlen;
+	}
+	if (pos >= buflen) return -1;
+	buf[pos] = '\0';
+
+	/* node_absname() special-cases a root of "/" by stripping a
+	 * leading double-slash; do the same here for consistency. */
+	if (pos >= 2 && buf[0] == '/' && buf[1] == '/')
+		memmove( buf, buf + 1, pos );
+
+	return 0;
+}
+
+
+/* Worker-thread variant of node_named() that takes a pre-computed
+ * root absolute path (so it doesn't call node_absname() and race
+ * with the main thread's static buffer). Otherwise identical to
+ * the component-by-component match in node_named(). */
+static GNode *
+node_named_worker( const char *absname, const char *root_abs )
+{
+	GNode *node;
+	size_t root_len;
+	const char *tail;
+	char *tail_copy, *name;
+
+	root_len = strlen( root_abs );
+	if (strncmp( root_abs, absname, root_len ) != 0)
+		return NULL;
+
+	/* Handle root == "/" so tail starts at absname itself */
+	if (root_len == 1 && root_abs[0] == '/')
+		root_len = 0;
+
+	tail = &absname[root_len];
+	if (tail[0] == '\0' || (tail[0] == '/' && tail[1] == '\0'))
+		return root_dnode;
+
+	tail_copy = xstrdup( tail );
+	name = strtok( tail_copy, "/" );
+	node = root_dnode->children;
+	while (node != NULL && name != NULL) {
+		if (strcmp( name, NODE_DESC(node)->name ) == 0) {
+			name = strtok( NULL, "/" );
+			if (name == NULL)
+				break;
+			node = node->children;
+			continue;
+		}
+		node = node->next;
+	}
+
+	xfree( tail_copy );
+	return node;
+}
+
+
+/* Bounded recursive directory size calculator for out-of-root
+ * symlink targets. Walks the target directory summing file sizes,
+ * recursing into subdirectories but NOT following symlinks (uses
+ * lstat). Capped at a few thousand entries so a symlink pointing
+ * outside the scanned root (e.g. /usr, /home) returns a meaningful
+ * number without the scan hanging on pathological targets. */
+#define OUT_OF_ROOT_MAX_ENTRIES 20000
+#define OUT_OF_ROOT_MAX_DEPTH   12
+
+static void
+scan_out_of_root_walk( const char *path, int depth, int64 *total, int *budget )
+{
+	DIR *dir;
+	struct dirent *ent;
+
+	if (depth >= OUT_OF_ROOT_MAX_DEPTH)
+		return;
+	if (*budget <= 0)
+		return;
+
+	dir = opendir( path );
+	if (dir == NULL)
+		return;
+
+	while ((ent = readdir( dir )) != NULL) {
+		char child[PATH_MAX];
+		struct stat st;
+
+		if (*budget <= 0)
+			break;
+		if (ent->d_name[0] == '.'
+		    && (ent->d_name[1] == '\0'
+		        || (ent->d_name[1] == '.' && ent->d_name[2] == '\0')))
+			continue;
+
+		if ((int)(strlen( path ) + 1 + strlen( ent->d_name )) >= PATH_MAX)
+			continue;
+		snprintf( child, sizeof(child), "%s/%s", path, ent->d_name );
+
+		if (lstat( child, &st ) != 0)
+			continue;
+		(*budget)--;
+
+		if (S_ISDIR(st.st_mode))
+			scan_out_of_root_walk( child, depth + 1, total, budget );
+		else if (S_ISREG(st.st_mode))
+			*total += (int64)st.st_size;
+	}
+
+	closedir( dir );
+}
+
+static int64
+scan_out_of_root_dir_size( const char *abs_path )
+{
+	int64 total = 0;
+	int budget = OUT_OF_ROOT_MAX_ENTRIES;
+	scan_out_of_root_walk( abs_path, 0, &total, &budget );
+	return total;
+}
+
+
+/* Post-scan pass: for every symlink, resolve what it points at and
+ * record the target's "display size" so MapV / DiscV / TreeV can lay
+ * the symlink out at something closer to its effective weight. The
+ * symlink keeps its own NODE_DESC(node)->size (the lstat byte count
+ * of the pathname) — that's what Properties shows.
+ *
+ * Strategy:
+ *   - stat() (follows symlinks) the absolute pathname of the symlink.
+ *   - If stat fails → broken link, leave target_size = 0.
+ *   - If stat succeeds and S_ISDIR: try to find the target inside
+ *     the scanned tree via node_named() + realpath resolution. If
+ *     found, use that dnode's subtree.size + own size. If target
+ *     is outside the scanned root, fall back to st.st_size.
+ *   - Otherwise (regular file / fifo / etc.), use st.st_size.
+ *
+ * Runs on the scan worker thread between setup_fstree_recursive()
+ * and g_task_return_boolean(). No GTK access. node_absname() is not
+ * called here — see node_abspath_worker(). */
+static void
+resolve_symlinks_recursive( GNode *node, const char *root_abs )
+{
+	GNode *child;
+
+	if (NODE_IS_SYMLINK(node)) {
+		char symlink_abs[PATH_MAX];
+		struct stat st;
+
+		if (node_abspath_worker( node, symlink_abs, sizeof(symlink_abs) ) == 0
+		    && stat( symlink_abs, &st ) == 0) {
+			int64 target_size = 0;
+			boolean target_is_dir = FALSE;
+
+			if (S_ISDIR(st.st_mode)) {
+				target_is_dir = TRUE;
+				char resolved[PATH_MAX];
+				if (realpath( symlink_abs, resolved ) != NULL) {
+					GNode *target_node = node_named_worker( resolved, root_abs );
+					if (target_node != NULL && NODE_IS_DIR(target_node)) {
+						target_size = NODE_DESC(target_node)->size
+							    + DIR_NODE_DESC(target_node)->subtree.size;
+					}
+					else {
+						/* Out-of-root (or unscanned) directory:
+						 * walk the target ourselves to get a
+						 * meaningful size — bounded so a symlink
+						 * to / doesn't hang the scan. */
+						target_size = scan_out_of_root_dir_size( resolved );
+					}
+				}
+				if (target_size == 0)
+					target_size = st.st_size;
+			}
+			else {
+				target_size = st.st_size;
+			}
+
+			SYMLINK_NODE_DESC(node)->target_size = target_size;
+			SYMLINK_NODE_DESC(node)->target_is_dir = target_is_dir;
+		}
+		/* else: broken link — target_size stays 0 */
+	}
+
+	/* Recurse */
+	child = node->children;
+	while (child != NULL) {
+		resolve_symlinks_recursive( child, root_abs );
+		child = child->next;
+	}
+}
+
+
 /* Callback for g_node_traverse to free node descriptor data */
 static gboolean
 free_node_data_cb( GNode *node, G_GNUC_UNUSED gpointer data )
 {
-	if (node->data != NULL) {
-		if (NODE_IS_DIR(node))
-			g_slice_free( DirNodeDesc, node->data );
-		else
-			g_slice_free( NodeDesc, node->data );
-	}
+	if (node->data != NULL)
+		g_free( node->data );
 	return FALSE;
 }
 
 
-/* Top-level call to recursively scan a filesystem */
+/* Top-level call to recursively scan a filesystem.
+ *
+ * Returns immediately — the scan runs on a worker thread so the GTK
+ * main loop stays live (widgets paint, events dispatch, window
+ * close/minimise work normally). When the scan completes, done_cb is
+ * invoked on the main thread with user_data; that's where the caller
+ * (fsv_load) runs its own post-scan logic. */
 void
-scanfs( const char *dir )
+scanfs( const char *dir, FsvMode initial_mode,
+        ScanDoneCallback done_cb, gpointer user_data )
 {
 	const char *root_dir;
-        GNode **node_table;
-	guint handler_id;
+	ScanContext *ctx;
+	GTask *task;
 	char *name;
 
 	if (globals.fstree != NULL) {
-		/* Free existing geometry and filesystem tree */
+		/* Tear down the UI first so GTK drops its FsvDirItem refs to
+		 * the GNode pointers before we free them. Otherwise stale
+		 * dnode pointers can be dereferenced during teardown. */
+		dirtree_clear( );
+
 		geometry_free_recursive( globals.fstree );
 		/* Free node descriptors */
 		g_node_traverse( globals.fstree, G_PRE_ORDER, G_TRAVERSE_ALL, -1, free_node_data_cb, NULL );
 		g_node_destroy( globals.fstree );
+		globals.fstree = NULL;
+		globals.current_node = NULL;
+	}
+	else {
+		dirtree_clear( );
 	}
 
 	/* ...and string chunks to hold name strings */
@@ -349,19 +750,21 @@ scanfs( const char *dir )
 		g_string_chunk_free( name_strchunk );
 	name_strchunk = g_string_chunk_new( 8192 );
 
-	/* Clear out directory tree */
-	dirtree_clear( );
-
 	/* Reset node numbering */
 	node_id = 0;
 
 	/* Get absolute path of desired root (top-level) directory */
-	if (chdir( dir ) != 0)
+	if (chdir( dir ) != 0) {
+		/* Nothing to scan — still fire the callback so the caller
+		 * doesn't deadlock waiting for a scan that never happened. */
+		if (done_cb != NULL)
+			done_cb( user_data );
 		return;
+	}
 	root_dir = xgetcwd( );
 
 	/* Set up fstree metanode */
-	globals.fstree = g_node_new( g_slice_new0( DirNodeDesc ) );
+	globals.fstree = g_node_new( g_new0( DirNodeDesc, 1 ) );
 	NODE_DESC(globals.fstree)->type = NODE_METANODE;
 	NODE_DESC(globals.fstree)->id = node_id++;
 	name = g_path_get_dirname( root_dir );
@@ -370,7 +773,7 @@ scanfs( const char *dir )
 	DIR_NODE_DESC(globals.fstree)->tree_expanded = FALSE;
 
 	/* Set up root directory node */
-	g_node_append_data( globals.fstree, g_slice_new0( DirNodeDesc ) );
+	g_node_append_data( globals.fstree, g_new0( DirNodeDesc, 1 ) );
 	/* Note: We can now use root_dnode to refer to the node just
 	 * created (it is an alias for globals.fstree->children) */
 	NODE_DESC(root_dnode)->id = node_id++;
@@ -380,26 +783,33 @@ scanfs( const char *dir )
 	stat_node( root_dnode, root_dir );
 	dirtree_entry_new( root_dnode );
 
+	/* Reset progress counters for the new scan */
+	g_mutex_lock( &scan_stats_mutex );
+	memset( node_counts, 0, sizeof(node_counts) );
+	memset( size_counts, 0, sizeof(size_counts) );
+	stat_count = 0;
+	scan_current_dir[0] = '\0';
+	scan_preparing = FALSE;
+	g_mutex_unlock( &scan_stats_mutex );
+
 	/* GUI stuff */
 	filelist_scan_monitor_init( );
-	handler_id = g_timeout_add( SCAN_MONITOR_PERIOD, scan_monitor, NULL );
-	scan_last_ui_update = xgettime( );
+	scan_monitor_source_id = g_timeout_add( SCAN_MONITOR_PERIOD, scan_monitor, NULL );
 
-	/* Let the disk thrashing begin */
-	process_dir( root_dir, root_dnode );
+	/* Dispatch the disk-thrashing phase to a worker thread. When the
+	 * worker finishes, scan_worker_done_cb fires on the main thread
+	 * and does all remaining GTK work + invokes done_cb. */
+	ctx = g_new0( ScanContext, 1 );
+	ctx->root_dir = g_strdup( root_dir );
+	ctx->initial_mode = initial_mode;
+	ctx->done_cb = done_cb;
+	ctx->user_data = user_data;
 
-	/* GUI stuff again */
-	g_source_remove( handler_id );
-	window_statusbar( SB_RIGHT, "" );
-	dirtree_no_more_entries( );
-	gui_update( );
-
-	/* Allocate node table and perform final tree setup */
-	node_table = NEW_ARRAY(GNode *, node_id);
-	setup_fstree_recursive( globals.fstree, node_table );
-
-	/* Pass off new node table to the viewport handler */
-	viewport_pass_node_table( node_table, node_id );
+	task = g_task_new( NULL, NULL, scan_worker_done_cb, NULL );
+	g_task_set_task_data( task, ctx, scan_ctx_free );
+	g_task_run_in_thread( task, scan_worker_thread );
+	g_object_unref( task );	/* GTask holds its own ref during the
+				 * in-thread run; drop ours */
 }
 
 

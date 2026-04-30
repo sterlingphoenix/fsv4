@@ -264,13 +264,8 @@ discv_node_compare( GNode *a, GNode *b )
 {
 	int64 a_size, b_size;
 
-	a_size = NODE_DESC(a)->size;
-	if (NODE_IS_DIR(a))
-		a_size += DIR_NODE_DESC(a)->subtree.size;
-
-	b_size = NODE_DESC(b)->size;
-	if (NODE_IS_DIR(b))
-		b_size += DIR_NODE_DESC(b)->subtree.size;
+	a_size = node_display_size( a );
+	b_size = node_display_size( b );
 
 	if (a_size < b_size)
 		return 1;
@@ -317,9 +312,7 @@ discv_init_recursive( GNode *dnode, double stem_theta )
 	/* Assign radii (and arc widths, temporarily) to leaf nodes */
 	node = dnode->children;
 	while (node != NULL) {
-		node_size = MAX(64, NODE_DESC(node)->size);
-                if (NODE_IS_DIR(node))
-			node_size += DIR_NODE_DESC(node)->subtree.size;
+		node_size = MAX(64, node_display_size( node ));
 		/* Area of disc == node_size */
 		radius = sqrt( (double)node_size / PI );
 		/* Center-to-center distance (parent to leaf) */
@@ -808,6 +801,25 @@ static const float mapv_side_slant_ratios[NUM_NODE_TYPES] = {
 	0.0	/* Unknown */
 };
 
+/* Pick the slant ratio for a node. Symlinks adopt their target's
+ * shape — symlink-to-file looks like a regular file,
+ * symlink-to-directory looks like a directory — so the 3D view
+ * isn't cluttered with wedge-shaped outliers. Visual differentiation
+ * of symlinks is left to future texturing work. Unresolved / broken
+ * symlinks keep the distinctive steep slant so they remain easy to
+ * spot. */
+static inline float
+mapv_node_slant( GNode *node )
+{
+	NodeType type = NODE_DESC(node)->type;
+	if (type == NODE_SYMLINK && SYMLINK_NODE_DESC(node)->target_size > 0) {
+		if (SYMLINK_NODE_DESC(node)->target_is_dir)
+			return mapv_side_slant_ratios[NODE_DIRECTORY];
+		return mapv_side_slant_ratios[NODE_REGFILE];
+	}
+	return mapv_side_slant_ratios[type];
+}
+
 /* Heights of directory and leaf nodes */
 static double mapv_dir_height = 384.0;
 static double mapv_leaf_height = 128.0;
@@ -936,9 +948,7 @@ mapv_init_recursive( GNode *dnode )
 	 * 3. Create a list of the blocks */
 	node = dnode->children;
 	while (node != NULL) {
-		size = MAX(256, NODE_DESC(node)->size);
-		if (NODE_IS_DIR(node))
-			size += DIR_NODE_DESC(node)->subtree.size;
+		size = MAX(256, node_display_size( node ));
 		k = sqrt( (double)size ) + nominal_border;
 		area = SQR(k);
 		total_block_area += area;
@@ -946,10 +956,14 @@ mapv_init_recursive( GNode *dnode )
 		block = NEW(struct MapVBlock);
 		block->node = node;
 		block->area = area;
-		G_LIST_APPEND(block_list, block);
+		/* Prepend + reverse: g_list_append is O(N), which made this
+		 * loop O(N^2) for wide directories and cost ~18 s on a
+		 * 125 k-directory tree during geometry_init. */
+		block_list = g_list_prepend( block_list, block );
 
 		node = node->next;
 	}
+	block_list = g_list_reverse( block_list );
 
 	/* The blocks are going to have a total area greater than the
 	 * directory can provide, so they'll have to be scaled down */
@@ -968,7 +982,8 @@ mapv_init_recursive( GNode *dnode )
 			row = NEW(struct MapVRow);
 			row->first_block = block;
 			row->area = 0.0;
-			G_LIST_APPEND(row_list, row);
+			/* Same O(N) -> O(1) rationale as block_list above. */
+			row_list = g_list_prepend( row_list, row );
 		}
 
 		/* Add block to row */
@@ -986,6 +1001,7 @@ mapv_init_recursive( GNode *dnode )
 
 		block_llink = block_llink->next;
 	}
+	row_list = g_list_reverse( row_list );
 
 	/* Third pass - optimize layout */
 	/* Note to self: write layout optimization routine sometime */
@@ -1016,9 +1032,7 @@ mapv_init_recursive( GNode *dnode )
 				break; /* finished with row */
 			block_dims.x = block->area / block_dims.y;
 
-			size = MAX(256, NODE_DESC(block->node)->size);
-			if (NODE_IS_DIR(block->node))
-				size += DIR_NODE_DESC(block->node)->subtree.size;
+			size = MAX(256, node_display_size( block->node ));
 			area = scale_factor * (double)size;
 
 			/* Calculate exact width of block's border region */
@@ -1140,7 +1154,7 @@ mapv_gldraw_node_colored( GNode *node, float r, float g, float b )
 	dims.y = MAPV_NODE_DEPTH(node);
 	dims.z = MAPV_GEOM_PARAMS(node)->height;
 
-	k = mapv_side_slant_ratios[NODE_DESC(node)->type];
+	k = mapv_node_slant( node );
 	offset.x = MIN(dims.z, k * dims.x);
 	offset.y = MIN(dims.z, k * dims.y);
 
@@ -1186,7 +1200,7 @@ mapv_apply_label( GNode *node )
 	/* Obtain dimensions of top face */
 	dims.x = MAPV_NODE_WIDTH(node);
 	dims.y = MAPV_NODE_DEPTH(node);
-	k = mapv_side_slant_ratios[NODE_DESC(node)->type];
+	k = mapv_node_slant( node );
 	dims.x -= 2.0 * MIN(MAPV_GEOM_PARAMS(node)->height, k * dims.x);
 	dims.y -= 2.0 * MIN(MAPV_GEOM_PARAMS(node)->height, k * dims.y);
 
@@ -1387,7 +1401,7 @@ mapv_batch_node( VBOBatch *batch, GNode *node,
 	float zt = (float)(z_offset + h_world);  /* top Z in world */
 
 	/* Slant offsets */
-	k = mapv_side_slant_ratios[NODE_DESC(node)->type];
+	k = mapv_node_slant( node );
 	ox = MIN(h_local, k * dims_x);
 	oy = MIN(h_local, k * dims_y);
 	float fox = (float)(ox * z_scale);
@@ -1500,7 +1514,7 @@ mapv_batch_node_edges( VBOBatch *batch, GNode *node,
 	h_world = h_local * z_scale;
 	float zt = (float)(z_offset + h_world);
 
-	k = mapv_side_slant_ratios[NODE_DESC(node)->type];
+	k = mapv_node_slant( node );
 	ox = MIN(h_local, k * dims_x);
 	oy = MIN(h_local, k * dims_y);
 	float fox = (float)(ox * z_scale);
@@ -2164,9 +2178,8 @@ treev_init_recursive( GNode *dnode )
 	/* Assign heights to leaf nodes */
 	node = dnode->children;
 	while (node != NULL) {
-		size = MAX(64, NODE_DESC(node)->size);
+		size = MAX(64, node_display_size( node ));
 		if (NODE_IS_DIR(node)) {
-			size += DIR_NODE_DESC(node)->subtree.size;
 			TREEV_GEOM_PARAMS(node)->platform.height = TREEV_PLATFORM_HEIGHT;
 			treev_init_recursive( node );
 		}
@@ -3965,13 +3978,24 @@ geometry_queue_rebuild( G_GNUC_UNUSED GNode *dnode )
 }
 
 
+/* When scanfs() runs geometry_init() on the worker thread, it stamps
+ * the mode here so the main thread can skip the redundant call. See
+ * geometry_consume_prebuilt(). */
+static FsvMode geometry_prebuilt_mode = FSV_NONE;
+
+
 /* Sets up filesystem tree geometry for the specified mode */
 void
 geometry_init( FsvMode mode )
 {
+	gint64 t0, t_queue, t_modeinit, t_color;
+
+	t0 = g_get_monotonic_time( );
 	DIR_NODE_DESC(globals.fstree)->deployment = 1.0;
 	geometry_queue_rebuild( globals.fstree );
+	t_queue = g_get_monotonic_time( ) - t0;
 
+	t0 = g_get_monotonic_time( );
 	switch (mode) {
 		case FSV_DISCV:
 		discv_init( );
@@ -3987,8 +4011,37 @@ geometry_init( FsvMode mode )
 
 		SWITCH_FAIL
 	}
+	t_modeinit = g_get_monotonic_time( ) - t0;
 
+	t0 = g_get_monotonic_time( );
 	color_assign_recursive( globals.fstree );
+	t_color = g_get_monotonic_time( ) - t0;
+
+	geometry_prebuilt_mode = mode;
+
+	g_printerr(
+		"[geometry_init] mode=%d queue_rebuild=%.1fms mode_init=%.1fms "
+		"color_assign=%.1fms\n",
+		(int)mode,
+		(double)t_queue / 1000.0,
+		(double)t_modeinit / 1000.0,
+		(double)t_color / 1000.0 );
+}
+
+
+/* If geometry_init() has already been run for `mode` (e.g. pre-laid
+ * out on the scan worker thread), consume that prebuilt state and
+ * return TRUE — the caller should skip its own geometry_init() call.
+ * Returns FALSE if no prebuilt layout is available for this mode, in
+ * which case the caller must call geometry_init() itself. */
+boolean
+geometry_consume_prebuilt( FsvMode mode )
+{
+	if (geometry_prebuilt_mode == mode) {
+		geometry_prebuilt_mode = FSV_NONE;
+		return TRUE;
+	}
+	return FALSE;
 }
 
 
@@ -4429,13 +4482,28 @@ geometry_highlight_node( GNode *node, boolean strong )
 
 
 /* Frees geometry resources in the subtree rooted at the given node.
- * Invalidates VBO batches so they are rebuilt on next draw. */
+ * Invalidates VBO batches unconditionally so they are rebuilt on next
+ * draw. Called from scanfs() on rescan — at that point fsv_mode may
+ * already be FSV_NONE / FSV_SPLASH so we cannot rely on
+ * geometry_queue_rebuild's mode-gated invalidation path. */
 void
 geometry_free_recursive( G_GNUC_UNUSED GNode *dnode )
 {
-	/* VBO batches are invalidated via geometry_highlight_node /
-	 * geometry_color_changed / colexp, so nothing to do here.
-	 * The function is kept for API compatibility with scanfs.c. */
+	if (discv_batch_initialized)
+		vbo_batch_invalidate( &discv_solid_batch );
+	if (mapv_batch_initialized) {
+		vbo_batch_invalidate( &mapv_solid_batch );
+		vbo_batch_invalidate( &mapv_outline_batch );
+	}
+	if (treev_batch_initialized) {
+		vbo_batch_invalidate( &treev_solid_batch );
+		vbo_batch_invalidate( &treev_branch_batch );
+		vbo_batch_invalidate( &treev_outline_batch );
+	}
+
+	/* Invalidate pick FBO cache and TreeV arrangement state too */
+	treev_needs_arrange = TRUE;
+	ogl_pick_invalidate( );
 }
 
 

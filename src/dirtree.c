@@ -63,32 +63,78 @@ static boolean colexp_blocked = FALSE;
 
 /* Find the flat-model position and GtkTreeListRow for a given dnode.
  * Returns the row (caller must g_object_unref) or NULL.
- * If out_position is non-NULL, stores the flat position. */
+ * If out_position is non-NULL, stores the flat position.
+ *
+ * Tree-walks from the root using gtk_tree_list_row_get_child_row at
+ * each step: O(depth * dir-siblings) — effectively O(1) for filesystem
+ * trees — rather than O(N) over the entire flat model. Returns NULL if
+ * any ancestor in the chain is collapsed (same behaviour as the old
+ * flat-scan, which would not have found a collapsed descendant either). */
 static GtkTreeListRow *
 find_tree_list_row( GNode *dnode, guint *out_position )
 {
-	guint n = g_list_model_get_n_items( G_LIST_MODEL(tree_list_model) );
-	guint i;
+	GNode *chain[128];
+	int n = 0;
+	GNode *cur;
+	GtkTreeListRow *row;
+	int i;
 
-	for (i = 0; i < n; i++) {
-		GtkTreeListRow *row = gtk_tree_list_model_get_row( tree_list_model, i );
-		if (row == NULL)
-			continue;
-		gpointer item = gtk_tree_list_row_get_item( row );
-		if (item != NULL && FSV_IS_DIR_ITEM(item)) {
-			GNode *row_dnode = fsv_dir_item_get_dnode( FSV_DIR_ITEM(item) );
-			g_object_unref( item );
-			if (row_dnode == dnode) {
-				if (out_position != NULL)
-					*out_position = i;
-				return row; /* caller must unref */
-			}
-		} else if (item != NULL) {
-			g_object_unref( item );
-		}
-		g_object_unref( row );
+	if (dnode == NULL || tree_list_model == NULL || globals.fstree == NULL)
+		return NULL;
+
+	/* Build ancestor chain from dnode up to root_dnode. chain[0] is
+	 * dnode, chain[n-1] is root_dnode. */
+	cur = dnode;
+	while (cur != NULL) {
+		if (n >= 128)
+			return NULL;
+		chain[n++] = cur;
+		if (cur == root_dnode)
+			break;
+		cur = cur->parent;
 	}
-	return NULL;
+	if (n == 0 || chain[n - 1] != root_dnode)
+		return NULL;
+
+	/* Start at the root row (always position 0 in the flat model) */
+	row = gtk_tree_list_model_get_row( tree_list_model, 0 );
+	if (row == NULL)
+		return NULL;
+
+	/* Walk down the chain toward dnode, one level at a time. The child
+	 * model at each level contains only directory children (see
+	 * ctree_create_child_model in gui.c), so child_idx counts dir
+	 * siblings. */
+	for (i = n - 2; i >= 0; i--) {
+		GNode *parent_dnode = chain[i + 1];
+		GNode *target_child = chain[i];
+		GNode *iter;
+		guint child_idx = 0;
+		GtkTreeListRow *child_row;
+
+		iter = parent_dnode->children;
+		while (iter != NULL && iter != target_child) {
+			if (NODE_IS_DIR(iter))
+				child_idx++;
+			else
+				break;	/* files come after dirs */
+			iter = iter->next;
+		}
+		if (iter != target_child) {
+			g_object_unref( row );
+			return NULL;
+		}
+
+		child_row = gtk_tree_list_row_get_child_row( row, child_idx );
+		g_object_unref( row );
+		if (child_row == NULL)
+			return NULL;	/* ancestor collapsed */
+		row = child_row;
+	}
+
+	if (out_position != NULL)
+		*out_position = gtk_tree_list_row_get_position( row );
+	return row;
 }
 
 
@@ -375,6 +421,22 @@ dirtree_right_click_cb( GtkGestureClick *gesture,
 }
 
 
+/* Called from window_set_access to push a wait cursor onto the
+ * directory tree pane when the window is busy. Without this, cursors
+ * set by internal GTK machinery (eg. on list rows during hover) can
+ * take precedence over the main window's inherited wait cursor. */
+void
+dirtree_refresh_cursor( void )
+{
+	if (dir_tree_w == NULL)
+		return;
+	if (window_is_busy( ))
+		gui_cursor( dir_tree_w, "wait" );
+	else
+		gui_cursor( dir_tree_w, NULL );
+}
+
+
 /* Correspondence from window_init( ) */
 void
 dirtree_pass_widget( GtkWidget *tree_w )
@@ -576,7 +638,14 @@ dirtree_entry_expand( GNode *dnode )
 
 /* Helper: recursively expand a row and all its children.
  * Uses gtk_tree_list_row_get_child_row for O(1) child lookup
- * instead of scanning the flat model. */
+ * instead of scanning the flat model.
+ *
+ * Pumps the GTK main loop every EXPAND_PUMP_EVERY expansions so the
+ * window stays responsive on huge trees (Phase 38). colexp_blocked
+ * is already TRUE for the duration of this call, so any expand /
+ * collapse signals fired during the pump are no-ops. */
+#define EXPAND_PUMP_EVERY 2048
+static guint expand_pump_counter = 0;
 static void
 expand_recursive_via_row( GtkTreeListRow *row, GNode *dnode )
 {
@@ -586,6 +655,9 @@ expand_recursive_via_row( GtkTreeListRow *row, GNode *dnode )
 	/* Expand this row first (making children visible in the model) */
 	gtk_tree_list_row_set_expanded( row, TRUE );
 	DIR_NODE_DESC(dnode)->tree_expanded = TRUE;
+
+	if ((++expand_pump_counter % EXPAND_PUMP_EVERY) == 0)
+		gui_update( );
 
 	/* Then expand each directory child via O(1) child_row lookup */
 	child = dnode->children;
@@ -622,6 +694,7 @@ dirtree_entry_expand_recursive( GNode *dnode )
 #endif
 
 	colexp_blocked = TRUE;
+	expand_pump_counter = 0;
 	row = find_tree_list_row( dnode, NULL );
 	if (row != NULL) {
 		expand_recursive_via_row( row, dnode );

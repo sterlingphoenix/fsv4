@@ -307,19 +307,20 @@ wpattern_color( GNode *node )
 
 
 /* Returns the display name of the wildcard group whose pattern matches
- * the given node, or NULL if no group matches (or if node is a directory).
- * Used by the Properties dialog to show the wildcard-based file type. */
+ * the given filename basename, or NULL if no group matches. The
+ * filename is treated exactly the way color_wpattern_group_name()
+ * treats NODE_DESC(node)->name — fnmatch with FNM_CASEFOLD etc. Used
+ * by the Properties dialog to look up the wildcard group for a
+ * symlink's target without requiring a GNode. */
 const char *
-color_wpattern_group_name( GNode *node )
+color_wpattern_group_name_for_filename( const char *name )
 {
 	struct WPatternGroup *wpgroup;
 	GList *wpgroup_llink, *wp_llink;
-	const char *name, *wpattern;
+	const char *wpattern;
 
-	if (node == NULL || NODE_IS_DIR(node))
+	if (name == NULL || name[0] == '\0')
 		return NULL;
-
-	name = NODE_DESC(node)->name;
 
 	wpgroup_llink = color_config.by_wpattern.wpgroup_list;
 	while (wpgroup_llink != NULL) {
@@ -338,9 +339,22 @@ color_wpattern_group_name( GNode *node )
 }
 
 
-/* (Re)assigns colors to all nodes rooted at the given node */
-void
-color_assign_recursive( GNode *dnode )
+/* Returns the display name of the wildcard group whose pattern matches
+ * the given node, or NULL if no group matches (or if node is a directory).
+ * Used by the Properties dialog to show the wildcard-based file type. */
+const char *
+color_wpattern_group_name( GNode *node )
+{
+	if (node == NULL || NODE_IS_DIR(node))
+		return NULL;
+	return color_wpattern_group_name_for_filename( NODE_DESC(node)->name );
+}
+
+
+/* Inner worker — caller records how many nodes were visited so the
+ * top-level entry point can report a single profile line. */
+static void
+color_assign_recursive_inner( GNode *dnode, int *count, int *dircount )
 {
 	GNode *node;
 	const RGBcolor *color;
@@ -348,6 +362,7 @@ color_assign_recursive( GNode *dnode )
 	g_assert( NODE_IS_DIR(dnode) || NODE_IS_METANODE(dnode) );
 
 	geometry_queue_rebuild( dnode );
+	(*dircount)++;
 
 	node = dnode->children;
 	while (node != NULL) {
@@ -367,12 +382,52 @@ color_assign_recursive( GNode *dnode )
 			SWITCH_FAIL
 		}
                 NODE_DESC(node)->color = color;
+		(*count)++;
 
 		if (NODE_IS_DIR(node))
-			color_assign_recursive( node );
+			color_assign_recursive_inner( node, count, dircount );
 
 		node = node->next;
 	}
+}
+
+
+/* Walk the tree doing nothing — lets us separate tree-traversal cost
+ * from actual color-assignment cost in the profile output. */
+static void
+color_walk_noop( GNode *dnode, int *count )
+{
+	GNode *node = dnode->children;
+	while (node != NULL) {
+		(*count)++;
+		if (NODE_IS_DIR(node))
+			color_walk_noop( node, count );
+		node = node->next;
+	}
+}
+
+
+/* (Re)assigns colors to all nodes rooted at the given node */
+void
+color_assign_recursive( GNode *dnode )
+{
+	gint64 t0;
+	int count = 0, dircount = 0, walk_count = 0;
+	gint64 walk_us, assign_us;
+
+	t0 = g_get_monotonic_time( );
+	color_walk_noop( dnode, &walk_count );
+	walk_us = g_get_monotonic_time( ) - t0;
+
+	t0 = g_get_monotonic_time( );
+	color_assign_recursive_inner( dnode, &count, &dircount );
+	assign_us = g_get_monotonic_time( ) - t0;
+
+	g_printerr( "[color_assign] mode=%d nodes=%d dirs=%d "
+		"walk_only=%.1fms assign=%.1fms\n",
+		(int)color_mode, count, dircount,
+		(double)walk_us / 1000.0,
+		(double)assign_us / 1000.0 );
 }
 
 

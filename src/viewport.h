@@ -29,6 +29,7 @@
 
 
 void viewport_pass_node_table( GNode **new_node_table, unsigned int table_size );
+void viewport_set_busy_cursor( boolean busy );
 #ifdef GTK_WIDGET
 void viewport_setup_controllers( GtkWidget *gl_area_w );
 #endif

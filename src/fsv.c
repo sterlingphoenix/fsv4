@@ -438,8 +438,17 @@ fsv_set_mode( FsvMode mode )
 		break;
 	}
 
-	/* Generate appropriate visualization geometry */
-	geometry_init( mode );
+	/* Generate appropriate visualization geometry (unless the scan
+	 * worker already pre-laid it out for this mode). */
+	if (geometry_consume_prebuilt( mode )) {
+		g_printerr( "[fsv_set_mode] geometry_init=prebuilt\n" );
+	}
+	else {
+		gint64 t0 = g_get_monotonic_time( );
+		geometry_init( mode );
+		g_printerr( "[fsv_set_mode] geometry_init=%.1fms\n",
+			(double)(g_get_monotonic_time( ) - t0) / 1000.0 );
+	}
 
 	/* Set up initial camera state */
 	camera_init( mode, first_init );
@@ -470,7 +479,45 @@ fsv_set_mode( FsvMode mode )
 }
 
 
-/* Performs filesystem scan and first-time initialization */
+/* Post-scan continuation — runs on main thread once scanfs() has
+ * finished building the tree. Split out of fsv_load so scanfs can
+ * run async. */
+static void
+fsv_load_after_scan( G_GNUC_UNUSED gpointer user_data )
+{
+	gint64 t_start, t0, t_filelist, t_setmode;
+
+	t_start = g_get_monotonic_time( );
+
+	/* Clear/reset node history */
+	g_list_free( globals.history );
+	globals.history = NULL;
+	globals.current_node = root_dnode;
+
+	/* Initialize file list */
+	t0 = g_get_monotonic_time( );
+	filelist_init( );
+	t_filelist = g_get_monotonic_time( ) - t0;
+
+	/* Initialize visualization */
+	globals.fsv_mode = FSV_NONE;
+	t0 = g_get_monotonic_time( );
+	fsv_set_mode( initial_fsv_mode );
+	t_setmode = g_get_monotonic_time( ) - t0;
+
+	g_printerr(
+		"[load_after_scan] total=%.1fms filelist_init=%.1fms "
+		"fsv_set_mode=%.1fms\n",
+		(double)(g_get_monotonic_time( ) - t_start) / 1000.0,
+		(double)t_filelist / 1000.0,
+		(double)t_setmode / 1000.0 );
+}
+
+
+/* Performs filesystem scan and first-time initialization. Returns
+ * immediately — the scan runs on a worker thread while the GTK main
+ * loop stays live. fsv_load_after_scan runs on the main thread once
+ * the scan completes. */
 void
 fsv_load( const char *dir )
 {
@@ -481,26 +528,17 @@ fsv_load( const char *dir )
 	globals.fsv_mode = FSV_SPLASH;
 	redraw( );
 
+	/* Flush the wait cursor + any pending redraw to screen before the
+	 * scan worker starts thrashing the disk. */
+	gui_update( );
+
 	/* Reset scrollbars (disable scrolling) */
 	camera_update_scrollbars( TRUE );
 
-	gui_update( );
-
-	/* Scan filesystem */
-	scanfs( dir );
-
-	/* Clear/reset node history */
-	g_list_free( globals.history );
-	globals.history = NULL;
-	globals.current_node = root_dnode;
-
-	/* Initialize file list */
-	filelist_init( );
-	gui_update( );
-
-	/* Initialize visualization */
-	globals.fsv_mode = FSV_NONE;
-	fsv_set_mode( initial_fsv_mode );
+	/* Kick off scan on worker thread; continuation fires later.
+	 * Pass initial_fsv_mode so the worker can pre-lay out + color
+	 * the initial visualization before the main thread consumes it. */
+	scanfs( dir, initial_fsv_mode, fsv_load_after_scan, NULL );
 }
 
 

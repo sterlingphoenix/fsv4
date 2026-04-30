@@ -71,6 +71,19 @@ filelist_pass_widget( GtkWidget *tree_w )
 }
 
 
+/* Called from window_set_access to push a wait cursor onto the file
+ * list pane when the window is busy. The non-busy state is restored
+ * separately by filelist_reset_access when colexp reshuffles things. */
+void
+filelist_refresh_cursor( void )
+{
+	if (file_tree_w == NULL)
+		return;
+	if (window_is_busy( ))
+		gui_cursor( file_tree_w, "wait" );
+}
+
+
 /* This makes entries in the file list selectable or unselectable,
  * depending on whether the directory they are in is expanded or not */
 void
@@ -211,7 +224,7 @@ filelist_selection_changed_cb( GtkSingleSelection *sel, G_GNUC_UNUSED GParamSpec
 		return;
 
 	geometry_highlight_node( node, FALSE );
-	window_statusbar( SB_RIGHT, node_absname( node ) );
+	window_statusbar( SB_RIGHT, node_hover_label( node ) );
 }
 
 
@@ -251,7 +264,7 @@ filelist_right_click_cb( GtkGestureClick *gesture, G_GNUC_UNUSED int n_press,
 		return;
 
 	geometry_highlight_node( node, FALSE );
-	window_statusbar( SB_RIGHT, node_absname( node ) );
+	window_statusbar( SB_RIGHT, node_hover_label( node ) );
 	context_menu( node, cv_w, x, y );
 }
 

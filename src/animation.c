@@ -45,8 +45,20 @@ enum {
 /* Scheduled event queue */
 static GList *schevent_queue = NULL;
 
-/* Morph queue */
-static GList *morph_queue = NULL;
+/* Morph queue — keyed by the `double *var` being morphed, value is
+ * the head Morph* of that variable's stage chain. Using a hash table
+ * makes morph_break / morph_full's "is this var already morphing?"
+ * check O(1) instead of O(N), which matters when a recursive
+ * expand/collapse registers a morph per directory and the queue
+ * grows to tens of thousands of entries (Phase 38). */
+static GHashTable *morph_queue = NULL;
+
+static void
+morph_queue_ensure( void )
+{
+	if (morph_queue == NULL)
+		morph_queue = g_hash_table_new( g_direct_hash, g_direct_equal );
+}
 
 /* Overall graphics framerate */
 /* TODO: Export framerate when there's something to use it */
@@ -109,14 +121,6 @@ scheduled_event_iteration( void )
 }
 
 
-/* Checks if the two given morphs are on the same variable */
-static int
-compare_var( const Morph *morph1, const Morph *morph2 )
-{
-	return morph1->var != morph2->var;
-}
-
-
 /* Helper function for morph_full( ). Returns the last stage of a
  * multi-staged morph (or just the argument, if single-staged) */
 static Morph *
@@ -138,9 +142,8 @@ last_morph_stage( Morph *m )
 void
 morph_full( double *var, MorphType type, double target_value, double duration, void (*step_cb)( Morph * ), void (*end_cb)( Morph * ), void *data )
 {
-	Morph *new_morph, *morph;
+	Morph *new_morph, *existing;
 	Morph *mlast;
-	GList *mq_llink;
 	double t_now;
 
 	t_now = xgettime( );
@@ -158,21 +161,22 @@ morph_full( double *var, MorphType type, double target_value, double duration, v
 	new_morph->data = data;
 	new_morph->next = NULL;
 
+	morph_queue_ensure( );
+
 	/* Check to see if the variable is already undergoing morphing */
-	mq_llink = g_list_find_custom( morph_queue, new_morph, (GCompareFunc)compare_var );
-	if (mq_llink == NULL) {
+	existing = (Morph *)g_hash_table_lookup( morph_queue, var );
+	if (existing == NULL) {
 		/* Variable is not being morphed */
 		/* Make sure we're animating */
 		if (!animation_active)
 			redraw( );
 		/* Add new morph to queue */
-		G_LIST_PREPEND(morph_queue, new_morph);
+		g_hash_table_insert( morph_queue, var, new_morph );
 	}
 	else {
 		/* Variable is already undergoing morphing. Append
 		 * new stage to the incumbent morph record(s) */
-		morph = (Morph *)mq_llink->data;
-		mlast = last_morph_stage( morph );
+		mlast = last_morph_stage( existing );
 		new_morph->t_start = mlast->t_end;
 		new_morph->t_end = mlast->t_end + duration;
 		new_morph->start_value = mlast->end_value;
@@ -195,15 +199,14 @@ morph( double *var, MorphType type, double target_value, double duration )
 void
 morph_finish( double *var )
 {
-	Morph finish_morph, *morph;
-	GList *mq_llink;
+	Morph *morph;
 
-	finish_morph.var = var;
-	mq_llink = g_list_find_custom( morph_queue, &finish_morph, (GCompareFunc)compare_var );
-	if (mq_llink == NULL)
+	if (morph_queue == NULL)
+		return;
+	morph = (Morph *)g_hash_table_lookup( morph_queue, var );
+	if (morph == NULL)
 		return; /* Variable is not being morphed */
 
-	morph = (Morph *)mq_llink->data;
 	morph->t_end = 0.0;
 }
 
@@ -214,17 +217,16 @@ morph_finish( double *var )
 void
 morph_break( double *var )
 {
-	Morph break_morph, *morph, *mnext;
-	GList *mq_llink;
+	Morph *morph, *mnext;
 
-	break_morph.var = var;
-	mq_llink = g_list_find_custom( morph_queue, &break_morph, (GCompareFunc)compare_var );
-	if (mq_llink == NULL)
+	if (morph_queue == NULL)
+		return;
+	morph = (Morph *)g_hash_table_lookup( morph_queue, var );
+	if (morph == NULL)
 		return; /* Variable is not being morphed */
 
 	/* Remove morph record */
-	morph = (Morph *)mq_llink->data;
-	G_LIST_REMOVE(morph_queue, morph);
+	g_hash_table_remove( morph_queue, var );
 
 	/* Free morph record, and any subsequent stages */
 	while (morph != NULL) {
@@ -241,17 +243,21 @@ static boolean
 morph_iteration( void )
 {
 	Morph *morph;
-	GList *mq_llink;
+	GHashTableIter iter;
+	gpointer key, value;
 	double t_now;
 	double percent;
 	boolean state_changed = FALSE;
 
+	if (morph_queue == NULL)
+		return FALSE;
+
 	t_now = xgettime( );
 
 	/* Perform update of all morphing variables */
-	mq_llink = morph_queue;
-	while (mq_llink != NULL) {
-		morph = (Morph *)mq_llink->data;
+	g_hash_table_iter_init( &iter, morph_queue );
+	while (g_hash_table_iter_next( &iter, &key, &value )) {
+		morph = (Morph *)value;
 
 		if (t_now >= morph->t_end) {
 			/* Morph complete - assign end value */
@@ -261,13 +267,12 @@ morph_iteration( void )
 			if (morph->end_cb != NULL)
 				(morph->end_cb)( morph );
 			if (morph->next != NULL) {
-				/* Drop in next stage */
-				mq_llink->data = morph->next;
+				/* Drop in next stage (key stays the same) */
+				g_hash_table_iter_replace( &iter, morph->next );
 			}
 			else {
 				/* Remove record from queue */
-				mq_llink = mq_llink->next;
-				G_LIST_REMOVE(morph_queue, morph);
+				g_hash_table_iter_remove( &iter );
 			}
 			xfree( morph );
                         continue;
@@ -310,8 +315,6 @@ morph_iteration( void )
 		/* Call step callback, if there is one */
 		if (morph->step_cb != NULL)
 			(morph->step_cb)( morph );
-
-		mq_llink = mq_llink->next;
 	}
 
 	return state_changed;
