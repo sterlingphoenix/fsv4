@@ -357,7 +357,7 @@ Step 7.7 - Final cleanup
   [x] Remove any remaining GdkPixbuf usage where GdkTexture/
       GdkPaintable is the GTK 4 replacement
   [x] Remove G_GNUC_BEGIN_IGNORE_DEPRECATIONS guards
-  [x] Verify: ninja -C builddir produces zero deprecation warnings
+  [x] Verify: ninja -C build produces zero deprecation warnings
   [x] Verify: program runs, all features work
 
   Checkpoint: User tests everything. Build is warning-free.
