@@ -155,6 +155,19 @@ typedef enum {
 	NUM_NODE_TYPES
 } NodeType;
 
+/* Lazy-render scan state for directory nodes (Phase 39).
+ *   SCAN_FULL      - children are fully allocated as GNodes
+ *   SCAN_SIZE_ONLY - subtree.size / subtree.counts are populated by a
+ *                    size-only walk past the lazy depth limit, but the
+ *                    children are NOT allocated
+ *   SCAN_UNSCANNED - directory has not been touched at all
+ *                    (reserved for future use by background read-ahead) */
+typedef enum {
+	SCAN_FULL = 0,
+	SCAN_SIZE_ONLY,
+	SCAN_UNSCANNED
+} ScanState;
+
 
 /**** Global data structures ****************/
 
@@ -232,6 +245,8 @@ struct _DirNodeDesc {
 	boolean		tree_expanded;
 	/* Flag: TRUE if directory geometry is being drawn expanded */
 	bitfield	geom_expanded : 1;
+	/* Lazy-render state — see ScanState enum above */
+	bitfield	scan_state : 2;
 };
 
 /* Symbolic links have their own extended descriptor so they can carry

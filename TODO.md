@@ -1417,19 +1417,33 @@ Step 39.1 — Settings infrastructure
   [x] No behavior change yet — values are read but not used.
 
 Step 39.2 — Bounded scanfs with size-only deep walk
-  [ ] scanfs.c: accept a max-full-scan depth parameter (= N+R when
-      lazy is enabled; INT_MAX otherwise).
-  [ ] Up to that depth, behave as today: allocate per-node
-      descriptors and link into the GNode tree.
-  [ ] Beyond that depth, do a size-only walk: readdir + stat on each
-      entry, sum bytes/counts into the deepest scanned ancestor's
-      subtree totals, but do NOT allocate NodeDesc / DirNodeDesc /
-      add to the GNode tree.
-  [ ] Add a per-DirNodeDesc flag scan_state ∈
-        { UNSCANNED, SIZE_ONLY, FULL }
-      so other modules can tell whether children exist as nodes.
-  [ ] With lazy disabled, depth = INT_MAX so behavior is identical
+  [x] scanfs.c: process_dir() now takes a depth_remaining parameter.
+      scan_worker_thread sets it to render_depth + readahead_depth
+      when lazy is enabled, INT_MAX when disabled.
+  [x] Up to the limit, behave as today: per-node descriptors
+      allocated, GNode tree built, subtree totals computed
+      post-scan in setup_fstree_recursive().
+  [x] At depth_remaining == 0, child directories are walked
+      size-only via the new size_only_walk() helper: readdir +
+      lstat on every entry recursively, sum bytes and per-type
+      counts straight into the parent dnode's subtree, no NodeDesc
+      / GNode allocation. Progress publishes to scan_monitor so
+      the statusbar keeps moving.
+  [x] Added ScanState enum to common.h (SCAN_FULL,
+      SCAN_SIZE_ONLY, SCAN_UNSCANNED) and a scan_state bitfield to
+      DirNodeDesc.
+  [x] setup_fstree_recursive skips its subtree zero-init for
+      SIZE_ONLY dirs so the size-only totals survive.
+  [x] With lazy disabled, depth = INT_MAX so behavior is identical
       to today.
+  [x] Follow-up fix: 10-second freeze on every vis-mode switch on
+      large trees. Diagnosed via [color_assign] timing prints —
+      color_assign_recursive() was being called from geometry_init()
+      on every mode switch even though colours don't change between
+      vis modes. Added a colors_dirty flag (set by color_set_mode,
+      color_set_config, scanfs entry; cleared at the end of
+      color_assign_recursive). Vis-mode switches now skip the
+      O(N) wpattern fnmatch pass entirely.
 
 Step 39.3 — Render-depth gate in geometry
   [ ] Per-anchor budget tracking. Add to DirNodeDesc:

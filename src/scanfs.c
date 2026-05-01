@@ -31,10 +31,12 @@
 #include <sys/stat.h>
 #include <gtk/gtk.h>
 
+#include "color.h" /* color_mark_dirty( ) */
 #include "dirtree.h"
 #include "filelist.h"
 #include "geometry.h" /* geometry_free( ) */
 #include "gui.h" /* gui_update( ) */
+#include "lazy_render.h"
 #include "viewport.h" /* viewport_pass_node_table( ) */
 #include "window.h"
 
@@ -133,14 +135,112 @@ de_select( const struct dirent *de )
 }
 
 
+/* Determine NodeType from a stat-mode bitset. Used by the size-only
+ * walk past the lazy-render depth limit, where we don't allocate
+ * NodeDescs but still want to bucket counts/sizes by type. */
+static NodeType
+node_type_from_stmode( mode_t mode )
+{
+	if (S_ISDIR(mode))   return NODE_DIRECTORY;
+	if (S_ISREG(mode))   return NODE_REGFILE;
+	if (S_ISLNK(mode))   return NODE_SYMLINK;
+	if (S_ISFIFO(mode))  return NODE_FIFO;
+	if (S_ISSOCK(mode))  return NODE_SOCKET;
+	if (S_ISCHR(mode))   return NODE_CHARDEV;
+	if (S_ISBLK(mode))   return NODE_BLOCKDEV;
+	return NODE_UNKNOWN;
+}
+
+
+/* Size-only directory walk used past the lazy-render depth limit.
+ * Recursively readdir()/lstat()s every entry below `path`, accumulating
+ * total bytes and per-type counts into the caller's running totals,
+ * but allocates NO NodeDesc / DirNodeDesc / GNode. Progress is also
+ * published to the scan_monitor statics so the statusbar keeps moving.
+ *
+ * Runs on the scan worker thread. */
+static void
+size_only_walk( const char *path, int64 *total_size,
+                unsigned int counts[NUM_NODE_TYPES] )
+{
+	DIR *d;
+	struct dirent *ent;
+	char child[PATH_MAX];
+	size_t path_len;
+
+	d = opendir( path );
+	if (d == NULL)
+		return;
+
+	/* Update worker-thread "current dir" readout */
+	g_mutex_lock( &scan_stats_mutex );
+	g_strlcpy( scan_current_dir, path, sizeof(scan_current_dir) );
+	g_mutex_unlock( &scan_stats_mutex );
+
+	path_len = strlen( path );
+	if (path_len >= PATH_MAX - 2) {
+		closedir( d );
+		return;
+	}
+	memcpy( child, path, path_len );
+	if (path_len > 0 && child[path_len - 1] != '/')
+		child[path_len++] = '/';
+
+	while ((ent = readdir( d )) != NULL) {
+		struct stat st;
+		NodeType type;
+		size_t name_len;
+
+		/* Skip "." and ".." */
+		if (ent->d_name[0] == '.'
+		    && (ent->d_name[1] == '\0'
+		        || (ent->d_name[1] == '.' && ent->d_name[2] == '\0')))
+			continue;
+
+		name_len = strlen( ent->d_name );
+		if (path_len + name_len >= PATH_MAX)
+			continue;
+		memcpy( &child[path_len], ent->d_name, name_len + 1 );
+
+		if (lstat( child, &st ) != 0)
+			continue;
+
+		type = node_type_from_stmode( st.st_mode );
+
+		*total_size += (int64)st.st_size;
+		counts[type]++;
+
+		/* Publish progress so scan_monitor's stats/sec readout keeps
+		 * moving during deep size-only sweeps. */
+		g_mutex_lock( &scan_stats_mutex );
+		++stat_count;
+		++node_counts[type];
+		size_counts[type] += (int64)st.st_size;
+		g_mutex_unlock( &scan_stats_mutex );
+
+		if (S_ISDIR(st.st_mode))
+			size_only_walk( child, total_size, counts );
+	}
+
+	closedir( d );
+}
+
+
 /* Recursive directory scanner.
+ *
+ * `depth_remaining` is the number of additional levels below `dnode`
+ * for which we will allocate per-node descriptors. When it reaches
+ * zero, child directories are walked size-only (their bytes/counts
+ * accumulate into the child's subtree but their grandchildren are not
+ * allocated as GNodes) and marked SCAN_SIZE_ONLY. INT_MAX disables
+ * the limit (used when lazy render is OFF).
  *
  * Runs on the scan worker thread (see scan_worker_thread). MUST NOT
  * touch GTK widgets, globals.fsv_mode, or any other main-thread-owned
  * state — only the tree being built, the name_strchunk, and the
  * progress statics under scan_stats_mutex. */
 static int
-process_dir( const char *dir, GNode *dnode )
+process_dir( const char *dir, GNode *dnode, int depth_remaining )
 {
 	union AnyNodeDesc any_node_desc, *andesc;
 	struct dirent **dir_entries;
@@ -185,11 +285,34 @@ process_dir( const char *dir, GNode *dnode )
 		++node_id;
 
 		if (NODE_IS_DIR(node)) {
+			/* Default scan state — explicitly set so any stack
+			 * garbage in the bitfield doesn't carry through the
+			 * memcpy below. */
+			DIR_NODE_DESC(node)->scan_state = SCAN_FULL;
+
 			/* Create corresponding directory tree entry */
 			dirtree_entry_new( node );
 
-			/* Recurse down using the already-built path */
-			process_dir( pathbuf, node );
+			if (depth_remaining > 0) {
+				/* Recurse down using the already-built path */
+				process_dir( pathbuf, node, depth_remaining - 1 );
+			}
+			else {
+				/* Past the lazy-render depth limit: do a
+				 * size-only walk that aggregates this dir's
+				 * subtree totals without allocating any
+				 * children. setup_fstree_recursive() honors
+				 * SCAN_SIZE_ONLY by skipping the subtree
+				 * zero-init so these totals survive. */
+				DIR_NODE_DESC(node)->scan_state = SCAN_SIZE_ONLY;
+				DIR_NODE_DESC(node)->subtree.size = 0;
+				memset( DIR_NODE_DESC(node)->subtree.counts,
+				        0,
+				        sizeof(DIR_NODE_DESC(node)->subtree.counts) );
+				size_only_walk( pathbuf,
+				                &DIR_NODE_DESC(node)->subtree.size,
+				                DIR_NODE_DESC(node)->subtree.counts );
+			}
 
 			/* Move new descriptor into working memory */
 			andesc = (union AnyNodeDesc *)g_new0( DirNodeDesc, 1 );
@@ -319,9 +442,19 @@ scan_worker_thread(
 	G_GNUC_UNUSED GCancellable *cancellable )
 {
 	ScanContext *ctx = task_data;
+	int max_full_depth;
+
+	/* Determine how deep to go before switching to size-only walks.
+	 * Lazy-render setting: render_depth + readahead_depth. When the
+	 * feature is disabled we use INT_MAX so behavior matches the
+	 * original full-scan implementation exactly. */
+	if (lazy_render_enabled( ))
+		max_full_depth = lazy_render_depth( ) + lazy_readahead_depth( );
+	else
+		max_full_depth = INT_MAX;
 
 	/* Disk thrashing phase */
-	process_dir( ctx->root_dir, root_dnode );
+	process_dir( ctx->root_dir, root_dnode, max_full_depth );
 
 	/* Post-scan tree finalisation. No GTK calls — safe on worker. */
 	ctx->node_count = node_id;
@@ -452,12 +585,19 @@ setup_fstree_recursive( GNode *node, GNode **node_table )
 	node_table[NODE_DESC(node)->id] = node;
 
 	if (NODE_IS_DIR(node) || NODE_IS_METANODE(node)) {
-		/* Initialize subtree quantities */
-		DIR_NODE_DESC(node)->subtree.size = 0;
-		for (i = 0; i < NUM_NODE_TYPES; i++)
-			DIR_NODE_DESC(node)->subtree.counts[i] = 0;
+		/* Initialize subtree quantities — except for SIZE_ONLY
+		 * dirs, whose subtree was already populated by the
+		 * size-only walk in process_dir() and has no children to
+		 * walk here. */
+		boolean is_size_only = NODE_IS_DIR(node)
+			&& DIR_NODE_DESC(node)->scan_state == SCAN_SIZE_ONLY;
+		if (!is_size_only) {
+			DIR_NODE_DESC(node)->subtree.size = 0;
+			for (i = 0; i < NUM_NODE_TYPES; i++)
+				DIR_NODE_DESC(node)->subtree.counts[i] = 0;
+		}
 
-		/* Recurse down */
+		/* Recurse down (no-op when SIZE_ONLY: no children) */
 		child_node = node->children;
 		while (child_node != NULL) {
 			setup_fstree_recursive( child_node, node_table );
@@ -727,6 +867,9 @@ scanfs( const char *dir, FsvMode initial_mode,
 	ScanContext *ctx;
 	GTask *task;
 	char *name;
+
+	/* The new tree's nodes will need fresh colours assigned. */
+	color_mark_dirty( );
 
 	if (globals.fstree != NULL) {
 		/* Tear down the UI first so GTK drops its FsvDirItem refs to

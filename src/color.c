@@ -407,6 +407,21 @@ color_walk_noop( GNode *dnode, int *count )
 }
 
 
+/* TRUE when at least one node in the tree needs (re)colouring.
+ * Set by color_mark_dirty() (new scan, color mode change, color config
+ * change). Cleared by color_assign_recursive() once the walk finishes.
+ * Used to skip the multi-second wpattern_color() / fnmatch() pass on
+ * vis-mode switches, where colours don't actually change. */
+static boolean colors_dirty = TRUE;
+
+
+void
+color_mark_dirty( void )
+{
+	colors_dirty = TRUE;
+}
+
+
 /* (Re)assigns colors to all nodes rooted at the given node */
 void
 color_assign_recursive( GNode *dnode )
@@ -414,6 +429,16 @@ color_assign_recursive( GNode *dnode )
 	gint64 t0;
 	int count = 0, dircount = 0, walk_count = 0;
 	gint64 walk_us, assign_us;
+
+	if (!colors_dirty) {
+		/* Colours are already current. The caller (geometry_init
+		 * during a vis-mode switch) only needs the global VBO
+		 * batches invalidated, which it has already done via the
+		 * top-level geometry_queue_rebuild() call. Skip the
+		 * O(N) tree walk + fnmatch pass. */
+		g_printerr( "[color_assign] skipped (clean)\n" );
+		return;
+	}
 
 	t0 = g_get_monotonic_time( );
 	color_walk_noop( dnode, &walk_count );
@@ -428,6 +453,8 @@ color_assign_recursive( GNode *dnode )
 		(int)color_mode, count, dircount,
 		(double)walk_us / 1000.0,
 		(double)assign_us / 1000.0 );
+
+	colors_dirty = FALSE;
 }
 
 
@@ -436,6 +463,7 @@ void
 color_set_mode( ColorMode mode )
 {
 	color_mode = mode;
+	colors_dirty = TRUE;
 	if (globals.fstree != NULL) {
 		color_assign_recursive( globals.fstree );
 		redraw( );

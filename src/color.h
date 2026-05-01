@@ -93,6 +93,7 @@ void color_get_config( struct ColorConfig *ccfg );
 const char *color_wpattern_group_name( GNode *node );
 const char *color_wpattern_group_name_for_filename( const char *name );
 void color_assign_recursive( GNode *dnode );
+void color_mark_dirty( void );
 void color_set_mode( ColorMode mode );
 RGBcolor color_spectrum_color( SpectrumType type, double x, void *data );
 void color_set_config( struct ColorConfig *new_ccfg, ColorMode mode );
