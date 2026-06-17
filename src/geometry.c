@@ -302,6 +302,8 @@ discv_init_recursive( GNode *dnode, double stem_theta, int depth_remaining )
 			DIR_NODE_DESC(dnode)->deployment = 1.0;
 		else
 			DIR_NODE_DESC(dnode)->deployment = 0.0;
+		/* We reached this node by recursing — it is not at the gate. */
+		DIR_NODE_DESC(dnode)->render_boundary = 0;
 		geometry_queue_rebuild( dnode );
 	}
 
@@ -381,8 +383,21 @@ discv_init_recursive( GNode *dnode, double stem_theta, int depth_remaining )
 			 * the child to be set up as a container. */
 			next_dr = NODE_IS_METANODE(dnode) ? depth_remaining
 			                                  : depth_remaining - 1;
-			if (next_dr > 0)
+			if (next_dr > 0) {
 				discv_init_recursive( node, gparams->theta + 180.0, next_dr );
+			}
+			else {
+				/* Render-depth boundary: leave the child positioned
+				 * as a block in this parent's layout, but mark it as
+				 * a terminal leaf so draw/batch/arrange don't try to
+				 * walk into its uninitialized subtree. Forcing
+				 * deployment to 0 makes DIR_COLLAPSED true for it,
+				 * which routes the existing collapsed-dir code path. */
+				morph_break( &DIR_NODE_DESC(node)->deployment );
+				DIR_NODE_DESC(node)->deployment = 0.0;
+				DIR_NODE_DESC(node)->render_boundary = 1;
+				geometry_queue_rebuild( node );
+			}
 		}
 		even = !even;
 		nl_llink = nl_llink->next;
@@ -509,7 +524,9 @@ discv_batch_recursive( VBOBatch *batch, GNode *dnode,
 	world_y = acc_y + acc_scale * dir_gparams->pos.y;
 	world_scale = acc_scale * dir_ndesc->deployment;
 
-	if (DIR_COLLAPSED(dnode))
+	/* render_boundary or collapsed: parent batched our disc as a
+	 * child; we have no laid-out subtree to walk further. */
+	if (DIR_COLLAPSED(dnode) || dir_ndesc->render_boundary)
 		return;
 
 	/* Batch children */
@@ -637,6 +654,11 @@ discv_draw_recursive( GNode *dnode, double acc_x, double acc_y, double acc_scale
 	dir_ndesc = DIR_NODE_DESC(dnode);
 	dir_gparams = DISCV_GEOM_PARAMS(dnode);
 
+	/* render_boundary: parent has already labeled this disc; the
+	 * subtree below was never laid out, so nothing more to draw here. */
+	if (dir_ndesc->render_boundary)
+		return;
+
 	/* Compute world-space bounding sphere */
 	world_x = acc_x + acc_scale * dir_gparams->pos.x;
 	world_y = acc_y + acc_scale * dir_gparams->pos.y;
@@ -655,8 +677,11 @@ discv_draw_recursive( GNode *dnode, double acc_x, double acc_y, double acc_scale
 
 	glmath_push_modelview( );
 
-	dir_collapsed = DIR_COLLAPSED(dnode);
-	dir_expanded = DIR_EXPANDED(dnode);
+	/* render_boundary: contents not laid out, so override the
+	 * deployment-derived state to treat this dir as a terminal
+	 * leaf even after Expand All has animated deployment up. */
+	dir_collapsed = DIR_COLLAPSED(dnode) || dir_ndesc->render_boundary;
+	dir_expanded = DIR_EXPANDED(dnode) && !dir_ndesc->render_boundary;
 
 	glmath_translated( dir_gparams->pos.x, dir_gparams->pos.y, 0.0 );
 	glmath_scaled( dir_ndesc->deployment,  dir_ndesc->deployment,  1.0 );
@@ -927,6 +952,8 @@ mapv_init_recursive( GNode *dnode, int depth_remaining )
 		DIR_NODE_DESC(dnode)->deployment = 1.0;
 	else
 		DIR_NODE_DESC(dnode)->deployment = 0.0;
+	/* We reached this node by recursing — it is not at the gate. */
+	DIR_NODE_DESC(dnode)->render_boundary = 0;
 	geometry_queue_rebuild( dnode );
 
 	/* If this directory has no children,
@@ -1068,6 +1095,19 @@ mapv_init_recursive( GNode *dnode, int depth_remaining )
 				 * the child if its container should be set up. */
 				if (depth_remaining > 1) {
 					mapv_init_recursive( block->node, depth_remaining - 1 );
+				}
+				else {
+					/* Render-depth boundary: leave the child's
+					 * block in this parent's layout, but mark it
+					 * terminal so draw/batch don't walk into its
+					 * uninitialized subtree. Forcing deployment
+					 * to 0 makes DIR_COLLAPSED true, routing the
+					 * existing collapsed-dir code path that
+					 * labels the directory itself. */
+					morph_break( &DIR_NODE_DESC(block->node)->deployment );
+					DIR_NODE_DESC(block->node)->deployment = 0.0;
+					DIR_NODE_DESC(block->node)->render_boundary = 1;
+					geometry_queue_rebuild( block->node );
 				}
 			}
 			else
@@ -1277,8 +1317,12 @@ mapv_draw_recursive( GNode *dnode, double acc_z )
 	glmath_translated( 0.0, 0.0, gparams->height );
 
 	dir_ndesc = DIR_NODE_DESC(dnode);
-	dir_collapsed = DIR_COLLAPSED(dnode);
-	dir_expanded = DIR_EXPANDED(dnode);
+	/* render_boundary forces this directory to be treated as a
+	 * terminal leaf regardless of its deployment state — Expand All
+	 * animates deployment toward 1.0 on every dir, which would
+	 * otherwise undo the gate-time deployment=0 set in init. */
+	dir_collapsed = DIR_COLLAPSED(dnode) || dir_ndesc->render_boundary;
+	dir_expanded = DIR_EXPANDED(dnode) && !dir_ndesc->render_boundary;
 
 	if (!dir_collapsed && !dir_expanded) {
 		/* Grow/shrink children heightwise */
@@ -1587,7 +1631,9 @@ mapv_batch_recursive( VBOBatch *solid, VBOBatch *outline, GNode *dnode,
 	node_z = z_offset + gparams->height * z_scale;
 
 	dir_ndesc = DIR_NODE_DESC(dnode);
-	dir_collapsed = DIR_COLLAPSED(dnode);
+	/* render_boundary: treat as collapsed so we don't try to batch
+	 * children whose geometry was never laid out (see init gate). */
+	dir_collapsed = DIR_COLLAPSED(dnode) || dir_ndesc->render_boundary;
 
 	/* Compute Z scale including this directory's deployment */
 	child_z_scale = z_scale;
@@ -1804,9 +1850,15 @@ static boolean treev_batch_initialized = FALSE;
 boolean
 geometry_treev_is_leaf( GNode *node )
 {
-	if (NODE_IS_DIR(node))
+	if (NODE_IS_DIR(node)) {
+		/* Render-depth boundary: contents not laid out, so treat
+		 * this directory as a terminal leaf regardless of the
+		 * dirtree's expansion state. */
+		if (DIR_NODE_DESC(node)->render_boundary)
+			return TRUE;
 		if (dirtree_entry_expanded( node ))
 			return FALSE;
+	}
 
 	return TRUE;
 }
@@ -2187,6 +2239,8 @@ treev_init_recursive( GNode *dnode, int depth_remaining )
 			DIR_NODE_DESC(dnode)->deployment = 1.0;
 		else
 			DIR_NODE_DESC(dnode)->deployment = 0.0;
+		/* We reached this node by recursing — it is not at the gate. */
+		DIR_NODE_DESC(dnode)->render_boundary = 0;
 		geometry_queue_rebuild( dnode );
 	}
 
@@ -2206,6 +2260,17 @@ treev_init_recursive( GNode *dnode, int depth_remaining )
 			                                  : depth_remaining - 1;
 			if (next_dr > 0)
 				treev_init_recursive( node, next_dr );
+			else {
+				/* Render-depth boundary: child is rendered as a
+				 * leaf cube rather than an expanded platform.
+				 * Forcing deployment to 0 plus render_boundary=1
+				 * makes geometry_treev_is_leaf return TRUE for it
+				 * so the rest of TreeV treats it as a leaf. */
+				morph_break( &DIR_NODE_DESC(node)->deployment );
+				DIR_NODE_DESC(node)->deployment = 0.0;
+				DIR_NODE_DESC(node)->render_boundary = 1;
+				geometry_queue_rebuild( node );
+			}
 		}
 		if (treev_scale_logarithmic) {
 			double lsize = log( (double)size );
@@ -2541,7 +2606,10 @@ treev_batch_leaf( VBOBatch *batch, GNode *node, double r0,
 	if (full_node) {
 		edge = TREEV_LEAF_NODE_EDGE;
 		height = TREEV_GEOM_PARAMS(node)->leaf.height;
-		if (NODE_IS_DIR(node))
+		/* render_boundary: this dir is rendered as a permanent leaf
+		 * cube even after Expand All animates deployment up. Skip
+		 * the deployment-based shrink so it stays visible. */
+		if (NODE_IS_DIR(node) && !DIR_NODE_DESC(node)->render_boundary)
 			height *= (1.0 - DIR_NODE_DESC(node)->deployment);
 	}
 	else {
@@ -3008,7 +3076,10 @@ treev_batch_leaf_edges( VBOBatch *batch, GNode *node, double r0,
 	if (full_node) {
 		edge = TREEV_LEAF_NODE_EDGE;
 		height = TREEV_GEOM_PARAMS(node)->leaf.height;
-		if (NODE_IS_DIR(node))
+		/* render_boundary: this dir is rendered as a permanent leaf
+		 * cube even after Expand All animates deployment up. Skip
+		 * the deployment-based shrink so it stays visible. */
+		if (NODE_IS_DIR(node) && !DIR_NODE_DESC(node)->render_boundary)
 			height *= (1.0 - DIR_NODE_DESC(node)->deployment);
 	}
 	else {
@@ -3090,8 +3161,12 @@ treev_batch_recursive( VBOBatch *solid, VBOBatch *branches,
 
 	dir_gparams = TREEV_GEOM_PARAMS(dnode);
 
-	dir_collapsed = DIR_COLLAPSED(dnode);
-	dir_expanded = DIR_EXPANDED(dnode);
+	/* render_boundary: parent's treev_batch_dir already placed this
+	 * directory's leaf cube on its platform; we have no laid-out
+	 * subtree to batch further. Force collapsed/!expanded so we
+	 * fall through to the no-op tail. */
+	dir_collapsed = DIR_COLLAPSED(dnode) || DIR_NODE_DESC(dnode)->render_boundary;
+	dir_expanded = DIR_EXPANDED(dnode) && !DIR_NODE_DESC(dnode)->render_boundary;
 
 	if (!dir_collapsed) {
 		if (!dir_expanded) {
@@ -3417,7 +3492,10 @@ treev_gldraw_leaf_colored( GNode *node, double r0, boolean full_node,
 	if (full_node) {
 		edge = TREEV_LEAF_NODE_EDGE;
 		height = TREEV_GEOM_PARAMS(node)->leaf.height;
-		if (NODE_IS_DIR(node))
+		/* render_boundary: this dir is rendered as a permanent leaf
+		 * cube even after Expand All animates deployment up. Skip
+		 * the deployment-based shrink so it stays visible. */
+		if (NODE_IS_DIR(node) && !DIR_NODE_DESC(node)->render_boundary)
 			height *= (1.0 - DIR_NODE_DESC(node)->deployment);
 	}
 	else {
@@ -3523,7 +3601,9 @@ treev_apply_label( GNode *node, double r0, boolean is_leaf )
 		/* Apply label to top face of leaf node */
 		height = TREEV_GEOM_PARAMS(node)->leaf.height;
 		if (NODE_IS_DIR(node)) {
-			height *= (1.0 - DIR_NODE_DESC(node)->deployment);
+			/* render_boundary leaves don't deploy — see treev_batch_leaf */
+			if (!DIR_NODE_DESC(node)->render_boundary)
+				height *= (1.0 - DIR_NODE_DESC(node)->deployment);
 			leaf_label_dims.x = (0.8125 * TREEV_LEAF_NODE_EDGE);
 		}
 		else
@@ -3564,8 +3644,11 @@ treev_draw_recursive( GNode *dnode, double prev_r0, double r0, double acc_theta 
 	dir_ndesc = DIR_NODE_DESC(dnode);
 	dir_gparams = TREEV_GEOM_PARAMS(dnode);
 
-	dir_collapsed = DIR_COLLAPSED(dnode);
-	dir_expanded = DIR_EXPANDED(dnode);
+	/* render_boundary: parent already batched/labeled this dir as
+	 * its child leaf; subtree below was never laid out. Force the
+	 * collapsed code path so we don't try to walk garbage. */
+	dir_collapsed = DIR_COLLAPSED(dnode) || dir_ndesc->render_boundary;
+	dir_expanded = DIR_EXPANDED(dnode) && !dir_ndesc->render_boundary;
 
 	/* Size culling for expanded platforms (skip entire subtree) */
 	if (!dir_collapsed && NODE_IS_DIR(dnode) &&

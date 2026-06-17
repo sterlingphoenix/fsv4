@@ -247,6 +247,11 @@ struct _DirNodeDesc {
 	bitfield	geom_expanded : 1;
 	/* Lazy-render state — see ScanState enum above */
 	bitfield	scan_state : 2;
+	/* TRUE if this directory sits at the lazy-render depth gate: its
+	 * own block is laid out by its parent, but its contents are not.
+	 * Draw/batch/arrange must treat it as a terminal leaf, not an
+	 * expanded container. Set in *_init_recursive at the gate point. */
+	bitfield	render_boundary : 1;
 };
 
 /* Symbolic links have their own extended descriptor so they can carry
