@@ -1446,15 +1446,23 @@ Step 39.2 — Bounded scanfs with size-only deep walk
       O(N) wpattern fnmatch pass entirely.
 
 Step 39.3 — Render-depth gate in geometry
-  [ ] Per-anchor budget tracking. Add to DirNodeDesc:
-        boolean is_anchor;
-        int     anchor_depth_remaining;  /* N when anchored, else inherited */
-  [ ] On node visit during geometry_init / draw, compute effective
-      remaining depth = max over all ancestor anchors of
-      (anchor.N - distance_to_anchor). If <= 0, do not render.
-  [ ] Initial anchors: the root passed to fsv on launch.
-  [ ] Verify all three modes (MapV, DiscV, TreeV) honor the gate.
-  [ ] No anchor changes from navigation/Expand All yet — that comes
+  [x] discv_init_recursive, mapv_init_recursive, and
+      treev_init_recursive each take a new `depth_remaining` int.
+      The recursive call into a directory child is gated on
+      next_dr > 0 (where next_dr decrements by 1 for real
+      directories and forwards unchanged through the metanode).
+  [x] Initial budget = lazy_render_depth() if lazy_render_enabled(),
+      else INT_MAX (so behavior is identical with lazy off).
+  [x] With N=7, root + 6 levels of descendants are laid out as
+      containers (7 layers). Children at depth 7 from root are
+      positioned in the depth-6 parent's loop — appearing as leaf
+      boxes — but their own containers are NOT set up.
+  [x] No per-DirNodeDesc is_anchor field added in this step. With
+      only the root anchor, threading depth_remaining through the
+      recursion is sufficient. Field-based anchor tracking comes
+      in 39.4 when navigation creates additional anchors.
+  [x] All three modes (MapV / DiscV / TreeV) honor the gate.
+  [x] No anchor changes from navigation/Expand All yet — that comes
       in 39.4.
 
 Step 39.4 — Anchor on navigation

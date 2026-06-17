@@ -26,6 +26,7 @@
 #include "geometry.h"
 
 #include <epoxy/gl.h>
+#include <limits.h>
 
 #include "about.h"
 #include "animation.h"
@@ -33,6 +34,7 @@
 #include "color.h"
 #include "dirtree.h" /* dirtree_entry_expanded( ) */
 #include "glmath.h"
+#include "lazy_render.h"
 #include "shader.h"
 #include "ogl.h"
 #include "tmaptext.h"
@@ -278,7 +280,7 @@ discv_node_compare( GNode *a, GNode *b )
 
 /* Helper function for discv_init( ) */
 static void
-discv_init_recursive( GNode *dnode, double stem_theta )
+discv_init_recursive( GNode *dnode, double stem_theta, int depth_remaining )
 {
 	DiscVGeomParams *gparams;
 	GNode *node;
@@ -290,6 +292,7 @@ discv_init_recursive( GNode *dnode, double stem_theta )
 	double k;
 	boolean even = TRUE;
 	boolean stagger, out = TRUE;
+	int next_dr;
 
 	g_assert( NODE_IS_DIR(dnode) || NODE_IS_METANODE(dnode) );
 
@@ -371,8 +374,16 @@ discv_init_recursive( GNode *dnode, double stem_theta )
 		}
 		gparams->pos.x = dist * cos( RAD(gparams->theta) );
 		gparams->pos.y = dist * sin( RAD(gparams->theta) );
-		if (NODE_IS_DIR(node))
-			discv_init_recursive( node, gparams->theta + 180.0 );
+		if (NODE_IS_DIR(node)) {
+			/* Lazy-render gate (Phase 39): the metanode is a wrapper
+			 * one level above the user's root, so it doesn't count
+			 * toward the depth budget. Only recurse if budget allows
+			 * the child to be set up as a container. */
+			next_dr = NODE_IS_METANODE(dnode) ? depth_remaining
+			                                  : depth_remaining - 1;
+			if (next_dr > 0)
+				discv_init_recursive( node, gparams->theta + 180.0, next_dr );
+		}
 		even = !even;
 		nl_llink = nl_llink->next;
 	}
@@ -399,7 +410,8 @@ discv_init( void )
 	gparams->radius = 0.0;
 	gparams->theta = 0.0;
 
-	discv_init_recursive( globals.fstree, 270.0 );
+	discv_init_recursive( globals.fstree, 270.0,
+		lazy_render_enabled( ) ? lazy_render_depth( ) : INT_MAX );
 
 	gparams->pos.x = 0.0;
 	gparams->pos.y = - DISCV_GEOM_PARAMS(root_dnode)->radius;
@@ -886,7 +898,7 @@ geometry_mapv_max_expanded_height( GNode *dnode )
 /* Helper function for mapv_init( ).
  * This is, in essence, the MapV layout engine */
 static void
-mapv_init_recursive( GNode *dnode )
+mapv_init_recursive( GNode *dnode, int depth_remaining )
 {
 	struct MapVBlock {
 		GNode *node;
@@ -1052,8 +1064,11 @@ mapv_init_recursive( GNode *dnode )
 			if (NODE_IS_DIR(block->node)) {
 				gparams->height = mapv_dir_height;
 
-				/* Recurse into directory */
-				mapv_init_recursive( block->node );
+				/* Lazy-render gate (Phase 39): only recurse into
+				 * the child if its container should be set up. */
+				if (depth_remaining > 1) {
+					mapv_init_recursive( block->node, depth_remaining - 1 );
+				}
 			}
 			else
 				gparams->height = mapv_leaf_height;
@@ -1105,7 +1120,8 @@ mapv_init( void )
 	gparams->c1.y = 0.5 * root_dims.y;
 	gparams->height = mapv_dir_height;
 
-	mapv_init_recursive( root_dnode );
+	mapv_init_recursive( root_dnode,
+		lazy_render_enabled( ) ? lazy_render_depth( ) : INT_MAX );
 
 	/* Initial cursor state */
 	if (globals.current_node == root_dnode)
@@ -2157,10 +2173,11 @@ treev_arrange( boolean initial_arrange )
 
 /* Helper function for treev_init( ) */
 static void
-treev_init_recursive( GNode *dnode )
+treev_init_recursive( GNode *dnode, int depth_remaining )
 {
 	GNode *node;
 	int64 size;
+	int next_dr;
 
 	g_assert( NODE_IS_DIR(dnode) || NODE_IS_METANODE(dnode) );
 
@@ -2181,7 +2198,14 @@ treev_init_recursive( GNode *dnode )
 		size = MAX(64, node_display_size( node ));
 		if (NODE_IS_DIR(node)) {
 			TREEV_GEOM_PARAMS(node)->platform.height = TREEV_PLATFORM_HEIGHT;
-			treev_init_recursive( node );
+			/* Lazy-render gate (Phase 39): metanode passes its
+			 * budget through unchanged so root_dnode gets the full
+			 * anchor budget; real dirs decrement. Only recurse if
+			 * the child should be set up as a container. */
+			next_dr = NODE_IS_METANODE(dnode) ? depth_remaining
+			                                  : depth_remaining - 1;
+			if (next_dr > 0)
+				treev_init_recursive( node, next_dr );
 		}
 		if (treev_scale_logarithmic) {
 			double lsize = log( (double)size );
@@ -2222,7 +2246,8 @@ treev_init( void )
 	gparams->leaf.distance = (0.5 * TREEV_PLATFORM_SPACING_DEPTH);
 	gparams->platform.theta = 0.0;
 
-	treev_init_recursive( globals.fstree );
+	treev_init_recursive( globals.fstree,
+		lazy_render_enabled( ) ? lazy_render_depth( ) : INT_MAX );
 	treev_arrange( TRUE );
 	treev_needs_arrange = FALSE;
 
@@ -2243,7 +2268,8 @@ treev_init( void )
 void
 geometry_treev_reinit( void )
 {
-	treev_init_recursive( globals.fstree );
+	treev_init_recursive( globals.fstree,
+		lazy_render_enabled( ) ? lazy_render_depth( ) : INT_MAX );
 	treev_arrange( TRUE );
 	queue_uncached_draw( );
 }
