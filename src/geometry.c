@@ -3988,14 +3988,9 @@ static FsvMode geometry_prebuilt_mode = FSV_NONE;
 void
 geometry_init( FsvMode mode )
 {
-	gint64 t0, t_queue, t_modeinit, t_color;
-
-	t0 = g_get_monotonic_time( );
 	DIR_NODE_DESC(globals.fstree)->deployment = 1.0;
 	geometry_queue_rebuild( globals.fstree );
-	t_queue = g_get_monotonic_time( ) - t0;
 
-	t0 = g_get_monotonic_time( );
 	switch (mode) {
 		case FSV_DISCV:
 		discv_init( );
@@ -4011,21 +4006,10 @@ geometry_init( FsvMode mode )
 
 		SWITCH_FAIL
 	}
-	t_modeinit = g_get_monotonic_time( ) - t0;
 
-	t0 = g_get_monotonic_time( );
 	color_assign_recursive( globals.fstree );
-	t_color = g_get_monotonic_time( ) - t0;
 
 	geometry_prebuilt_mode = mode;
-
-	g_printerr(
-		"[geometry_init] mode=%d queue_rebuild=%.1fms mode_init=%.1fms "
-		"color_assign=%.1fms\n",
-		(int)mode,
-		(double)t_queue / 1000.0,
-		(double)t_modeinit / 1000.0,
-		(double)t_color / 1000.0 );
 }
 
 
