@@ -1567,16 +1567,15 @@ Step 39.4 follow-up 2 — Label vertex cache (v4.39.09)
       cull decisions. Tracks build-time camera->distance at
       end_emit. Self-contained — no hooks needed in
       camera_dolly / camera_revolve / etc.
-  [ ] User re-measure across all three modes. Expected:
-        - Idle: ~ms range (just bind + draw)
-        - Pan / orbit / zoom: same — cache survives camera moves
-        - Expand/collapse animation: same as current (cache
-          invalidates every frame during animation, falls back
-          to walk)
-        - After animation settles: cache rebuilds once, then
-          fast again
-      Labels MUST visually look the same as before — same set of
-      labels at same positions. Sanity check in each mode.
+  [x] User confirmed across MapV, DiscV, TreeV: labels look
+      correct, performance excellent at idle and during
+      pan/orbit. Expand/collapse animation feels less smooth
+      than steady-state (expected — cache invalidates each
+      frame). DiscV unchanged-fast as before.
+  [x] Phase 39 checkpoint MET on the user's large workload:
+      idle frame times in the low-single-digit ms in all three
+      modes; camera motion cost no longer dominated by the
+      label walk; pan/orbit feel smooth.
 
 Step 39.2 follow-up — TreeV text_set_color flush storm (v4.39.06)
   [x] After per-leaf cull was added to TreeV (v4.39.05), TreeV
@@ -1725,6 +1724,18 @@ Step 39.6 — Re-measure and stop
       color_assign_recursive, which ran unconditionally inside
       geometry_init even though colors don't change between mode
       switches. See Step 39.2 follow-up 2.
+    - TreeV "Expand All" (and "Collapse All") leaves the camera
+      in a position where the geometry is off-screen — user sees
+      a black void until they press 'r' to reset. Pre-existing,
+      tied to colexp.c's treev_saved_* / treev_camera_locked
+      mechanism for tethering the camera to the growing radius
+      during expansion. Not caused by any Phase 39 work.
+    - Mouse-wheel zoom can drive the camera past the safe near-
+      clip range — viewport partially or fully turns black at
+      zooms much closer than double-click navigation would
+      produce. Likely a near/far clip plane mismatch with
+      distance, or camera->distance going below some minimum.
+      Reported by user during Phase 39.4 cache testing.
 
 Step 39.2 follow-up 2 — colors_dirty flag (v4.39.07)
   [x] geometry_init() calls color_assign_recursive() at the end
