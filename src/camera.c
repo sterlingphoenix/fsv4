@@ -116,6 +116,29 @@ camera_moving( void )
 }
 
 
+/* Returns TRUE if the camera state has not changed since the previous
+ * call. Catches BOTH pan animations and direct user input. Currently
+ * unused — left in place for future per-frame "is camera moving"
+ * gates that need to be cheaper than walking the morph queue. */
+boolean
+camera_settled( void )
+{
+	static union AnyCamera prev_camera;
+	static FsvMode prev_mode = FSV_NONE;
+
+	if (globals.fsv_mode != prev_mode) {
+		prev_mode = globals.fsv_mode;
+		memcpy( &prev_camera, &the_camera, sizeof(the_camera) );
+		return FALSE;
+	}
+	if (memcmp( &prev_camera, &the_camera, sizeof(the_camera) ) != 0) {
+		memcpy( &prev_camera, &the_camera, sizeof(the_camera) );
+		return FALSE;
+	}
+	return TRUE;
+}
+
+
 /* Returns the diameter of a camera's visible range (centered at the
  * target) given the specified field of view and distance to target */
 static double

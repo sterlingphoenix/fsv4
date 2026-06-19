@@ -31,6 +31,7 @@
 #include "filelist.h"
 #include "geometry.h"
 #include "gui.h" /* gui_update( ) */
+#include "tmaptext.h" /* text_cache_invalidate( ) */
 #include "window.h"
 
 
@@ -118,6 +119,11 @@ colexp_progress_cb( Morph *morph )
 
         /* Keep geometry module appraised of collapse/expand progress */
 	geometry_colexp_in_progress( dnode );
+
+	/* Label-vertex cache (Phase 39.4 follow-up): a deployment morph
+	 * just stepped, so layout positions changed → cached labels are
+	 * stale. Force rebuild on the next *_draw. */
+	text_cache_invalidate( );
 
 	/* Keep viewport refreshed */
 	globals.need_redraw = TRUE;

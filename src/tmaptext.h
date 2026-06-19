@@ -38,4 +38,23 @@ void text_draw_straight_rotated( const char *text, const RTZvec *text_pos, const
 void text_draw_curved( const char *text, const RTZvec *text_pos, const RTvec *text_max_dims );
 
 
+/* Label-vertex cache (Phase 39.4 follow-up). Geometry callers wrap
+ * their *_draw_recursive label walks like this:
+ *
+ *   if (!text_cache_replay( )) {
+ *     text_cache_begin_emit( );
+ *     <walk: text_set_color(), text_draw_*(), etc.>
+ *     text_cache_end_emit( );
+ *   }
+ *
+ * The walk's text_add_quad calls store world-space vertices into a
+ * persistent GL buffer; subsequent frames replay it with no walk.
+ * The cache is invalidated by anything that moves labels (mode
+ * switch, scan, expand/collapse step, label-visibility toggle, etc.) */
+boolean text_cache_replay( void );
+void    text_cache_begin_emit( void );
+void    text_cache_end_emit( void );
+void    text_cache_invalidate( void );
+
+
 /* end tmaptext.h */

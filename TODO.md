@@ -1342,6 +1342,405 @@ Step 38.3 — Visual feedback during long expand/collapse
   is unchanged.
 
 
+PHASE 39 — RENDER PERFORMANCE FOR LARGE TREES
+==============================================
+
+Render-side fix-it phase for the "rendering hits a bottleneck that
+makes the program unusable" symptom on large filesystems. Scan is
+explicitly out of scope: scan has clear in-progress feedback and is
+bounded by lstat() latency, which only parallel-syscall work would
+shift; that is its own future phase.
+
+Background
+----------
+
+Static analysis of the per-frame path (ogl_draw → geometry_draw →
+mode-specific *_draw(high_detail)):
+
+  1. frustum_extract — recomputes 6 frustum planes from the MVP.
+  2. *_rebuild_batch — no-op unless the dirty flag is set
+     (geometry change, color-mode change, expand/collapse).
+  3. vbo_batch_draw / vbo_batch_draw_lines — 1-3 glDrawArrays calls.
+     GPU-side cost; CPU just submits.
+  4. if high_detail: *_draw_recursive — walks the entire visible
+     subtree to emit text quads, one per visible leaf label.
+  5. Pick (when the user moves the mouse): ogl_color_pick re-renders
+     the scene into a private FBO at display resolution whenever
+     invalidated, using the same VBO with the pick shader.
+
+Frustum and screen-size culling exist at the directory level inside
+the recursive label walks. There is NO per-leaf size cull — a single
+visible directory with N file children emits N text quads regardless
+of their projected pixel size.
+
+An earlier session tried a per-leaf label cull and reportedly saw no
+noticeable improvement. That is itself diagnostic: it implies the
+label walk is NOT the dominant cost on the workloads tried. Without
+measurement, the natural next guess (label cull, more aggressive
+culling, etc.) risks chasing the wrong cost again. Therefore: measure
+first, decide second.
+
+Out of scope:
+- Scan parallelism / io_uring (separate phase, separate concerns).
+- Lazy / depth-bounded rendering — failed avenue from a previous
+  branch; the depth cliff makes the UX worse and the bottleneck on
+  real trees is width, not depth.
+- Any change that breaks the "build once, draw many" invariant
+  (CLAUDE.md Rule 5). VBO contents must stay GL_STATIC_DRAW with
+  dirty-flag invalidation — no per-frame CPU vertex assembly.
+
+Step 39.1 — Frame-cost instrumentation
+  [x] Added frameprof.c/h. F11 toggles a per-frame collector that
+      accumulates per-bucket microseconds and prints a 60-frame
+      summary to stderr. Each entry point starts with a single
+      load+branch on `active`, so cost is negligible when off.
+      Buckets:
+        - frustum_extract — frustum_extract() call
+        - vbo_rebuild     — *_rebuild_batch() (counted only on
+                            real rebuilds, not no-op dirty=FALSE)
+        - vbo_solid       — vbo_batch_draw of solid + branch
+        - vbo_outline     — vbo_batch_draw_lines of outline
+        - label_walk      — text_pre + *_draw_recursive + text_post
+        - text_flush      — GL upload + draw inside text_flush;
+                            also publishes bytes/frame and
+                            draws/frame
+        - pick_render     — re-render block inside ogl_color_pick
+                            (only when pick FBO invalidated);
+                            also publishes pick-invocation count
+        - other           — frame_total − accounted (label_walk
+                            already contains text_flush, so it's
+                            counted once in the "accounted" sum)
+  [x] Wired into ogl_draw (frame begin/end), all three *_draw
+      paths (per-bucket markers), all three *_rebuild_batch
+      (rebuild counter), tmaptext text_flush, and ogl_color_pick.
+      F11 bound in viewport_key_pressed_cb.
+  [x] User runs on the actual problem workload (their large
+      filesystem) in each of the three vis modes, capturing
+      numbers in each scenario.
+  [x] First-pass results (TreeV mode, post Expand-All on a large
+      tree):
+        - idle:        9.81 ms/frame, label_walk=4.35, text_flush
+                       2.48 ms with 2933 draws/frame, vbo_rebuild
+                       5.41 ms (35 rebuilds — expand-all anim
+                       still settling)
+        - bad/idle:  993.04 ms/frame, label_walk=942.67,
+                       text_flush=736.79 with 350,667 draws/frame
+        - panning:   252.32 ms/frame, label_walk=252.28
+        - zoomed in:  54.00 ms/frame, label_walk=53.96
+      Dominant cost in every bad scenario: label_walk + the
+      text_flush calls nested inside it. vbo_solid stays at 0.01
+      ms/frame throughout, ruling out Options B (tiling) and C
+      (instancing) as the right starting point.
+
+Step 39.1 follow-up — fix latent text_set_color flush storm
+  [x] text_set_color() in tmaptext.c was flushing the pending
+      text batch UNCONDITIONALLY, even when the new colour equalled
+      the current one. Label loops (especially TreeV's, which
+      re-sets the same leaf and platform colours per node) were
+      triggering one full GL upload + draw cycle per label —
+      observed as 350,667 text_flush calls per frame in the worst
+      Phase 39.1 bucket.
+      Fix: text_set_color now early-returns when r/g/b match the
+      current colour. One conditional, no architecture change.
+      This is almost certainly the same hidden multiplier that
+      defeated the previous "per-leaf label cull, no measurable
+      win" attempt — with flush-per-label, no amount of culling
+      could move the needle.
+  [x] frameprof.c: text_bytes_uploaded promoted from int to gint64.
+      Heavy scenes push GB/window through GL_STREAM_DRAW and the
+      old int counter wrapped negative in the reported summaries.
+  [x] First re-measurement (MapV — user clarified the heavy
+      workload was MapV, not TreeV): text_flush draws/frame
+      DID NOT drop. Still ~360,000. Diagnosis: the text_set_color
+      fix was real but addressed only one of TWO flush triggers.
+      The actual MapV culprit was different — see follow-up below.
+
+Step 39.1 follow-up 2 — fix the per-label text_flush
+  [x] Root cause: text_draw_straight, text_draw_straight_rotated,
+      and text_draw_curved each called text_flush() unconditionally
+      at the END of every call. That's "one full GL upload + draw
+      cycle per label" baked into the API, defeating the entire
+      text_pre / text_post batching protocol.
+      The reason it was there: labels are emitted in local-space
+      coordinates, while the modelview is set to that node's
+      local frame during *_draw_recursive. Flushing per-label
+      captured the right MVP for each one.
+  [x] Fix: text_add_quad now reads the current modelview at emit
+      time and pre-multiplies each corner into view space. The
+      vertex buffer stores view-space coords. text_flush sends
+      the projection-only matrix as u_mvp. Result: batches can
+      accumulate across many text_draw_* calls with different
+      modelview matrices, and the per-call text_flush() at the
+      end of each draw function is removed. Per-frame flush count
+      drops from O(labels) to O(distinct colours used).
+  [x] Cost added per quad: 4 corners × (12 mults + 12 adds) of
+      4×4 modelview multiply. Negligible vs. one removed GL
+      upload + draw cycle per label.
+  [x] text_pre_matrix_change() retained as a no-op-safe flush
+      (still useful before a projection change, though no current
+      caller invokes it from inside the label walks).
+  [x] Re-measured with v4.39.03 on the MapV stuck scenario:
+      text_flush dropped from 360,000 draws/frame → 1.0 draw/frame,
+      exactly as predicted. But frame time only improved marginally
+      (993 → 729 ms/frame). text_flush still uploads 1.7 GB/frame
+      in that one giant draw — we just batched the work, didn't
+      reduce it. The actual fix needs to be label COUNT, not flush
+      count. That's 39.4 Option A.
+
+Step 39.2 — Skip label walk during camera motion  [REVERTED v4.39.08]
+  [—] Attempted gating the label walk on camera_settled().
+      Worked perf-wise (pan/orbit dropped to near-zero) but the
+      UX trade was unacceptable: text vanished during animation
+      across initial-load camera-in, expand/collapse anim, and
+      drag-orbit. Reverted in all three mode draws. camera_settled()
+      stayed in the codebase (unused) in case a future per-frame
+      "is the camera moving" gate needs a cheaper signal than
+      walking the morph queue; the side-effect redraw inside it
+      was reverted too.
+      User constraint, now hard: labels MUST be present during
+      animation. Any future perf work has to make the label walk
+      itself cheap enough to run every frame, not skip it.
+
+Step 39.4 follow-up — TreeV per-leaf cull tightening (v4.39.08)
+  [x] After 39.2 reverted, TreeV idle was still 341 ms/frame
+      with ~50K labels surviving the per-leaf cull. Root cause:
+      TreeV leaves are uniform-size (TREEV_LEAF_NODE_EDGE = 256
+      world units), so the cull either passes every leaf on a
+      "visible" platform or rejects every leaf. With the standard
+      LABEL_SIZE_THRESHOLD (6 px radius / 12 px full cube), a
+      typical filename's worth of text is unreadable but still
+      drawn.
+  [x] Fix: TreeV per-leaf cull uses 4× LABEL_SIZE_THRESHOLD as
+      its threshold (24 px radius / 48 px full cube). Roughly
+      matches the smallest cube size that can hold a few readable
+      characters. MapV and DiscV cull thresholds are unchanged
+      (their leaves are data-driven, so the standard threshold
+      already culls effectively).
+  [—] Re-measurement showed almost no improvement (547 ms/frame,
+      ~60K labels). Cull tightening alone isn't enough. Moved to
+      the architectural fix below.
+
+Step 39.4 follow-up 2 — Label vertex cache (v4.39.09)
+  [x] Architectural change: cache the assembled label vertex
+      buffer in a persistent GL_STATIC_DRAW VBO. World-space
+      vertices, so camera moves don't invalidate it — they just
+      update the shader uniform.
+  [x] ogl.c: saves the camera-only modelview at the end of
+      setup_modelview_matrix and exposes it via
+      ogl_get_camera_modelview(). The "node-only" modelview
+      during a label walk is then camera_modelview_inverse *
+      current_modelview.
+  [x] tmaptext.c: added persistent cache_vao / cache_vbo /
+      cache_vertex_count / cache_is_valid / cache_filling state
+      and the API: text_cache_replay (draws cached buffer with
+      projection × camera_modelview as the uniform, returns TRUE
+      to skip the walk), text_cache_begin_emit / end_emit
+      (begin/end a walk that fills the cache), text_cache_invalidate.
+      text_add_quad now has two modes: direct (current modelview,
+      view-space — for about/splash) and cache-filling (node-only
+      modelview, world-space — for the geometry label walks).
+  [x] geometry.c: all three *_draw label sections now do
+      text_cache_replay → if invalid, fall through to walk that
+      calls text_cache_begin_emit / draw / text_cache_end_emit.
+  [x] Invalidation hooks wired:
+        - colexp_progress_cb (per deployment-morph step, so
+          cache stays invalid for the duration of expand/collapse
+          animations; settles to valid afterwards)
+        - geometry_init (mode switch, fresh scan — both produce
+          new label layouts)
+        - geometry_toggle_labels ('t' hotkey)
+        - geometry_treev_set_scale_logarithmic (calls
+          geometry_init, covered)
+        - resize_cb in ogl.c (viewport change → screen-size cull
+          decisions in cache become stale)
+  [x] Trade-off accepted: per-leaf cull decisions in the cache
+      are frozen at build time. After a big zoom-in, labels
+      that would now pass the cull aren't shown until something
+      invalidates (mode switch, expand/collapse, etc.). If this
+      is a UX problem, add a heuristic re-invalidate on large
+      camera-distance changes.
+  [ ] User re-measure across all three modes. Expected:
+        - Idle: ~ms range (just bind + draw)
+        - Pan / orbit / zoom: same — cache survives camera moves
+        - Expand/collapse animation: same as current (cache
+          invalidates every frame during animation, falls back
+          to walk)
+        - After animation settles: cache rebuilds once, then
+          fast again
+      Labels MUST visually look the same as before — same set of
+      labels at same positions. Sanity check in each mode.
+
+Step 39.2 follow-up — TreeV text_set_color flush storm (v4.39.06)
+  [x] After per-leaf cull was added to TreeV (v4.39.05), TreeV
+      label_walk was still 429 ms/frame at idle with 60,175
+      text_flush draws/frame. The remaining flushes were from
+      text_set_color: TreeV alternates platform_label_color and
+      leaf_label_color per visited platform directory, so each
+      visited dir caused 2 flushes. ~30K platforms → 60K flushes.
+  [x] Fix: removed text_flush() from text_set_color entirely. The
+      flush was a holdover from an earlier per-batch-uniform color
+      design; since text_add_quad copies text_cur_color into each
+      vertex at emit time, the per-vertex color attribute carries
+      it through the shader. Multiple colors can coexist in one
+      drawn batch with no glitches. Per-frame flush count is now
+      bounded by 1 (text_post) regardless of how many colors are
+      used during the walk.
+
+Step 39.3 — Lower-resolution pick FBO
+  [ ] In ogl.c pick_fbo_ensure, allocate the pick renderbuffers at
+      viewport / PICK_DOWNSCALE (default PICK_DOWNSCALE = 2; expose
+      as a #define at the top of ogl.c so it's easy to retune).
+  [ ] In ogl_color_pick, divide the input (x, y) by PICK_DOWNSCALE
+      before glReadPixels. Pick precision drops from 1 pixel to
+      PICK_DOWNSCALE pixels — fine for clicking on bounded blocks
+      and discs, which are nearly always ≥ 4 px wide if they're
+      visible at all.
+  [ ] Verify: clean build. User confirms hover/click still
+      identifies nodes correctly (try clicking on small blocks
+      near a directory edge), and pick re-render is noticeably
+      faster during camera animation (when ogl_pick_invalidate
+      fires every frame).
+  [ ] Independent of 39.1's numbers: do this regardless. Cheap
+      and reversible.
+
+Step 39.4 — Decision point: which big fix
+  [x] DECISION (recorded 2026-06-19): Option A — per-leaf label
+      cull. Supporting numbers from 39.1 follow-up 2 (v4.39.03):
+        - text_flush draws/frame: 1.0   → batching is solved
+        - text_flush KB/frame:    1.7 GB → label COUNT is the cost
+        - vbo_solid ms/frame:     0.01   → ruling out B (tiling)
+                                            and C (instancing)
+        - label_walk ms/frame:    729 ms → CPU walk + emission
+                                            of millions of labels
+      The per-leaf cull cuts both CPU emission and GL upload
+      bytes proportionally to how many labels are sub-pixel.
+  [x] Implemented in MapV (v4.39.04): label_walk dropped from
+      729 ms → 28.69 ms/frame (~25× win). text_flush KB dropped
+      from 1.7 GB → 17 MB/frame.
+  [x] Replicated in DiscV (v4.39.05): same per-leaf
+      screen_size_pixels check inside the label loop.
+  [x] Replicated in TreeV (v4.39.05): per-leaf cull on the
+      non-DIR children loop; cube edge half-width as the
+      projected-size proxy.
+
+  OPTION A — Per-leaf label cull (revisit)
+    Trigger: label walk and/or text_flush dominate idle-frame
+    cost on the workload.
+    Plan: in each *_draw_recursive, before calling apply_label on
+    a leaf child, compute the child's own projected pixel size and
+    skip if below LABEL_SIZE_THRESHOLD. The previous attempt may
+    have been gated against the PARENT extent (which is what the
+    existing code already does at the dir level) rather than the
+    leaf's own extent — measurement should clarify which.
+    Also reconsider: hoist string-length / max-dim work out of
+    the per-frame label call into a one-time precompute on the
+    NodeDesc.
+
+  OPTION B — Spatial VBO tiling (revival of TODO 35.7)
+    Trigger: VBO draw time (fragment / fillrate) dominates the
+    GPU side, OR VBO rebuild on geometry change is the spike,
+    OR the visible vertex count grows past the GPU's comfort zone.
+    Plan: split each mode's whole-tree VBO into spatial tiles:
+      - MapV: quadtree of XY-aligned tiles; leaf tile sized so
+        the average tile holds ~10K-50K vertices.
+      - TreeV: angular sectors at root, sub-sectored per radial
+        ring.
+      - DiscV: angular sectors only (no rings).
+    Each tile keeps its own VBOBatch + dirty flag. The build pass
+    populates tiles in one tree walk (assign each node to its
+    tile, emit vertices into that tile's batch). The draw pass
+    frustum-culls each tile against the planes from frustum_extract
+    before issuing the per-tile glDrawArrays.
+    Build-once / draw-many preserved at tile granularity. Dirty
+    invalidation propagates only to tiles whose nodes changed
+    (e.g. expand/collapse marks only the affected tiles dirty).
+
+  OPTION C — Instanced rendering for box-shaped nodes
+    Trigger: VBO rebuild cost after expand/collapse dominates
+    OR VBO memory is a real constraint (visible vertex count
+    × 32 B per vertex pushing past hundreds of MB).
+    Plan: every MapV block is a unit cube; every TreeV leaf is
+    a unit cube. Emit one per-instance record per node
+    (vec3 position, vec3 size, vec3 color, uint id) and let the
+    vertex shader place a shared unit cube. Per-batch memory
+    drops 5-10× (≈30 verts → 1 instance record), build CPU cost
+    drops proportionally.
+    Scope: only the unit-cube nodes — TreeV platforms (curved
+    sector geometry) and DiscV discs (curved geometry) keep
+    their existing triangle-list batches. Two batches per mode:
+    instanced + non-instanced.
+
+  Note: A/B/C are mutually compatible. Pick the one that
+  addresses the dominant bucket. If two buckets are nearly tied
+  (e.g. label walk and VBO draw both 8 ms), prefer the cheaper
+  option first.
+
+Step 39.5 — Implement chosen big fix
+  [ ] Fill in detailed sub-steps once 39.4 picks A, B, or C.
+      Each sub-step must leave the program buildable + runnable
+      (Rule 1) and preserve build-once / draw-many (Rule 5).
+
+Step 39.6 — Re-measure and stop
+  [ ] Re-run 39.1's instrumentation on the same workload that
+      drove 39.4's decision. Confirm the bucket that justified
+      the choice has collapsed. Note the new numbers inline.
+  [ ] If the new dominant bucket is still painful, loop back to
+      39.4 with the next-most-likely option from A/B/C.
+  [ ] Strip 39.1's instrumentation once perf is acceptable, OR
+      keep it permanently behind the F11 hotkey if useful as a
+      diagnostic hook (cost is zero when off).
+
+  Checkpoint: User confirms the workload that was previously
+  "unusable" is now interactive. Quantitative target on the
+  user's test tree:
+    - frame time < 33 ms (≥ 30 fps) at idle in all three modes
+    - frame time < 16 ms (≥ 60 fps) during camera motion
+    - hover-pick response feels immediate (no per-frame stall
+      tied to pick FBO re-render)
+
+  Stop criteria: any step beyond Phase 39 belongs to its own
+  phase. Do not start an instanced-rendering refactor "while
+  we're in here" if the chosen fix already cleared the
+  checkpoint.
+
+  Discovered-during-phase, defer to its own phase:
+    - Mode switch on a large unexpanded tree triggers GNOME's
+      "not responding" window. Cause: geometry_init runs on the
+      main thread on mode switch (no prebuilt cache for the new
+      mode, unlike the initial load which pre-builds on the scan
+      worker). Symmetric to Phase 38's Expand-All "not
+      responding" fix. Likely needs either (a) prebuild ALL three
+      modes' geometry on the scan worker, (b) a UI lockout + busy
+      cursor + main-loop pump like colexp(), or (c) move the
+      mode-switch geometry_init to a worker and consume on main.
+      PARTIAL MITIGATION (v4.39.07): the dominant cost was
+      color_assign_recursive, which ran unconditionally inside
+      geometry_init even though colors don't change between mode
+      switches. See Step 39.2 follow-up 2.
+
+Step 39.2 follow-up 2 — colors_dirty flag (v4.39.07)
+  [x] geometry_init() calls color_assign_recursive() at the end
+      of every mode switch. On a 1M+ tree with wildcard pattern
+      coloring this is seconds of fnmatch() work per switch —
+      observed as a 30+s freeze that defeats interactive testing.
+      Reported by user during Phase 39 measurement work, and
+      independently fixed on the abandoned lazy_render branch.
+  [x] Fix: color.c gains a static colors_dirty flag. The public
+      color_assign_recursive is now a thin gate that early-returns
+      when !colors_dirty and delegates to color_assign_recursive_inner
+      otherwise; the inner function clears the flag after the walk.
+      color_mark_dirty() is exported and called from:
+        - scanfs() entry (new tree → fresh colours required)
+        - color_set_mode (mode change → re-derive every node's
+          colour from the new mode's palette)
+        - color_set_config (via the color_set_mode call it makes)
+      So every legitimate "colours changed" event still triggers
+      a full walk; the freeloading walks on mode switch are gone.
+  [x] Mode switch on a large tree should now be near-instant —
+      whatever cost remains is mapv_init / discv_init / treev_init
+      (the layout walk), which is already fast (~ms range).
+
+
 NOTES
 =====
 - Each step should leave the code compilable and runnable

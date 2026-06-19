@@ -31,6 +31,7 @@
 #include <sys/stat.h>
 #include <gtk/gtk.h>
 
+#include "color.h" /* color_mark_dirty( ) */
 #include "dirtree.h"
 #include "filelist.h"
 #include "geometry.h" /* geometry_free( ) */
@@ -710,6 +711,12 @@ scanfs( const char *dir, FsvMode initial_mode,
 	ScanContext *ctx;
 	GTask *task;
 	char *name;
+
+	/* New tree → fresh colour assignment needed. Without this, the
+	 * dirty flag (see color.c) would be stale FALSE from the
+	 * previous scan, and color_assign_recursive on the worker would
+	 * skip the work, leaving every node->color NULL. */
+	color_mark_dirty( );
 
 	if (globals.fstree != NULL) {
 		/* Tear down the UI first so GTK drops its FsvDirItem refs to

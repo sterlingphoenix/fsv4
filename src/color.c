@@ -107,6 +107,26 @@ static RGBcolor spectrum_underflow_color;
 static RGBcolor spectrum_colors[SPECTRUM_NUM_SHADES];
 static RGBcolor spectrum_overflow_color;
 
+/* TRUE when the next color_assign_recursive call must actually do the
+ * work. Cleared at the end of that call. Re-set on every input that
+ * could change a node's color: mode change, config change, new scan.
+ * Without this, geometry_init() (which runs on every mode switch)
+ * would walk every node and re-compute its color even though nothing
+ * about coloring changed — seconds of wpattern fnmatch() work on a
+ * large tree, observed as a 30+s freeze when switching modes. */
+static boolean colors_dirty = TRUE;
+
+
+/* Forces color_assign_recursive to do real work on its next call.
+ * Called from scanfs (new tree → fresh colors), from color_set_mode
+ * (mode change), and from color_set_config (wpattern / nodetype /
+ * timestamp settings changed). */
+void
+color_mark_dirty( void )
+{
+	colors_dirty = TRUE;
+}
+
 
 /* Copies a ColorConfig structure from one location to another */
 static void
@@ -351,9 +371,10 @@ color_wpattern_group_name( GNode *node )
 }
 
 
-/* (Re)assigns colors to all nodes rooted at the given node */
-void
-color_assign_recursive( GNode *dnode )
+/* Inner recursive worker; the public color_assign_recursive checks
+ * the colors_dirty flag and clears it after the walk. */
+static void
+color_assign_recursive_inner( GNode *dnode )
 {
 	GNode *node;
 	const RGBcolor *color;
@@ -382,10 +403,24 @@ color_assign_recursive( GNode *dnode )
 		NODE_DESC(node)->color = color;
 
 		if (NODE_IS_DIR(node))
-			color_assign_recursive( node );
+			color_assign_recursive_inner( node );
 
 		node = node->next;
 	}
+}
+
+
+/* (Re)assigns colors to all nodes rooted at the given node, gated by
+ * the colors_dirty flag. No-op when not dirty — geometry_init() can
+ * call this on every mode switch without paying the per-node cost
+ * unless something about coloring has actually changed. */
+void
+color_assign_recursive( GNode *dnode )
+{
+	if (!colors_dirty)
+		return;
+	color_assign_recursive_inner( dnode );
+	colors_dirty = FALSE;
 }
 
 
@@ -395,6 +430,7 @@ color_set_mode( ColorMode mode )
 {
 	color_mode = mode;
 	if (globals.fstree != NULL) {
+		color_mark_dirty( );
 		color_assign_recursive( globals.fstree );
 		redraw( );
 	}

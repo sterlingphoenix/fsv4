@@ -34,6 +34,7 @@
 #include "fsv.h"
 #include "dialog.h" /* context_menu( ) */
 #include "filelist.h" /* filelist_show_entry( ) */
+#include "frameprof.h"
 #include "geometry.h"
 #include "gui.h"
 #include "ogl.h"
@@ -425,6 +426,10 @@ viewport_key_pressed_cb( G_GNUC_UNUSED GtkEventControllerKey *controller,
 			color_set_mode( next );
 			window_set_color_mode( next );
 		}
+		return TRUE;
+		case GDK_KEY_F11:
+		/* Phase 39.1: toggle per-frame profiling printouts */
+		frameprof_toggle( );
 		return TRUE;
 		default:
 		return FALSE;

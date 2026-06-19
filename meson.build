@@ -1,5 +1,5 @@
 project('fsv', 'c',
-  version : '4.38.12',
+  version : '4.39.09',
   default_options : ['warning_level=2', 'buildtype=debugoptimized'],
   meson_version : '>= 0.55',
 )
@@ -78,6 +78,7 @@ src_sources = files(
   'src/dialog.c',
   'src/dirtree.c',
   'src/filelist.c',
+  'src/frameprof.c',
   'src/fsv.c',
   'src/geometry.c',
   'src/glmath.c',
