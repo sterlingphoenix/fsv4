@@ -28,6 +28,7 @@
 #include <epoxy/gl.h>
 #include <string.h>
 
+#include "camera.h" /* camera->distance (cache invalidation heuristic) */
 #include "frameprof.h"
 #include "glmath.h"
 #include "shader.h"
@@ -93,6 +94,11 @@ static int    cache_vertex_count = 0;
 static boolean cache_is_valid = FALSE;
 static boolean cache_filling = FALSE;
 static mat4   cache_camera_mv_inv;
+/* Camera distance when the cache was last built. Significant zoom
+ * changes since then mean per-leaf cull decisions are stale (labels
+ * that would now pass the cull after zooming in won't be in the
+ * cache), so we force a rebuild. See text_cache_replay. */
+static double cache_built_distance = 0.0;
 
 
 /* Simple XBM parser - bits to bytes. Caller assumes responsibility for
@@ -637,13 +643,29 @@ text_cache_invalidate( void )
 
 
 /* If the cache is valid, replay it with the current camera matrix
- * and return TRUE. Caller skips its tree walk in that case. */
+ * and return TRUE. Caller skips its tree walk in that case.
+ *
+ * Self-invalidates if the camera distance has changed enough since
+ * the cache was built that per-leaf cull decisions are likely stale.
+ * The threshold lets the cache survive small zooms (pan/dolly while
+ * staying at roughly the same scale) but rebuilds after the user
+ * moves into or out of a meaningfully different scale. */
 boolean
 text_cache_replay( void )
 {
 	const float *proj;
 	const float *cam;
 	mat4 mvp;
+
+	if (cache_is_valid && cache_built_distance > 0.0) {
+		double ratio = camera->distance / cache_built_distance;
+		if (ratio < 0.7 || ratio > 1.5) {
+			/* Significant zoom — labels that would now
+			 * pass / fail the per-leaf screen-size cull
+			 * differ from what's in the cache. */
+			cache_is_valid = FALSE;
+		}
+	}
 
 	if (!cache_is_valid)
 		return FALSE;
@@ -733,6 +755,7 @@ text_cache_end_emit( void )
 
 	cache_vertex_count = text_count;
 	cache_is_valid = TRUE;
+	cache_built_distance = camera->distance;
 
 	frameprof_text_upload( upload_bytes );
 

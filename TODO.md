@@ -1559,6 +1559,14 @@ Step 39.4 follow-up 2 — Label vertex cache (v4.39.09)
       invalidates (mode switch, expand/collapse, etc.). If this
       is a UX problem, add a heuristic re-invalidate on large
       camera-distance changes.
+  [x] Follow-up (v4.39.10): added zoom-threshold invalidation
+      inside text_cache_replay itself. If the current camera
+      distance differs from the build-time distance by more than
+      ~30% in either direction (ratio outside [0.7, 1.5]), the
+      cache is invalidated so the next frame walks with current
+      cull decisions. Tracks build-time camera->distance at
+      end_emit. Self-contained — no hooks needed in
+      camera_dolly / camera_revolve / etc.
   [ ] User re-measure across all three modes. Expected:
         - Idle: ~ms range (just bind + draw)
         - Pan / orbit / zoom: same — cache survives camera moves
