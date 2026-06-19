@@ -30,6 +30,7 @@
 
 #include "animation.h" /* redraw( ) */
 #include "camera.h"
+#include "frameprof.h"
 #include "geometry.h"
 #include "glmath.h"
 #include "shader.h"
@@ -196,10 +197,21 @@ setup_projection_matrix( boolean full_reset )
 }
 
 
+/* Snapshot of the modelview matrix as of the end of
+ * setup_modelview_matrix() — i.e. the pure camera transform with no
+ * per-node modelview pushes layered on top. Captured here so the
+ * label-vertex cache (tmaptext.c) can store world-space vertices and
+ * re-project them per frame with `projection × camera_modelview` as
+ * the uniform — letting the cache survive camera moves. */
+static float saved_camera_modelview[16];
+
+
 /* Sets up the modelview matrix */
 static void
 setup_modelview_matrix( void )
 {
+	const float *mv;
+
 	/* Remember, base matrix lives just below top of stack */
 	glmath_pop_modelview( );
 	glmath_push_modelview( );
@@ -232,6 +244,19 @@ setup_modelview_matrix( void )
 
 		SWITCH_FAIL
 	}
+
+	mv = glmath_get_modelview( );
+	memcpy( saved_camera_modelview, mv, sizeof(saved_camera_modelview) );
+}
+
+
+/* Accessor for the camera-only modelview matrix (see
+ * saved_camera_modelview above). The returned pointer is valid until
+ * the next ogl_draw frame. */
+const float *
+ogl_get_camera_modelview( void )
+{
+	return saved_camera_modelview;
 }
 
 
@@ -244,6 +269,8 @@ ogl_draw( void )
 #ifdef DEBUG
 	int err;
 #endif
+
+	frameprof_frame_begin( );
 
 	geometry_highlight_node( NULL, TRUE );
 	glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
@@ -258,6 +285,8 @@ ogl_draw( void )
 	if (err != 0)
 		g_warning( "GL error: 0x%X", err );
 #endif
+
+	frameprof_frame_end( );
 
 	/* First frame after a mode switch is not drawn
 	 * (with the exception of splash screen mode) */
@@ -329,7 +358,11 @@ ogl_color_pick( int x, int y, unsigned int *face_id )
 	/* Set up the pick FBO (may invalidate if resized) */
 	pick_fbo_ensure( viewport[2], viewport[3] );
 
+	frameprof_pick_invoked( );
+
 	if (!pick_fbo_valid) {
+		frameprof_bucket_begin( FRAMEPROF_PICK_RENDER );
+
 		/* Re-render the pick scene into the FBO */
 		glBindFramebuffer( GL_FRAMEBUFFER, pick_fbo );
 		glViewport( 0, 0, viewport[2], viewport[3] );
@@ -355,6 +388,8 @@ ogl_color_pick( int x, int y, unsigned int *face_id )
 		glEnable( GL_POLYGON_OFFSET_FILL );
 
 		pick_fbo_valid = TRUE;
+
+		frameprof_bucket_end( FRAMEPROF_PICK_RENDER );
 	}
 
 	/* Read the pixel at (x, y) from the cached pick FBO */
@@ -430,6 +465,9 @@ resize_cb( G_GNUC_UNUSED GtkGLArea *area, gint width, gint height, G_GNUC_UNUSED
 	if (!gl_initialized)
 		return;
 	glViewport( 0, 0, width, height );
+	/* Cached labels' per-leaf cull decisions were made against the
+	 * old viewport size. Invalidate so the next frame rebuilds. */
+	text_cache_invalidate( );
 }
 
 

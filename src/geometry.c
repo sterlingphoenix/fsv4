@@ -32,6 +32,7 @@
 #include "camera.h"
 #include "color.h"
 #include "dirtree.h" /* dirtree_entry_expanded( ) */
+#include "frameprof.h"
 #include "glmath.h"
 #include "shader.h"
 #include "ogl.h"
@@ -540,6 +541,7 @@ discv_rebuild_batch( void )
 	discv_batch_recursive( &discv_solid_batch,
 	                       globals.fstree, 0.0, 0.0, 1.0 );
 	vbo_batch_upload( &discv_solid_batch );
+	frameprof_vbo_rebuild_done( );
 }
 
 
@@ -652,10 +654,18 @@ discv_draw_recursive( GNode *dnode, double acc_x, double acc_y, double acc_scale
 	if (visible &&
 	    !(world_radius > 0.0 &&
 	      screen_size_pixels( world_x, world_y, 0.0, world_radius ) < LABEL_SIZE_THRESHOLD)) {
-		/* Label leaf nodes */
+		/* Label leaf nodes — per-leaf screen-size cull
+		 * (Phase 39.4 Option A). Same rationale as MapV. */
 		node = dnode->children;
 		while (node != NULL) {
-			discv_apply_label( node );
+			DiscVGeomParams *cgp = DISCV_GEOM_PARAMS(node);
+			double cwx = world_x + world_scale * cgp->pos.x;
+			double cwy = world_y + world_scale * cgp->pos.y;
+			double cwr = world_scale * cgp->radius;
+			if (cwr > 0.0
+			    && screen_size_pixels( cwx, cwy, 0.0, cwr )
+			       >= LABEL_SIZE_THRESHOLD)
+				discv_apply_label( node );
 			node = node->next;
 		}
 	}
@@ -682,10 +692,14 @@ discv_draw_recursive( GNode *dnode, double acc_x, double acc_y, double acc_scale
 static void
 discv_draw( boolean high_detail )
 {
+	frameprof_bucket_begin( FRAMEPROF_FRUSTUM_EXTRACT );
 	frustum_extract( );
+	frameprof_bucket_end( FRAMEPROF_FRUSTUM_EXTRACT );
 
 	/* Rebuild VBO batch if geometry changed */
+	frameprof_bucket_begin( FRAMEPROF_VBO_REBUILD );
 	discv_rebuild_batch( );
+	frameprof_bucket_end( FRAMEPROF_VBO_REBUILD );
 
 	/* Draw solid geometry from VBO batch */
 	if (discv_solid_batch.vertex_count > 0) {
@@ -693,7 +707,9 @@ discv_draw( boolean high_detail )
 			discv_setup_pick_shader( );
 		else
 			discv_setup_lit_shader( );
+		frameprof_bucket_begin( FRAMEPROF_VBO_SOLID );
 		vbo_batch_draw( &discv_solid_batch );
+		frameprof_bucket_end( FRAMEPROF_VBO_SOLID );
 		if (picking_mode)
 			shader_program_unuse( );
 		else {
@@ -704,11 +720,17 @@ discv_draw( boolean high_detail )
 	if (high_detail && labels_visible) {
 		glLineWidth( 3.0 );
 
-		/* Node name labels */
-		text_pre( );
-		text_set_color( 0.0, 0.0, 0.0 );
-		discv_draw_recursive( globals.fstree, 0.0, 0.0, 1.0 );
-		text_post( );
+		/* Label-vertex cache: if valid, replay with current
+		 * camera matrix and skip the walk entirely. Else, walk
+		 * and refill the cache. */
+		frameprof_bucket_begin( FRAMEPROF_LABEL_WALK );
+		if (!text_cache_replay( )) {
+			text_cache_begin_emit( );
+			text_set_color( 0.0, 0.0, 0.0 );
+			discv_draw_recursive( globals.fstree, 0.0, 0.0, 1.0 );
+			text_cache_end_emit( );
+		}
+		frameprof_bucket_end( FRAMEPROF_LABEL_WALK );
 
 		/* Node cursor */
 		discv_draw_cursor( CURSOR_POS(camera->pan_part) );
@@ -1281,10 +1303,33 @@ mapv_draw_recursive( GNode *dnode, double acc_z )
 				mapv_apply_label( dnode );
 			}
 			else {
+				/* Per-leaf label cull (Phase 39.4 Option A):
+				 * the parent-directory cull above only checks
+				 * whether THIS directory is large enough to
+				 * label. For a directory containing thousands
+				 * of small file children, the dir passes the
+				 * cull and we emit a label per child even when
+				 * most are sub-pixel. Now that text_flush is
+				 * one call per frame (39.1 follow-up 2), each
+				 * skipped label saves CPU vertex emission AND
+				 * GL upload bandwidth. */
 				node = dnode->children;
 				while (node != NULL) {
-					if (!NODE_IS_DIR(node))
-						mapv_apply_label( node );
+					if (!NODE_IS_DIR(node)) {
+						MapVGeomParams *cgp =
+							MAPV_GEOM_PARAMS(node);
+						double chw = 0.5 * (cgp->c1.x - cgp->c0.x);
+						double chd = 0.5 * (cgp->c1.y - cgp->c0.y);
+						double chr = MAX(chw, chd);
+						if (chr > 0.0
+						    && screen_size_pixels(
+						           0.5 * (cgp->c0.x + cgp->c1.x),
+						           0.5 * (cgp->c0.y + cgp->c1.y),
+						           node_z + cgp->height,
+						           chr )
+						       >= LABEL_SIZE_THRESHOLD)
+							mapv_apply_label( node );
+					}
 					node = node->next;
 				}
 			}
@@ -1621,6 +1666,7 @@ mapv_rebuild_batch( void )
 	                      globals.fstree, 0.0, 1.0 );
 	vbo_batch_upload( &mapv_solid_batch );
 	vbo_batch_upload( &mapv_outline_batch );
+	frameprof_vbo_rebuild_done( );
 }
 
 
@@ -1686,10 +1732,14 @@ mapv_teardown_pick_shader( void )
 static void
 mapv_draw( boolean high_detail )
 {
+	frameprof_bucket_begin( FRAMEPROF_FRUSTUM_EXTRACT );
 	frustum_extract( );
+	frameprof_bucket_end( FRAMEPROF_FRUSTUM_EXTRACT );
 
 	/* Rebuild VBO batch if geometry changed */
+	frameprof_bucket_begin( FRAMEPROF_VBO_REBUILD );
 	mapv_rebuild_batch( );
+	frameprof_bucket_end( FRAMEPROF_VBO_REBUILD );
 
 	/* Draw solid geometry from VBO batch */
 	if (mapv_solid_batch.vertex_count > 0) {
@@ -1697,7 +1747,9 @@ mapv_draw( boolean high_detail )
 			mapv_setup_pick_shader( );
 		else
 			mapv_setup_lit_shader( 1.0f );
+		frameprof_bucket_begin( FRAMEPROF_VBO_SOLID );
 		vbo_batch_draw( &mapv_solid_batch );
+		frameprof_bucket_end( FRAMEPROF_VBO_SOLID );
 		if (picking_mode)
 			mapv_teardown_pick_shader( );
 		else
@@ -1710,18 +1762,24 @@ mapv_draw( boolean high_detail )
 			glDisable( GL_CULL_FACE );
 
 			mapv_setup_lit_shader( 0.0f );
+			frameprof_bucket_begin( FRAMEPROF_VBO_OUTLINE );
 			vbo_batch_draw_lines( &mapv_outline_batch );
+			frameprof_bucket_end( FRAMEPROF_VBO_OUTLINE );
 			mapv_teardown_lit_shader( );
 
 			glEnable( GL_CULL_FACE );
 		}
 
 		if (labels_visible) {
-			/* Node name labels */
-			text_pre( );
-			text_set_color( 0.0, 0.0, 0.0 );
-			mapv_draw_recursive( globals.fstree, 0.0 );
-			text_post( );
+			/* Label-vertex cache (see discv_draw). */
+			frameprof_bucket_begin( FRAMEPROF_LABEL_WALK );
+			if (!text_cache_replay( )) {
+				text_cache_begin_emit( );
+				text_set_color( 0.0, 0.0, 0.0 );
+				mapv_draw_recursive( globals.fstree, 0.0 );
+				text_cache_end_emit( );
+			}
+			frameprof_bucket_end( FRAMEPROF_LABEL_WALK );
 
 			/* Node cursor */
 			mapv_draw_cursor( CURSOR_POS(camera->pan_part) );
@@ -3183,6 +3241,7 @@ treev_rebuild_batch( void )
 	vbo_batch_upload( &treev_solid_batch );
 	vbo_batch_upload( &treev_branch_batch );
 	vbo_batch_upload( &treev_outline_batch );
+	frameprof_vbo_rebuild_done( );
 }
 
 
@@ -3617,14 +3676,39 @@ treev_draw_recursive( GNode *dnode, double prev_r0, double r0, double acc_theta 
 				/* Label directory platform */
 				text_set_color( treev_platform_label_color.r, treev_platform_label_color.g, treev_platform_label_color.b );
 				treev_apply_label( dnode, r0, FALSE );
-				/* Label leaf nodes that aren't directories */
+				/* Label leaf nodes that aren't directories.
+				 * Per-leaf screen-size cull. TreeV leaves are
+				 * uniform-size, so this either passes all or
+				 * rejects all on a given platform; the
+				 * threshold needs to be tight enough that the
+				 * leaf cube actually has room to hold a
+				 * readable label. A 12-pixel cube can fit ~4
+				 * tiny chars; typical filenames need 50+ px
+				 * to be readable. Use 4× the standard label
+				 * threshold for TreeV. */
+				#define TREEV_LEAF_LABEL_THRESHOLD (4.0 * LABEL_SIZE_THRESHOLD)
 				text_set_color( treev_leaf_label_color.r, treev_leaf_label_color.g, treev_leaf_label_color.b );
+				double leaf_acc_theta = acc_theta + dir_gparams->platform.theta;
+				double leaf_wz = dir_gparams->platform.height;
+				double leaf_half = 0.5 * TREEV_LEAF_NODE_EDGE;
 				node = dnode->children;
 				while (node != NULL) {
-					if (!NODE_IS_DIR(node))
-						treev_apply_label( node, r0, TRUE );
+					if (!NODE_IS_DIR(node)) {
+						TreeVGeomParams *cgp =
+							TREEV_GEOM_PARAMS(node);
+						double wr = r0 + cgp->leaf.distance;
+						double wt = RAD(leaf_acc_theta
+						              + cgp->leaf.theta);
+						double wx = wr * cos( wt );
+						double wy = wr * sin( wt );
+						if (screen_size_pixels(
+						        wx, wy, leaf_wz, leaf_half )
+						    >= TREEV_LEAF_LABEL_THRESHOLD)
+							treev_apply_label( node, r0, TRUE );
+					}
 					node = node->next;
 				}
+				#undef TREEV_LEAF_LABEL_THRESHOLD
 			}
 		}
 	}
@@ -3740,10 +3824,14 @@ treev_draw( boolean high_detail )
 		treev_needs_arrange = FALSE;
 	}
 
+	frameprof_bucket_begin( FRAMEPROF_FRUSTUM_EXTRACT );
 	frustum_extract( );
+	frameprof_bucket_end( FRAMEPROF_FRUSTUM_EXTRACT );
 
 	/* Rebuild VBO batches if geometry changed */
+	frameprof_bucket_begin( FRAMEPROF_VBO_REBUILD );
 	treev_rebuild_batch( );
+	frameprof_bucket_end( FRAMEPROF_VBO_REBUILD );
 
 	/* Draw solid geometry from VBO batch.
 	 * Keep polygon offset enabled so filled geometry is pushed
@@ -3754,14 +3842,18 @@ treev_draw( boolean high_detail )
 			treev_setup_pick_shader( );
 		else
 			treev_setup_lit_shader( );
+		frameprof_bucket_begin( FRAMEPROF_VBO_SOLID );
 		vbo_batch_draw( &treev_solid_batch );
+		frameprof_bucket_end( FRAMEPROF_VBO_SOLID );
 		shader_program_unuse( );
 	}
 
 	/* Draw branches from VBO batch */
 	if (!picking_mode && treev_branch_batch.vertex_count > 0) {
 		treev_setup_lit_shader( );
+		frameprof_bucket_begin( FRAMEPROF_VBO_SOLID );
 		vbo_batch_draw( &treev_branch_batch );
+		frameprof_bucket_end( FRAMEPROF_VBO_SOLID );
 		shader_program_unuse( );
 	}
 
@@ -3771,16 +3863,22 @@ treev_draw( boolean high_detail )
 		if (!picking_mode && treev_outline_batch.vertex_count > 0) {
 			glDisable( GL_CULL_FACE );
 			treev_setup_lit_shader_ex( 0.0f );
+			frameprof_bucket_begin( FRAMEPROF_VBO_OUTLINE );
 			vbo_batch_draw_lines( &treev_outline_batch );
+			frameprof_bucket_end( FRAMEPROF_VBO_OUTLINE );
 			shader_program_unuse( );
 			glEnable( GL_CULL_FACE );
 		}
 
 		if (labels_visible) {
-			/* Node name labels */
-			text_pre( );
-			treev_draw_recursive( globals.fstree, NIL, treev_core_radius, 0.0 );
-			text_post( );
+			/* Label-vertex cache (see discv_draw). */
+			frameprof_bucket_begin( FRAMEPROF_LABEL_WALK );
+			if (!text_cache_replay( )) {
+				text_cache_begin_emit( );
+				treev_draw_recursive( globals.fstree, NIL, treev_core_radius, 0.0 );
+				text_cache_end_emit( );
+			}
+			frameprof_bucket_end( FRAMEPROF_LABEL_WALK );
 
 			/* Node cursor */
 			treev_draw_cursor( CURSOR_POS(camera->pan_part) );
@@ -3988,6 +4086,11 @@ static FsvMode geometry_prebuilt_mode = FSV_NONE;
 void
 geometry_init( FsvMode mode )
 {
+	/* Layout for a new mode has different label positions, and
+	 * a fresh scan replaces every node — either way the cached
+	 * label vertex buffer is stale. */
+	text_cache_invalidate( );
+
 	DIR_NODE_DESC(globals.fstree)->deployment = 1.0;
 	geometry_queue_rebuild( globals.fstree );
 
@@ -4520,6 +4623,7 @@ void
 geometry_toggle_labels( void )
 {
 	labels_visible = !labels_visible;
+	text_cache_invalidate( );
 	redraw( );
 }
 

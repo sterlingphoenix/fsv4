@@ -37,6 +37,11 @@ void ogl_draw( void );
 unsigned int ogl_color_pick( int x, int y, unsigned int *face_id );
 void ogl_pick_invalidate( void );
 void ogl_cycle_background( void );
+
+/* The camera-only modelview matrix as of the most recent ogl_draw
+ * frame. Used by tmaptext's label-vertex cache to store world-space
+ * coordinates and re-project per frame without a tree walk. */
+const float *ogl_get_camera_modelview( void );
 #ifdef GTK_WIDGET
 GtkWidget *ogl_widget_new( void );
 gboolean ogl_gl_query( void );
