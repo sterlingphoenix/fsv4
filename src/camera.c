@@ -171,17 +171,15 @@ camera_init( FsvMode mode, boolean initial_view )
 	camera->pan_part = 1.0;
 	switch (mode) {
 		case FSV_DISCV:
-		d = field_distance( camera->fov, 2.0 * DISCV_GEOM_PARAMS(root_dnode)->radius );
-		if (initial_view) {
-			camera->distance = 2.0 * d;
-			DISCV_CAMERA(camera)->target.x = 0.0;
-			DISCV_CAMERA(camera)->target.y = 0.0;
-		}
-		else {
-			camera->distance = 3.0 * d;
-			DISCV_CAMERA(camera)->target.x = 0.0;
-			DISCV_CAMERA(camera)->target.y = 0.0;
-		}
+		/* Frame the root's whole system (subtree bounding circle),
+		 * not just the root disc */
+		d = field_distance( camera->fov, 2.0 * DISCV_GEOM_PARAMS(root_dnode)->bound );
+		if (initial_view)
+			camera->distance = 1.25 * d;
+		else
+			camera->distance = 1.5 * d;
+		DISCV_CAMERA(camera)->target.x = DISCV_GEOM_PARAMS(root_dnode)->bound_ofs.x;
+		DISCV_CAMERA(camera)->target.y = DISCV_GEOM_PARAMS(root_dnode)->bound_ofs.y;
 		camera->near_clip = 0.9375 * camera->distance;
 		camera->far_clip = 1.0625 * camera->distance;
 		break;
@@ -817,17 +815,27 @@ discv_look_at( GNode *node, MorphType mtype, double pan_time_override )
 
 	/* Construct desired camera state */
 
-	/* Distance from target point */
-	new_cam->distance = 2.0 * field_distance( camera->fov, 2.0 * DISCV_GEOM_PARAMS(node)->radius );
+	node_pos = geometry_discv_node_pos( node );
+
+	if (NODE_IS_DIR(node) && dirtree_entry_expanded( node )) {
+		/* Expanded (or expanding — the directory tree is updated
+		 * before the camera pan starts) directory: frame the whole
+		 * satellite system, centered on its bounding circle, so
+		 * expansion never happens off-camera */
+		new_cam->distance = 1.25 * field_distance( camera->fov, 2.0 * DISCV_GEOM_PARAMS(node)->bound );
+		DISCV_CAMERA(new_cam)->target.x = node_pos->x + DISCV_GEOM_PARAMS(node)->bound_ofs.x;
+		DISCV_CAMERA(new_cam)->target.y = node_pos->y + DISCV_GEOM_PARAMS(node)->bound_ofs.y;
+	}
+	else {
+		/* File or collapsed directory: frame the disc itself */
+		new_cam->distance = 2.0 * field_distance( camera->fov, 2.0 * DISCV_GEOM_PARAMS(node)->radius );
+		DISCV_CAMERA(new_cam)->target.x = node_pos->x;
+		DISCV_CAMERA(new_cam)->target.y = node_pos->y;
+	}
 
 	/* Clipping plane distances */
 	new_cam->near_clip = 0.9375 * new_cam->distance;
 	new_cam->far_clip = 1.0625 * new_cam->distance;
-
-	/* Target point */
-	node_pos = geometry_discv_node_pos( node );
-	DISCV_CAMERA(new_cam)->target.x = node_pos->x;
-	DISCV_CAMERA(new_cam)->target.y = node_pos->y;
 
 	/* Duration of pan */
 	if (pan_time_override > 0.0)

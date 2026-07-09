@@ -2161,10 +2161,19 @@ Step 42.2e — Log checkbox state sync (v4.42.07)
       dialog's scale dropdown is startup-default-only — writes
       config, never the live flag — so no live path remained.)
       Tooltip no longer claims to be TreeV-only.
-  [ ] Build clean (v4.42.07). User verifies: checkbox reflects the
-      real state at startup (esp. with "representative" in config),
-      stays in sync across mode switches and L-key toggles, and the
-      42.2d question stands: does Log mode bring the fractal back?
+  [x] Build clean (v4.42.07). User verdict on the layout: "Good
+      Enough" — "the Log mode is super weird, which I like. I
+      wouldn't call it fractal but I like it." Layout accepted.
+
+Step 42.3 progress (v4.42.08) — DiscV camera framing on bounds:
+  [x] discv_look_at: an expanded/expanding directory (dirtree state,
+      which is updated before the camera pan starts) is framed by
+      its subtree BOUND, targeted at the bound's offset center —
+      expansion can no longer happen off-camera (user request:
+      "small zoom out when expanding"). Files and collapsed dirs
+      keep tight disc framing.
+  [x] camera_init (DiscV): frames the root's bound instead of the
+      root disc; target = root bound center.
 
 Step 42.3 — Camera, scrollbars, culling on bounds
   [ ] discv camera look_at framing: frame a directory by its BOUND
