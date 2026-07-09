@@ -220,7 +220,7 @@ struct _NodeDesc {
 typedef struct _DirNodeDesc DirNodeDesc;
 struct _DirNodeDesc {
 	NodeDesc	node_desc;
-	double		geomparams2[3];	/* More geometry parameters */
+	double		geomparams2[5];	/* More geometry parameters */
 	double		deployment;	/* 0 == collapsed, 1 == expanded */
 	/* Subtree information. The quantities here do not include the
 	 * contribution of the root of the subtree (i.e. THIS node) */

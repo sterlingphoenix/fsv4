@@ -1547,25 +1547,28 @@ camera_pan( double dx, double dy )
 
 		case FSV_TREEV:
 		{
-			/* Effective heading combines camera orbit angle
-			 * and target angular position */
-			double eff = RAD(camera->theta + TREEV_CAMERA(camera)->target.theta);
-			double ph = RAD(camera->phi);
-			double rx =  sin( eff );
-			double ry = -cos( eff );
-			double ux =  cos( eff ) * sin( ph );
-			double uy =  sin( eff ) * sin( ph );
-			double uz =  cos( ph );
+			/* Navigate cylindrically: screen-vertical walks
+			 * radially (along the spokes), screen-horizontal
+			 * walks along the arcs, both oriented by the
+			 * camera's orbit angle so the controls follow the
+			 * view. A straight Cartesian pan converted back to
+			 * cylindrical swings theta wildly near the core,
+			 * and bleeding pan speed into target.z at shallow
+			 * camera angles reads as up/down motion */
+			double thc = RAD(camera->theta);
+			double r = TREEV_CAMERA(camera)->target.r;
+			double dr = (dx * sin( thc ) + dy * cos( thc )) * scale;
+			double arc = (-dx * cos( thc ) + dy * sin( thc )) * scale;
+			double theta;
 
-			/* Pan in Cartesian, then convert back to cylindrical */
-			double old_r = TREEV_CAMERA(camera)->target.r;
-			double old_th = RAD(TREEV_CAMERA(camera)->target.theta);
-			double wx = old_r * cos( old_th ) + (dx * rx + dy * ux) * scale;
-			double wy = old_r * sin( old_th ) + (dx * ry + dy * uy) * scale;
-
-			TREEV_CAMERA(camera)->target.r = sqrt( wx * wx + wy * wy );
-			TREEV_CAMERA(camera)->target.theta = atan2( wy, wx ) / (PI / 180.0);
-			TREEV_CAMERA(camera)->target.z += dy * uz * scale;
+			TREEV_CAMERA(camera)->target.r = MAX(0.0, r + dr);
+			theta = TREEV_CAMERA(camera)->target.theta
+			        + DEG(arc / MAX(r, TREEV_LEAF_NODE_EDGE));
+			while (theta > 180.0)
+				theta -= 360.0;
+			while (theta < -180.0)
+				theta += 360.0;
+			TREEV_CAMERA(camera)->target.theta = theta;
 		}
 		break;
 

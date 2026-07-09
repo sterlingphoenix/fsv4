@@ -1,5 +1,5 @@
 project('fsv', 'c',
-  version : '4.39.10',
+  version : '4.41.06',
   default_options : ['warning_level=2', 'buildtype=debugoptimized'],
   meson_version : '>= 0.55',
 )

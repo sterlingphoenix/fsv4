@@ -86,6 +86,15 @@ struct _TreeVGeomParams {
 		double height;
 		/* Overall arc width of subtree */
 		double subtree_arc_width;
+		/* Radial offset of this platform's row base, relative to
+		 * the parent's first-row base radius (0 for row 0).
+		 * Note: TreeVGeomParams overlays NodeDesc.geomparams[5] +
+		 * DirNodeDesc.geomparams2[]; the two fields below spill
+		 * into geomparams2 and exist for directories only */
+		double row_offset;
+		/* Radial extent of this node's expanded subtree, from its
+		 * own r0 to the outer edge of its outermost descendant row */
+		double subtree_depth;
 	} platform;
 };
 
@@ -95,6 +104,7 @@ double geometry_mapv_node_z0( GNode *node );
 double geometry_mapv_max_expanded_height( GNode *dnode );
 boolean geometry_treev_is_leaf( GNode *node );
 double geometry_treev_platform_r0( GNode *dnode );
+double geometry_treev_scene_radius( void );
 double geometry_treev_platform_theta( GNode *dnode );
 double geometry_treev_max_leaf_height( GNode *dnode );
 void geometry_treev_get_extents( GNode *dnode, RTvec *ext_c0, RTvec *ext_c1 );
