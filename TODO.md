@@ -1875,9 +1875,10 @@ Step 41.3 — Branch drawing for rows (v4.41.03)
       fully-expanded member get no arc (stem passes through to the
       next row that has one), matching the old behavior for
       mid-morph children.
-  [ ] Build clean (v4.41.03). User verifies every platform is
-      connected by branches (small, medium, large trees; partial
-      expansions too).
+  [x] Build clean (v4.41.03). Superseded by 41.5's scaffolding
+      redesign after user feedback (the chained center stem made
+      wrapped siblings read as descendants); final connectivity
+      verified at the 41.6 checkpoint.
 
 Step 41.4 — Extents, camera framing, scroll ranges (v4.41.04+)
   [x] WASD/arrow panning (v4.41.04): camera_pan's TreeV branch
@@ -1924,8 +1925,8 @@ Step 41.4 — Extents, camera framing, scroll ranges (v4.41.04+)
       tether is nearly a no-op, and the angle/distance freeze is
       still useful while morphs run. Harmless now; simplification
       possible later but not worth the regression risk.
-  [ ] Scrollbar ranges during/after expand-all: not explicitly
-      exercised — folded into the 41.6 checkpoint list.
+  [x] Scrollbar ranges during/after expand-all: exercised as part
+      of the 41.6 checkpoint — passed.
 
 Step 41.5 — Row scaffolding readability (v4.41.05)
   (Original 41.5 content — animation stability via end-state row
@@ -1954,7 +1955,8 @@ Step 41.5 — Row scaffolding readability (v4.41.05)
       taken as the price of the void/blinking fix. User then tuned
       TREEV_MAX_SUBTREE_ARC to 220.0 to reduce wrapping.
 
-Step 41.6 — Checkpoint
+Step 41.6 — Checkpoint  [PASSED at v4.41.06 — full checklist
+  confirmed by user on small/medium/massive trees; merged to main]
   Checkpoint: User confirms on small, medium, and large trees:
     - Expand All ends with the whole tree visible and frameable;
       'R' reset frames it; no void at any point during animation
