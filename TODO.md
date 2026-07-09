@@ -1907,16 +1907,25 @@ Step 41.4 — Extents, camera framing, scroll ranges (v4.41.04+)
       deferred item).
   [x] User settled TREEV_MAX_SUBTREE_ARC at 220.0 after trying
       values (user's own edit, v4.41.05 era).
-  [ ] Verify geometry_treev_get_extents includes row offsets (should
-      fall out of 41.1, confirm with a deep+wide expansion).
-  [ ] Verify camera_look_at / 'R' reset / double-click navigation
-      land correctly on platforms in outer rows; fix targeting if
-      geometry_treev_platform_r0 disagrees with drawn positions.
-  [ ] Re-evaluate colexp.c's treev_camera_locked mechanism: with a
-      compact scene the tethering may be unnecessary or simplifiable.
-      Do not remove without testing Expand All on the large tree.
-  [ ] Verify scrollbar ranges during/after expand-all. Build. User
-      tests navigation end-to-end.
+  [x] Verify geometry_treev_get_extents includes row offsets:
+      confirmed via user testing — whole-tree framing after Expand
+      All on massive trees shows the full disc sector including all
+      outer rows, with the far-plane clamp keeping it drawn.
+  [x] Verify camera_look_at / 'R' reset / double-click navigation
+      land correctly on platforms in outer rows: confirmed — Up
+      lands on the true parent (targeting goes through row-aware
+      geometry_treev_platform_r0); the initial "didn't seem right"
+      report was the changed spatial intuition (radially-inward
+      neighbor is now usually an inner-row sibling, not the parent),
+      resolved by the 41.5 scaffolding making the distinction
+      visible.
+  [x] treev_camera_locked (colexp.c) kept as-is: with the compact
+      layout, root r0 barely moves during expand-all so the radial
+      tether is nearly a no-op, and the angle/distance freeze is
+      still useful while morphs run. Harmless now; simplification
+      possible later but not worth the regression risk.
+  [ ] Scrollbar ranges during/after expand-all: not explicitly
+      exercised — folded into the 41.6 checkpoint list.
 
 Step 41.5 — Row scaffolding readability (v4.41.05)
   (Original 41.5 content — animation stability via end-state row
@@ -1941,9 +1950,9 @@ Step 41.5 — Row scaffolding readability (v4.41.05)
       through-line past the first row is gone. Every row straddles
       the parent centerline so consecutive arc spans always overlap
       and the rails always land on both arcs.
-  [ ] Build clean (v4.41.05). User judges: wrapped rows must read as
-      "same generation, continued" (amber ladder), not as children
-      (red stem+arc); no more single merged spine through the tree.
+  [x] Build clean (v4.41.05). User verdict: "acceptable — not ideal",
+      taken as the price of the void/blinking fix. User then tuned
+      TREEV_MAX_SUBTREE_ARC to 220.0 to reduce wrapping.
 
 Step 41.6 — Checkpoint
   Checkpoint: User confirms on small, medium, and large trees:
