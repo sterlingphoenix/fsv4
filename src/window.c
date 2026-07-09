@@ -312,11 +312,16 @@ window_init( GtkApplication *app, FsvMode fsv_mode )
 			/* Scale mode checkbox — sits right after TreeV */
 			{
 				GtkWidget *log_check = gtk_check_button_new_with_label( _("Log") );
-				gtk_check_button_set_active( GTK_CHECK_BUTTON(log_check), TRUE );
+				/* Reflect the actual flag, not a hardcoded
+				 * default (config may have loaded
+				 * "representative") */
+				gtk_check_button_set_active( GTK_CHECK_BUTTON(log_check),
+					geometry_treev_get_scale_logarithmic( ) );
 				gtk_widget_add_css_class( log_check, "toolbar-check" );
 				gtk_widget_set_tooltip_text( log_check,
-					_("Logarithmic vs representative TreeV scale (L)") );
-				gtk_widget_set_sensitive( log_check, fsv_mode == FSV_TREEV );
+					_("Logarithmic vs representative size scale (L)") );
+				gtk_widget_set_sensitive( log_check,
+					fsv_mode == FSV_TREEV || fsv_mode == FSV_DISCV );
 				g_signal_connect( log_check, "toggled",
 					G_CALLBACK(on_scale_mode_toggled), NULL );
 				gtk_box_append( GTK_BOX(vis_box), log_check );
@@ -566,10 +571,12 @@ window_set_access( boolean enabled )
 		llink = llink->next;
 	}
 
-	/* Log checkbox: only sensitive in TreeV, regardless of access state */
+	/* Log checkbox: sensitive in TreeV and DiscV (the modes with
+	 * size-derived geometry scaling), regardless of access state */
 	if (scale_tbutton_w != NULL)
 		gtk_widget_set_sensitive( scale_tbutton_w,
-			enabled && globals.fsv_mode == FSV_TREEV );
+			enabled && (globals.fsv_mode == FSV_TREEV
+			            || globals.fsv_mode == FSV_DISCV) );
 
 	/* Show busy cursor when access is disabled */
 	if (main_window_w_saved != NULL)
@@ -598,10 +605,11 @@ on_vis_mode_toggled( GtkToggleButton *tbutton, gpointer user_data )
 	g_action_change_state( G_ACTION(vis_mode_action),
 		g_variant_new_string( mode_str ) );
 
-	/* Log checkbox only relevant in TreeV */
+	/* Log checkbox relevant in TreeV and DiscV */
 	if (scale_tbutton_w != NULL)
 		gtk_widget_set_sensitive( scale_tbutton_w,
-			strcmp( mode_str, "treev" ) == 0 );
+			strcmp( mode_str, "treev" ) == 0
+			|| strcmp( mode_str, "discv" ) == 0 );
 
 	if (main_gl_area_w != NULL)
 		gtk_widget_grab_focus( main_gl_area_w );
@@ -719,9 +727,22 @@ window_set_vis_mode( FsvMode mode )
 			G_CALLBACK(on_vis_mode_toggled), TRUE );
 	}
 
-	/* Scale toggle only available in TreeV */
-	if (scale_tbutton_w != NULL)
-		gtk_widget_set_sensitive( scale_tbutton_w, mode == FSV_TREEV );
+	/* Scale toggle: available in TreeV and DiscV. Re-sync the
+	 * checkbox to the actual flag (signal-blocked — this is a
+	 * view of the state, not an input) in case the flag changed
+	 * behind the toolbar's back (config load, settings dialog) */
+	if (scale_tbutton_w != NULL) {
+		boolean log_on = geometry_treev_get_scale_logarithmic( );
+		if (gtk_check_button_get_active( GTK_CHECK_BUTTON(scale_tbutton_w) ) != log_on) {
+			g_signal_handlers_block_by_func( G_OBJECT(scale_tbutton_w),
+				G_CALLBACK(on_scale_mode_toggled), NULL );
+			gtk_check_button_set_active( GTK_CHECK_BUTTON(scale_tbutton_w), log_on );
+			g_signal_handlers_unblock_by_func( G_OBJECT(scale_tbutton_w),
+				G_CALLBACK(on_scale_mode_toggled), NULL );
+		}
+		gtk_widget_set_sensitive( scale_tbutton_w,
+			mode == FSV_TREEV || mode == FSV_DISCV );
+	}
 }
 
 

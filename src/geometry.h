@@ -45,10 +45,22 @@
 /* Geometry parameters for a node in DiscV mode */
 typedef struct _DiscVGeomParams DiscVGeomParams;
 struct _DiscVGeomParams {
-	/* WORK IN PROGRESS */
 	double	radius;	/* Radius of node disc */
 	double	theta;	/* Angle position on parent disc */
 	XYvec	pos;	/* Center of disc w.r.t. center of parent (derived) */
+	/* Radius of the subtree bounding circle: encloses this node's
+	 * disc plus all descendant orbits, computed bottom-up. Siblings
+	 * are spaced by bounds, making subtree overlap impossible.
+	 * (5th double — exactly fills NodeDesc.geomparams[5]) */
+	double	bound;
+	/* Offset of the bounding circle's center relative to the disc
+	 * center. Letting the enclosure float off-center keeps chains
+	 * (dominant single subdirectory per level) from doubling the
+	 * bound at every depth level. NOTE: these spill into
+	 * DirNodeDesc.geomparams2 — they exist for directories (and
+	 * the metanode) ONLY and must never be accessed on leaves
+	 * (leaf bound is the disc itself: offset conceptually zero) */
+	XYvec	bound_ofs;
 };
 
 /* Geometry parameters for a node in MapV mode */
