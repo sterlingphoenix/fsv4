@@ -213,6 +213,11 @@ screen_size_pixels( double cx, double cy, double cz, double radius )
  * cleared after treev_arrange() runs */
 static boolean treev_needs_arrange = FALSE;
 
+/* TRUE = logarithmic size scaling, FALSE = representative.
+ * Controls TreeV leaf heights AND DiscV disc radii (named for the
+ * mode that had it first) */
+static boolean treev_scale_logarithmic = TRUE;
+
 
 
 
@@ -231,8 +236,186 @@ static void discv_draw_cursor( double pos );
 
 /* Geometry constants */
 #define DISCV_CURVE_GRANULARITY		15.0
-#define DISCV_LEAF_RANGE_ARC_WIDTH	315.0
-#define DISCV_LEAF_STEM_PROPORTION	0.5
+/* Clearance between a directory's disc rim and the inner edge of its
+ * first orbit ring (factor on the disc radius) */
+#define DISCV_RING_CLEARANCE		1.15
+/* Padding factor applied to a subtree's bounding circle */
+#define DISCV_BOUND_PADDING		1.05
+/* Disc radius per log2(size) in logarithmic scaling mode */
+#define DISCV_LOG_RADIUS_FACTOR		16.0
+
+
+/* --- Front-chain circle packing --------------------------------
+ * After Wang et al., "Visualization of large hierarchical data by
+ * circle packing" (2006), as popularized by d3-hierarchy's
+ * packSiblings. Circles are placed one at a time, each tangent to
+ * two circles of the front chain, always at the candidate position
+ * closest to the origin — so small circles nestle into the gaps
+ * between large ones. Exact tangency: no overlap, ever */
+
+typedef struct {
+	double x, y, r;
+} PackCircle;
+
+
+/* Positions circle c externally tangent to circles a and b
+ * (argument order matches the d3 reference implementation) */
+static void
+pack_place( const PackCircle *b, const PackCircle *a, PackCircle *c )
+{
+	double dx = b->x - a->x, dy = b->y - a->y;
+	double d2 = dx * dx + dy * dy;
+	double x, y, a2, b2;
+
+	if (d2 > 0.0) {
+		a2 = a->r + c->r; a2 *= a2;
+		b2 = b->r + c->r; b2 *= b2;
+		if (a2 > b2) {
+			x = (d2 + b2 - a2) / (2.0 * d2);
+			y = sqrt( MAX(0.0, b2 / d2 - x * x) );
+			c->x = b->x - x * dx - y * dy;
+			c->y = b->y - x * dy + y * dx;
+		}
+		else {
+			x = (d2 + a2 - b2) / (2.0 * d2);
+			y = sqrt( MAX(0.0, a2 / d2 - x * x) );
+			c->x = a->x + x * dx - y * dy;
+			c->y = a->y + x * dy + y * dx;
+		}
+	}
+	else {
+		c->x = a->x + c->r;
+		c->y = a->y;
+	}
+}
+
+
+static boolean
+pack_intersects( const PackCircle *a, const PackCircle *b )
+{
+	/* Relative epsilon: tangent circles must not count as
+	 * intersecting despite floating-point noise */
+	double dr = (a->r + b->r) * (1.0 - 1.0e-9);
+	double dx = b->x - a->x, dy = b->y - a->y;
+	return (dr > 0.0) && (dr * dr > dx * dx + dy * dy);
+}
+
+
+/* Chain-pair score: squared distance from the origin to the
+ * radius-weighted midpoint of the pair (chain node and successor).
+ * The pair with the lowest score is where the next circle goes */
+static double
+pack_score( const PackCircle *circles, const int *next, int node )
+{
+	const PackCircle *a = &circles[node];
+	const PackCircle *b = &circles[next[node]];
+	double ab = a->r + b->r;
+	double dx = (a->x * b->r + b->x * a->r) / ab;
+	double dy = (a->y * b->r + b->y * a->r) / ab;
+	return dx * dx + dy * dy;
+}
+
+
+/* Packs circles[0..n-1], in array order, into a tight cluster
+ * around the origin. Positions are written into the array */
+static void
+pack_circles( PackCircle *circles, int n )
+{
+	int *next, *prev;
+	int a, b, c, j, k, i, t;
+	int retries;
+	double sj, sk, aa, ca;
+	boolean retry;
+
+	/* Deliberate deviation from the reference: the reference
+	 * centers the first PAIR around the origin, letting the first
+	 * circle drift off-center within its cluster. We pin circle 0
+	 * (the nucleus — the parent disc) at the origin instead; the
+	 * insertion scoring already prefers positions nearest the
+	 * origin, so subsequent circles wrap around the nucleus in
+	 * concentric shells — the orbit look, packed tight */
+	if (n < 1)
+		return;
+	circles[0].x = 0.0;
+	circles[0].y = 0.0;
+	if (n < 2)
+		return;
+	circles[1].x = circles[0].r + circles[1].r;
+	circles[1].y = 0.0;
+	if (n < 3)
+		return;
+
+	pack_place( &circles[1], &circles[0], &circles[2] );
+
+	/* Front chain as an index-based circular doubly-linked list */
+	next = NEW_ARRAY(int, n);
+	prev = NEW_ARRAY(int, n);
+	a = 0; b = 1; c = 2;
+	next[a] = b; prev[c] = b;
+	next[b] = c; prev[a] = c;
+	next[c] = a; prev[b] = a;
+	/* NB: the main loop enters with the pair (a, b) = (0, 1) —
+	 * NOT (a, c) — matching the reference implementation */
+
+	i = 3;
+	retries = 0;
+	while (i < n) {
+		/* NB: pack_place's parameter order is (b, a, c), and the
+		 * reference algorithm calls it with the chain pair
+		 * reversed — chain-a binds to parameter b */
+		pack_place( &circles[a], &circles[b], &circles[i] );
+		c = i;
+
+		/* Walk the chain both ways (nearer direction first, by
+		 * accumulated arc length) looking for an intersection */
+		j = next[b]; k = prev[a];
+		sj = circles[b].r; sk = circles[a].r;
+		retry = FALSE;
+		do {
+			if (sj <= sk) {
+				if (pack_intersects( &circles[j], &circles[c] )) {
+					/* Cut chain forward to j and retry */
+					b = j; next[a] = b; prev[b] = a;
+					retry = TRUE;
+					break;
+				}
+				sj += circles[j].r; j = next[j];
+			}
+			else {
+				if (pack_intersects( &circles[k], &circles[c] )) {
+					/* Cut chain backward to k and retry */
+					a = k; next[a] = b; prev[b] = a;
+					retry = TRUE;
+					break;
+				}
+				sk += circles[k].r; k = prev[k];
+			}
+		} while (j != next[k]);
+		if (retry && ++retries <= 2 * n)
+			continue;
+		retries = 0;
+
+		/* Insert c between a and b */
+		prev[c] = a; next[c] = b;
+		next[a] = c; prev[b] = c;
+		b = c;
+
+		/* New insertion point: the chain pair closest to origin */
+		aa = pack_score( circles, next, a );
+		for (t = next[b]; t != b; t = next[t]) {
+			ca = pack_score( circles, next, t );
+			if (ca < aa) {
+				a = t;
+				aa = ca;
+			}
+		}
+		b = next[a];
+		++i;
+	}
+
+	xfree( next );
+	xfree( prev );
+}
 
 /* (DiscV draw messages enum removed — recursive draw only does labels now) */
 
@@ -277,20 +460,21 @@ discv_node_compare( GNode *a, GNode *b )
 }
 
 
-/* Helper function for discv_init( ) */
+/* Helper function for discv_init( ). Computes the layout bottom-up:
+ * every node gets a subtree bounding circle (its disc plus all
+ * descendant orbits), and children are placed around their parent
+ * spaced by those bounds — sibling subtrees can never overlap.
+ * Slot math: a circle of radius b centered at distance d from the
+ * parent is exactly inscribed in the cone of half-angle asin(b/d),
+ * so disjoint cones imply disjoint bounding circles */
 static void
-discv_init_recursive( GNode *dnode, double stem_theta )
+discv_init_recursive( GNode *dnode )
 {
 	DiscVGeomParams *gparams;
 	GNode *node;
 	GList *node_list = NULL, *nl_llink;
 	int64 node_size;
-	double dir_radius, radius, dist;
-	double arc_width, total_arc_width = 0.0;
-	double theta0, theta1;
-	double k;
-	boolean even = TRUE;
-	boolean stagger, out = TRUE;
+	double dir_radius;
 
 	g_assert( NODE_IS_DIR(dnode) || NODE_IS_METANODE(dnode) );
 
@@ -303,31 +487,39 @@ discv_init_recursive( GNode *dnode, double stem_theta )
 		geometry_queue_rebuild( dnode );
 	}
 
-	/* If this directory has no children,
-	 * there is nothing further to do here */
-	if (dnode->children == NULL)
-		return;
-
 	dir_radius = DISCV_GEOM_PARAMS(dnode)->radius;
 
-	/* Assign radii (and arc widths, temporarily) to leaf nodes */
+	/* If this directory has no children, its subtree is its disc */
+	if (dnode->children == NULL) {
+		DISCV_GEOM_PARAMS(dnode)->bound = dir_radius;
+		DISCV_GEOM_PARAMS(dnode)->bound_ofs.x = 0.0;
+		DISCV_GEOM_PARAMS(dnode)->bound_ofs.y = 0.0;
+		return;
+	}
+
+	/* Assign disc radii to children (disc area == node size), then
+	 * recurse so every child subtree's bound is known before any
+	 * placement happens */
 	node = dnode->children;
 	while (node != NULL) {
 		node_size = MAX(64, node_display_size( node ));
-		/* Area of disc == node_size */
-		radius = sqrt( (double)node_size / PI );
-		/* Center-to-center distance (parent to leaf) */
-		dist = dir_radius + radius * (1.0 + DISCV_LEAF_STEM_PROPORTION);
-		arc_width = 2.0 * DEG(asin( radius / dist ));
 		gparams = DISCV_GEOM_PARAMS(node);
-		gparams->radius = radius;
-		gparams->theta = arc_width; /* temporary value */
-		gparams->pos.x = dist; /* temporary value */
-		total_arc_width += arc_width;
+		if (treev_scale_logarithmic) {
+			/* Compressed sizing: keeps a 4KB file and a 4GB
+			 * directory within one visual order of magnitude */
+			gparams->radius = DISCV_LOG_RADIUS_FACTOR * log2( (double)node_size );
+		}
+		else {
+			/* Representative: disc area == node size */
+			gparams->radius = sqrt( (double)node_size / PI );
+		}
+		gparams->bound = gparams->radius;
+		if (NODE_IS_DIR(node))
+			discv_init_recursive( node ); /* computes its bound */
 		node = node->next;
 	}
 
-	/* Create a list of leaf nodes, sorted by size */
+	/* Create a list of children, sorted by size (largest first) */
 	node = dnode->children;
 	while (node != NULL) {
 		G_LIST_PREPEND(node_list, node);
@@ -335,47 +527,81 @@ discv_init_recursive( GNode *dnode, double stem_theta )
 	}
 	G_LIST_SORT(node_list, discv_node_compare);
 
-	k = DISCV_LEAF_RANGE_ARC_WIDTH / total_arc_width;
-	/* If this is going to be a tight fit, stagger the leaf nodes */
-	stagger = k <= 1.0;
+	/* Pack children tightly around the parent disc with front-chain
+	 * circle packing. The parent disc (plus clearance) is the first
+	 * circle — the nucleus; every child's ENCLOSURE circle is then
+	 * placed tangent to already-placed circles as close to the
+	 * cluster center as possible, so small items nestle into the
+	 * gaps between large subtrees instead of being exiled past
+	 * them. Afterwards everything is translated so the nucleus
+	 * sits at the local origin (= this node's disc center) */
+	{
+		PackCircle *circles;
+		int cn = 1, ci;
 
-	/* Assign angle positions to leaf nodes, arranging them in clockwise
-	 * order (spread out to occupy the entire available range), and
-	 * recurse into subdirectories */
-	theta0 = stem_theta - 180.0;
-	theta1 = stem_theta + 180.0;
-	nl_llink = node_list;
-	while (nl_llink != NULL) {
-		node = nl_llink->data;
-		gparams = DISCV_GEOM_PARAMS(node);
-		arc_width = k * gparams->theta;
-		dist = gparams->pos.x;
-		if (stagger && out) {
-			/* Push leaf out */
-			dist += 2.0 * gparams->radius;
+		circles = NEW_ARRAY(PackCircle, g_list_length( node_list ) + 1);
+		circles[0].r = DISCV_RING_CLEARANCE * dir_radius;
+		for (nl_llink = node_list; nl_llink != NULL; nl_llink = nl_llink->next) {
+			circles[cn].r = DISCV_GEOM_PARAMS((GNode *)nl_llink->data)->bound;
+			cn++;
 		}
-		if (nl_llink->prev == NULL) {
-			/* First (largest) node */
-			gparams->theta = theta0;
-			theta0 += 0.5 * arc_width;
-			theta1 -= 0.5 * arc_width;
-			out = !out;
+
+		pack_circles( circles, cn );
+
+		ci = 1;
+		for (nl_llink = node_list; nl_llink != NULL; nl_llink = nl_llink->next) {
+			double ex, ey;
+			node = nl_llink->data;
+			gparams = DISCV_GEOM_PARAMS(node);
+			ex = circles[ci].x - circles[0].x;
+			ey = circles[ci].y - circles[0].y;
+			if (NODE_IS_DIR(node)) {
+				gparams->pos.x = ex - gparams->bound_ofs.x;
+				gparams->pos.y = ey - gparams->bound_ofs.y;
+			}
+			else {
+				gparams->pos.x = ex;
+				gparams->pos.y = ey;
+			}
+			gparams->theta = DEG(atan2( ey, ex ));
+			ci++;
 		}
-		else if (even) {
-			gparams->theta = theta0 + 0.5 * arc_width;
-			theta0 += arc_width;
-			out = !out;
+
+		xfree( circles );
+	}
+
+	/* Tight enclosing circle of the disc plus all child enclosures
+	 * (Ritter expansion: start from the disc, grow toward anything
+	 * that pokes out). Allowing the center to float off the disc
+	 * keeps dominant-child chains from doubling the bound per
+	 * depth level */
+	{
+		double cx = 0.0, cy = 0.0, cr = dir_radius;
+
+		for (nl_llink = node_list; nl_llink != NULL; nl_llink = nl_llink->next) {
+			double ex, ey, d;
+			node = nl_llink->data;
+			gparams = DISCV_GEOM_PARAMS(node);
+			ex = gparams->pos.x;
+			ey = gparams->pos.y;
+			if (NODE_IS_DIR(node)) {
+				ex += gparams->bound_ofs.x;
+				ey += gparams->bound_ofs.y;
+			}
+			d = hypot( ex - cx, ey - cy );
+			if (d + gparams->bound > cr) {
+				double new_cr = 0.5 * (cr + d + gparams->bound);
+				if (d > EPSILON) {
+					cx += (ex - cx) * ((new_cr - cr) / d);
+					cy += (ey - cy) * ((new_cr - cr) / d);
+				}
+				cr = new_cr;
+			}
 		}
-		else {
-			gparams->theta = theta1 - 0.5 * arc_width;
-			theta1 -= arc_width;
-		}
-		gparams->pos.x = dist * cos( RAD(gparams->theta) );
-		gparams->pos.y = dist * sin( RAD(gparams->theta) );
-		if (NODE_IS_DIR(node))
-			discv_init_recursive( node, gparams->theta + 180.0 );
-		even = !even;
-		nl_llink = nl_llink->next;
+
+		DISCV_GEOM_PARAMS(dnode)->bound = DISCV_BOUND_PADDING * cr;
+		DISCV_GEOM_PARAMS(dnode)->bound_ofs.x = cx;
+		DISCV_GEOM_PARAMS(dnode)->bound_ofs.y = cy;
 	}
 
 	g_list_free( node_list );
@@ -400,10 +626,12 @@ discv_init( void )
 	gparams->radius = 0.0;
 	gparams->theta = 0.0;
 
-	discv_init_recursive( globals.fstree, 270.0 );
+	discv_init_recursive( globals.fstree );
 
-	gparams->pos.x = 0.0;
-	gparams->pos.y = - DISCV_GEOM_PARAMS(root_dnode)->radius;
+	/* Center the root disc at the origin */
+	gparams->pos.x = - DISCV_GEOM_PARAMS(root_dnode)->pos.x;
+	gparams->pos.y = - DISCV_GEOM_PARAMS(root_dnode)->pos.y;
+	gparams->bound = DISCV_GEOM_PARAMS(root_dnode)->bound;
 
 	/* Initialize cursor to root position */
 	discv_cursor_prev_pos.x = 0.0;
@@ -621,27 +849,34 @@ discv_draw_recursive( GNode *dnode, double acc_x, double acc_y, double acc_scale
 	GNode *node;
 	boolean dir_collapsed;
 	boolean dir_expanded;
-	double world_x, world_y, world_scale, world_radius;
+	double world_x, world_y, world_scale, world_bound;
+	double world_bx, world_by;
 	boolean visible;
 
 	dir_ndesc = DIR_NODE_DESC(dnode);
 	dir_gparams = DISCV_GEOM_PARAMS(dnode);
 
-	/* Compute world-space bounding sphere */
+	/* Compute world-space bounding sphere of the whole subtree.
+	 * Cull on the subtree BOUND, never the disc alone: with orbit
+	 * layout a tiny disc can own a huge satellite system, and
+	 * culling on the disc silently drops the system's labels */
 	world_x = acc_x + acc_scale * dir_gparams->pos.x;
 	world_y = acc_y + acc_scale * dir_gparams->pos.y;
 	world_scale = acc_scale * dir_ndesc->deployment;
-	world_radius = world_scale * dir_gparams->radius;
+	world_bound = world_scale * dir_gparams->bound;
+	/* The bounding circle floats off the disc center (dnode here is
+	 * always a directory/metanode, so bound_ofs is valid) */
+	world_bx = world_x + world_scale * dir_gparams->bound_ofs.x;
+	world_by = world_y + world_scale * dir_gparams->bound_ofs.y;
 
 	/* Size culling: skip entire subtree if projected size is tiny */
-	if (world_radius > 0.0 &&
-	    screen_size_pixels( world_x, world_y, 0.0, world_radius ) < CULL_SIZE_THRESHOLD)
+	if (world_bound > 0.0 &&
+	    screen_size_pixels( world_bx, world_by, 0.0, world_bound ) < CULL_SIZE_THRESHOLD)
 		return;
 
-	/* Frustum culling: test if this node's disc is on-screen
-	 * (don't skip subtree -- children may extend beyond parent disc) */
-	visible = world_radius <= 0.0 ||
-	          frustum_test_sphere( world_x, world_y, 0.0, world_radius );
+	/* Frustum culling: test the whole subtree's bounding circle */
+	visible = world_bound <= 0.0 ||
+	          frustum_test_sphere( world_bx, world_by, 0.0, world_bound );
 
 	glmath_push_modelview( );
 
@@ -652,8 +887,8 @@ discv_draw_recursive( GNode *dnode, double acc_x, double acc_y, double acc_scale
 	glmath_scaled( dir_ndesc->deployment,  dir_ndesc->deployment,  1.0 );
 
 	if (visible &&
-	    !(world_radius > 0.0 &&
-	      screen_size_pixels( world_x, world_y, 0.0, world_radius ) < LABEL_SIZE_THRESHOLD)) {
+	    !(world_bound > 0.0 &&
+	      screen_size_pixels( world_bx, world_by, 0.0, world_bound ) < LABEL_SIZE_THRESHOLD)) {
 		/* Label leaf nodes — per-leaf screen-size cull
 		 * (Phase 39.4 Option A). Same rationale as MapV. */
 		node = dnode->children;
@@ -1813,8 +2048,8 @@ enum {
 /* (TreeV draw messages enum removed — recursive draw only does labels now) */
 
 
-/* TRUE = logarithmic height scaling, FALSE = representative (sqrt) */
-static boolean treev_scale_logarithmic = TRUE;
+/* (treev_scale_logarithmic is declared near the top of the file —
+ * DiscV's layout honors it too) */
 
 /* Color of interconnecting branches */
 static RGBcolor branch_color = { 0.5, 0.0, 0.0 };
@@ -4762,7 +4997,8 @@ geometry_free_recursive( G_GNUC_UNUSED GNode *dnode )
 }
 
 
-/* Sets TreeV height scaling mode and reinitializes geometry */
+/* Sets size scaling mode (TreeV heights, DiscV disc radii) and
+ * reinitializes geometry */
 void
 geometry_treev_set_scale_logarithmic( boolean logarithmic )
 {
@@ -4771,9 +5007,9 @@ geometry_treev_set_scale_logarithmic( boolean logarithmic )
 
 	treev_scale_logarithmic = logarithmic;
 
-	/* If TreeV is active, reinitialize to recalculate heights */
-	if (globals.fsv_mode == FSV_TREEV) {
-		geometry_init( FSV_TREEV );
+	/* If an affected mode is active, reinitialize to recalculate */
+	if (globals.fsv_mode == FSV_TREEV || globals.fsv_mode == FSV_DISCV) {
+		geometry_init( globals.fsv_mode );
 		redraw( );
 	}
 }

@@ -1977,6 +1977,221 @@ Step 41.6 — Checkpoint  [PASSED at v4.41.06 — full checklist
     - Log-scale leaf heights looking flat (carried from FixTreeV)
 
 
+PHASE 42 — DISCV MULTI-RING ORBIT LAYOUT (fix disc overlap)
+============================================================
+
+Problem: DiscV sizes every disc from its own size and strings a
+directory's children around its rim, each claiming an angular slot
+proportional to its DISC alone (geometry.c discv_init_recursive).
+An expanded child brings its whole satellite system, none of which
+is accounted for in the slot — sibling subtrees plow through each
+other, worse with node count, until the view is a jumble of
+overlapping discs. Historical fixes spaced discs so far apart that
+visual relationships died: that is the sound completion of a
+SINGLE-ring layout (ring radius must grow linearly with total child
+breadth), and it's unusable. DiscV was disabled in the original fsv
+source, presumably for exactly this.
+
+Fix (user-selected direction): keep the orbiting fractal look
+("discs with children orbiting is a lovely visual — preserve it";
+containment/nested packing explicitly rejected as "MapV with more
+steps"; no drawn stems — proximity only). Two ingredients:
+  1. SUBTREE BOUNDING CIRCLES, computed bottom-up: every node gets a
+     bound radius enclosing its disc plus all descendant orbits.
+     Siblings are spaced by bounds, so overlap between subtrees is
+     impossible by construction — "the future" is priced in.
+  2. MULTI-RING ORBITS (the TreeV-rows trick in polar form): when a
+     directory's children don't fit one orbit ring, overflow wraps
+     into further concentric rings just beyond. Distance from the
+     parent grows ~sqrt(subtree) (area-driven), not linearly
+     (circumference-driven), so satellites keep hugging their parent.
+Layout is expansion-independent (bounds derive from the full tree),
+computed once per scan: expand/collapse only reveals/hides satellite
+systems (deployment scaling), never relayouts. Deterministic, cheap,
+build-once/draw-many preserved. Slot math: a circle of radius b at
+center distance d is exactly inscribed in the cone of half-angle
+asin(b/d), so disjoint cones ⇒ disjoint circles.
+Accepted cost: deep subtrees hold visible empty moats (convex
+reservation). A force-directed tightening pass stays a possible
+future phase; rejected as the foundation (non-deterministic,
+relayout ripples, tuning risk).
+
+Step 42.1 — Bounding circles + bound-spaced single ring (v4.42.01)
+  [x] Add `bound` to DiscVGeomParams (5th double: radius, theta,
+      pos.x, pos.y, bound — exactly fills geomparams[5], works for
+      leaves and dirs alike).
+  [x] Restructure discv_init_recursive to post-order: 1st pass
+      assigns children's disc radii (leaf bound = radius), 2nd pass
+      recurses into subdirectories (computes their bounds), 3rd pass
+      places children around the parent spaced by BOUNDS: child
+      center at d_i = ring_inner + b_i, slot = 2*asin(b_i/d_i),
+      full 360 degrees (the old 315-degree stem gap and the
+      stagger hack are gone — bounding circles isolate systems).
+      Slack distributed via k factor; overfull ring grows its inner
+      radius ×1.25 until fit (knowingly sparse on big directories;
+      rings come next). stem_theta parameter dropped; root system
+      centered at origin in discv_init.
+  [x] dnode bound = DISCV_BOUND_PADDING * max(d_i + b_i).
+  [x] Build clean (v4.42.01). User verified on a small directory:
+      no overlap anywhere ("discs almost touching but nothing on top
+      of each other"); sparse spread and missing labels reported —
+      the former is the known single-ring limitation (42.2), the
+      latter the disc-radius cull (42.3 item, pulled forward).
+
+Step 42.2 — Multi-ring wrap (v4.42.02)
+  [x] Fill ring 1 (sorted by size, largest first) until adding a
+      child would exceed 360 degrees; overflow starts ring 2 at
+      inner radius += (2 + DISCV_RING_GAP) * max_bound(ring); repeat
+      outward. Slack distributed per ring (k factor); a ring's first
+      member never wraps (any bound fits alone: half-angle <= 90).
+  [x] dnode bound = DISCV_BOUND_PADDING * max(d_i + b_i) across all
+      rings.
+  [x] Pulled forward from 42.3: discv_draw_recursive culls (subtree
+      size cull, frustum test, label gate) now use the world-scaled
+      subtree BOUND instead of the disc radius — a tiny disc owning
+      a huge satellite system no longer drops the system's labels.
+  [x] Build clean (v4.42.02). User: no overlap, but distances got
+      WORSE ("gave up zooming to find things"). Diagnosis below.
+
+Step 42.2b — Off-center enclosures (v4.42.03)
+  Root cause of the 42.2 distance explosion: the bounding circle was
+  CENTERED on the parent's disc, but a directory's disc is sized by
+  its own entry (~4KB → tiny) while its children orbit outside it.
+  For the ubiquitous dominant-child chain (src/main/java/...), a
+  centered enclosure must span disc → past the child system: radius
+  ≈ 2× the child's bound, i.e. a ×2 multiplier PER DEPTH LEVEL —
+  exponential in depth (12 levels ≈ ×4000). Small dirs show it
+  immediately (chains are everywhere), matching "if anything worse".
+  Fix: let the enclosure float off the disc center.
+  [x] DiscVGeomParams gains bound_ofs (XYvec, enclosure center
+      relative to disc center). Spills into geomparams2 — valid for
+      directories/metanode ONLY, never accessed on leaves.
+  [x] Ring placement positions each child's ENCLOSURE center on the
+      ring (that's what must not overlap); the child's disc sits at
+      enclosure center − bound_ofs. Cones still disjoint ⇒
+      enclosures still disjoint: overlap guarantee unchanged.
+  [x] After placement, each directory's own enclosure is computed by
+      Ritter expansion over {own disc} ∪ {child enclosures}: start
+      at the disc, expand toward anything poking out, letting the
+      center drift. Chain multiplier drops from ~2.0 to ~1.05–1.1
+      per level (plus DISCV_BOUND_PADDING).
+  [x] discv_draw_recursive culls test the bound circle at its offset
+      center (world_bx/world_by).
+  [x] Build clean (v4.42.03). User: "much better", but small files
+      in the root (e.g. TODO.md) still exiled "miles away" — rings
+      fill largest-first and advance by the largest member's
+      diameter, so the smallest items always land in the outermost
+      ring, past every big subtree, with no way to backfill the
+      empty space near the parent. Structural flaw of the cone-
+      partitioned ring approximation.
+
+Step 42.2c — Front-chain circle packing (v4.42.04)
+  Replace rings with the real thing: front-chain circle packing
+  (Wang et al. 2006, the d3 packSiblings algorithm). Circles are
+  placed one at a time (largest first), each externally tangent to
+  two circles of the front chain, always at the candidate pair
+  closest to the cluster center — small items nestle into the
+  crevices between big subtree enclosures. Deterministic, computed
+  once, exact tangency = overlap impossible.
+  [x] pack_place / pack_intersects (relative epsilon) / pack_score /
+      pack_circles: front chain as an index-based circular doubly-
+      linked list, with a bounded-retry guard (2n cuts per circle,
+      then force-insert) against pathological non-termination.
+  [x] discv_init_recursive: rings deleted. Circle 0 = nucleus (the
+      parent disc + DISCV_RING_CLEARANCE); children's enclosure
+      circles packed around it in size order; everything translated
+      so the nucleus lands at the node's disc center; child disc =
+      enclosure center - bound_ofs; theta = atan2 of final position.
+      Ritter enclosure over the result unchanged (DISCV_RING_GAP
+      constant retired).
+  [x] Build v4.42.04 had overlaps again — TWO transcription bugs in
+      the from-memory port of the reference algorithm: (1) the main
+      loop's place() call passes the chain pair in reversed
+      parameter order (the reference's API genuinely does this);
+      (2) a spurious `b = c` after chain init made the first
+      insertion splice between nodes 0 and 2 while next[0] still
+      pointed at 1, corrupting the chain so intersection checks
+      missed. Fixed against the actual d3-hierarchy siblings.js
+      source (fetched, not remembered).
+  [x] Standalone verification harness (scratchpad pack_test.c):
+      extracts the pack_* code verbatim from geometry.c, packs 200
+      randomized directories (up to 6000 children, radii across 5
+      orders of magnitude, tiny-nucleus cases) and checks every
+      pair: 0 overlapping pairs, worst penetration 0. The packing
+      is now proven correct outside the GUI.
+  [x] Build clean (v4.42.05). User: no overlaps, distancing almost
+      good, BUT the fractal look was lost ("petri dish"): parent
+      discs drifted off-center within their own clusters, and
+      linear area sizing (4KB vs 4GB = 1000:1 radii) made zoomed-out
+      views unreadable.
+
+Step 42.2d — Fractal recovery: pinned nucleus + log sizing (v4.42.06)
+  [x] pack_circles: deliberate deviation from the reference — the
+      first circle (nucleus = parent disc) is PINNED at the origin
+      instead of centering the first pair around it. The insertion
+      scoring already prefers near-origin positions, so children
+      wrap around the nucleus in concentric shells: the orbit look,
+      packed tight. Harness re-run: 0 overlaps; nucleus at exactly
+      (0,0); children centroid within a few units of it.
+  [x] DiscV honors the existing log/linear scale toggle (shared
+      treev_scale_logarithmic flag, moved to top of geometry.c):
+      log mode disc radius = DISCV_LOG_RADIUS_FACTOR(16) *
+      log2(size) — a 4KB file and 4GB dir stay within ~1 visual
+      order of magnitude; linear mode keeps area == size.
+      geometry_treev_set_scale_logarithmic re-inits DiscV too;
+      window.c enables the toolbar Log checkbox in DiscV.
+  [x] Build clean (v4.42.06). User: "has potential", but the Log
+      checkbox desynced from the actual flag (fixed in 42.2e; the
+      fractal-look verdict itself is still pending).
+
+Step 42.2e — Log checkbox state sync (v4.42.07)
+  User-reported: checkbox always starts checked regardless of config,
+  and eventually flips independently of the real toggle state.
+  Three causes found:
+  [x] Checkbox was hardcoded active(TRUE) at creation — now
+      initialized from geometry_treev_get_scale_logarithmic() (the
+      config may have loaded "representative", making the first
+      click a visible no-op — the "flips regardless" feel).
+  [x] window_set_vis_mode was a THIRD sensitivity gate still
+      restricting the checkbox to TreeV on every mode switch —
+      missed in 42.2d's sweep. Now TreeV+DiscV like the other two.
+  [x] window_set_vis_mode now re-syncs the checkbox to the flag
+      (signal-blocked) on every mode change, covering any path that
+      changes the flag behind the toolbar's back. (The settings
+      dialog's scale dropdown is startup-default-only — writes
+      config, never the live flag — so no live path remained.)
+      Tooltip no longer claims to be TreeV-only.
+  [ ] Build clean (v4.42.07). User verifies: checkbox reflects the
+      real state at startup (esp. with "representative" in config),
+      stays in sync across mode switches and L-key toggles, and the
+      42.2d question stands: does Log mode bring the fractal back?
+
+Step 42.3 — Camera, scrollbars, culling on bounds
+  [ ] discv camera look_at framing: frame a directory by its BOUND
+      (whole satellite system), not its disc radius. Verify
+
+      double-click navigation, R reset, Up.
+  [ ] discv_get_scrollbar_states: scroll range from root bound.
+  [ ] discv_draw_recursive size/frustum culls use world bound, not
+      disc radius (a tiny disc with a huge satellite system must not
+      cull its subtree's labels).
+  [ ] Check DiscV near/far clips (0.9375/1.0625 * distance shell) —
+      still correct for the flat z=0 scene at the new scales.
+  [ ] Build. User tests navigation end-to-end.
+
+Step 42.4 — Checkpoint
+  Checkpoint: User confirms on small, medium, and large trees:
+    - No disc ever overlaps another (expand everything and look)
+    - Orbit/fractal visual preserved; satellites hug their parents
+    - Expand/collapse animates smoothly, no relayout jumps
+    - Navigation (double-click, Up, R), hover-pick, context menus
+    - Labels legible; culling behaves with tiny discs / huge systems
+    - Idle and camera-motion performance comparable to before
+    - Margins/padding constants look right (tuning knobs identified)
+  Out of scope: force-directed tightening (possible future phase);
+  TreeV/MapV must be untouched by this phase.
+
+
 NOTES
 =====
 - Each step should leave the code compilable and runnable
