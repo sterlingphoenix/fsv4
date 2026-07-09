@@ -1,5 +1,4 @@
 
  * In DiscV, discs render underneath other discs. 
- * In TreeV, Expand All can be flickery. 
  * Very slow in scanning large direcotries, and INSANELY slow in renderring them.
 

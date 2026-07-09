@@ -1760,6 +1760,221 @@ Step 39.2 follow-up 2 — colors_dirty flag (v4.39.07)
       (the layout walk), which is already fast (~ms range).
 
 
+PHASE 41 — TREEV ROW-WRAPPED LAYOUT (fix the Expand-All void)
+==============================================================
+
+Problem (quantified from live diagnostics on the FixTreeV branch,
+since reverted): TreeV is a wedge decomposition — every subtree gets
+a disjoint angular slice and the whole tree must fit in 225°
+(TREEV_MAX_ARC_WIDTH). Each generation occupies exactly one ring, so
+the tree's total angular demand is the sum of the LINEAR breadth of
+the widest generation divided by the radius. When it doesn't fit,
+treev_arrange() grows treev_core_radius ×1.25 and instantly re-lays
+out the whole scene. On a large tree this converges to
+radius ≈ breadth / 3.9 rad: observed 39.4M units of radius with only
+~170K units of radial thickness. That end state is a ribbon ~155M
+long and 170K wide bent into a 225° "C" — aspect ~900:1. No camera
+position can render it (whole-scene framing = tree is ~2px thick;
+anything visible = <0.1% of the tree). Phase 40 proved this
+empirically with seven failed camera-side fixes (all reverted).
+
+Same mechanism causes the Expand-All flashing: every morph step
+queues a rearrange (geometry_colexp_in_progress →
+treev_queue_rearrange), the next treev_draw runs treev_arrange's
+resize loop, and growing 8192 → 39.4M is log1.25(4800) ≈ 38 discrete
+whole-scene ×1.25 jumps mid-animation, each with a full-tree reshape
+(also the "Not Responding" stutter). One mechanism, three symptoms:
+void + flashing + stutter.
+
+Fix: keep the wedge decomposition, but cap each directory's subtree
+arc width. When a directory's expanded children don't fit in one
+ring within the cap, wrap the overflow siblings into additional
+concentric ROWS inside the parent's wedge. Breadth then grows
+radially (radius ~ sqrt(N)) instead of angularly (radius ~ N). The
+scene stays a compact, filled disc sector at any tree size, and the
+core-radius resize loop almost never fires (kills the flashing too).
+
+The single-ring assumption lives in exactly these places:
+  - treev_arrange_recursive (children spread in one ring)
+  - geometry_treev_platform_r0 (r0 = sum of ancestor depths+spacing)
+  - treev_get_extents_recursive (same sum)
+  - treev_batch_recursive (single subtree_r0 for all children;
+    single outbranch arc spanning first..last expanded child)
+  - the label walk in treev_draw_recursive (same subtree_r0 pattern)
+
+New geometry state (TreeVGeomParams.platform):
+  - row_offset: radial offset of this platform's row base relative
+    to the parent's first-row base radius (0 for row 0)
+  - subtree_depth: radial extent of this node's expanded subtree,
+    from its own r0 to the outer edge of its outermost descendant
+    row (deployment-weighted, like subtree_arc_width)
+New constant: TREEV_MAX_SUBTREE_ARC (initial value 112.5°; tune at
+checkpoint).
+
+Step 41.1 — Plumbing refactor (zero visual change) (v4.41.01)
+  [x] Add row_offset + subtree_depth fields to TreeVGeomParams.
+      Required growing DirNodeDesc.geomparams2 from [3] to [5]
+      (TreeVGeomParams overlays geomparams[5]+geomparams2 and was
+      already full at 8 doubles). Both fields zeroed in
+      treev_init_recursive (covers treev_init and
+      geometry_treev_reinit).
+  [x] Thread row_offset through every place that computes a child's
+      inner radius: geometry_treev_platform_r0 (own + each
+      ancestor's), treev_get_extents_recursive,
+      treev_arrange_recursive, treev_batch_recursive, and
+      treev_draw_recursive (label walk) — child r0 =
+      parent subtree_r0 + child row_offset.
+  [x] With all offsets zero the layout must be bit-identical to
+      v4.39.10. Build (clean, v4.41.01). User verified TreeV
+      behaves exactly as before (including the still-present
+      blinking on medium and void on large trees, as expected).
+
+Step 41.2 — Row wrapping in treev_arrange_recursive (v4.41.02)
+  [x] Greedy row fill in sibling order. DESIGN REFINEMENT pulled
+      forward from 41.5: row membership is decided from RESERVED
+      (end-state) arc widths — a subtree reserves its full
+      MAX(platform arc, subtree arc) from the moment it starts
+      deploying (deployment > 0 OR dirtree says expanded) — while
+      theta spreading uses deployment-weighted arcs as before. So
+      membership and row bases are fixed at the start of an
+      expand-all instead of churning every frame as weighted arcs
+      grow; platforms grow smoothly INTO their reserved slots.
+      subtree_arc_width semantics changed from "sum of children's
+      weighted arcs" to "widest row's reserved arc" (camera.c's two
+      readers use it as angular extent for framing — still correct).
+  [x] When a subtree's row base differs from its stored row_offset,
+      its whole subtree is re-arranged with reshape=TRUE so platform
+      arcs match the new radius. A row's first member never wraps.
+      Next row base = row base + MAX(reserved subtree_depth in row)
+      + TREEV_PLATFORM_SPACING_DEPTH.
+  [x] Spread thetas per row (rows are consecutive sibling runs
+      sharing a row base; each row centered on parent centerline).
+  [x] subtree_arc_width = MAX over rows of reserved row arc;
+      subtree_depth = own depth + spacing + rows' radial extent
+      (0 extra when no child subtree is reserved).
+  [x] Core-radius resize loop kept as fallback (still wanted for
+      the min-radius case and single-platform oversize); should now
+      rarely trigger. Build clean (v4.41.02).
+  [x] User tests: confirmed — Expand All on medium and large trees
+      ends compact and frameable, no void, flash storm gone.
+      (Branch connectors to rows > 0 wrong as expected until 41.3.)
+
+Step 41.3 — Branch drawing for rows (v4.41.03)
+  [x] treev_batch_outbranch signature generalized: takes stem_r0
+      (stem start radius) and arc_r (arc radius) instead of deriving
+      both from the parent's outer edge. Metanode caller updated.
+  [x] treev_batch_recursive: walks expanded children per row
+      (consecutive sibling runs sharing row_offset); emits one
+      outbranch arc per row at that row's base radius minus
+      0.5 * spacing (exactly where the children's inbranch stubs
+      reach), spanning MIN/MAX(0, first/last expanded child theta).
+      The radial stem chains: parent outer edge → row 0 arc → row 1
+      arc → ..., so every row is attached. Stems pass UNDER
+      intervening platforms (platforms have no bottom face, so no
+      Z-fighting; reads like a road under a building). Rows with no
+      fully-expanded member get no arc (stem passes through to the
+      next row that has one), matching the old behavior for
+      mid-morph children.
+  [ ] Build clean (v4.41.03). User verifies every platform is
+      connected by branches (small, medium, large trees; partial
+      expansions too).
+
+Step 41.4 — Extents, camera framing, scroll ranges (v4.41.04+)
+  [x] WASD/arrow panning (v4.41.04): camera_pan's TreeV branch
+      panned in Cartesian and converted back to cylindrical, and
+      split screen-vertical between ground motion (× sin(phi)) and
+      target.z motion (× cos(phi)). Both were masked by the old
+      giant-radius layout; at compact radius A/D read as "rotate
+      view" (chord vs arc) and W/S read as "up/down" (z bleed at
+      shallow phi). Replaced with native cylindrical navigation:
+      screen-vertical walks radially, screen-horizontal walks along
+      the arcs (dtheta = arc / max(target.r, leaf edge)), oriented
+      by camera->theta, no z drift, full speed at any elevation.
+      Reported by user while testing 41.3.
+  [x] Far-plane clamp (v4.41.06): user reported distant geometry not
+      drawing until any zoom/move. The solid batch always contains
+      everything and every frame draws it whole, so the only
+      mechanism that hides far-but-not-near geometry is the far clip
+      plane: several camera paths (interrupted two-stage pans, the
+      expand-all camera lock) can leave far_clip sized for a former
+      smaller view, and only camera_dolly recomputed it. Fix at the
+      single authoritative place, setup_projection_matrix (ogl.c):
+      in TreeV the far plane is clamped to at least target.r +
+      camera distance + geometry_treev_scene_radius() (new export:
+      root r0 + root subtree_depth, maintained by the row layout).
+      Whole class of stale-far_clip states fixed; near plane
+      untouched (the too-close zoom blackout remains a separate
+      deferred item).
+  [x] User settled TREEV_MAX_SUBTREE_ARC at 220.0 after trying
+      values (user's own edit, v4.41.05 era).
+  [x] Verify geometry_treev_get_extents includes row offsets:
+      confirmed via user testing — whole-tree framing after Expand
+      All on massive trees shows the full disc sector including all
+      outer rows, with the far-plane clamp keeping it drawn.
+  [x] Verify camera_look_at / 'R' reset / double-click navigation
+      land correctly on platforms in outer rows: confirmed — Up
+      lands on the true parent (targeting goes through row-aware
+      geometry_treev_platform_r0); the initial "didn't seem right"
+      report was the changed spatial intuition (radially-inward
+      neighbor is now usually an inner-row sibling, not the parent),
+      resolved by the 41.5 scaffolding making the distinction
+      visible.
+  [x] treev_camera_locked (colexp.c) kept as-is: with the compact
+      layout, root r0 barely moves during expand-all so the radial
+      tether is nearly a no-op, and the angle/distance freeze is
+      still useful while morphs run. Harmless now; simplification
+      possible later but not worth the regression risk.
+  [ ] Scrollbar ranges during/after expand-all: not explicitly
+      exercised — folded into the 41.6 checkpoint list.
+
+Step 41.5 — Row scaffolding readability (v4.41.05)
+  (Original 41.5 content — animation stability via end-state row
+  assignment — was pulled forward into 41.2's reserved-arc design.)
+  Problem, reported by user testing 41.4: wrapped sibling rows sit
+  radially beyond the inner row's subtrees, connected by arcs and a
+  center stem IDENTICAL to the parent-child visual language, and the
+  stem chained through every row — one merged through-line. Unrelated
+  sibling directories therefore read as nested descendants.
+  Fix — give wrapped rows their own visual grammar:
+  [x] New helpers treev_batch_branch_radial / treev_batch_branch_arc
+      (parameterized radius span, angle, height z, color);
+      treev_batch_outbranch is now a thin wrapper over both.
+  [x] First row with expanded children keeps the classic red center
+      stem + arc = "children of this platform" (arc now spans to the
+      row's angular edges rather than member centers).
+  [x] Continuation rows: scaffold arc in row_link_color (amber,
+      distinct from branch red) lifted TREEV_ROW_LINK_Z (2 units,
+      kills z-fighting with ground-level branches), joined to the
+      previous row's arc by TWO side rails at the rows' shared
+      angular edges (ladder/racetrack frame). The center
+      through-line past the first row is gone. Every row straddles
+      the parent centerline so consecutive arc spans always overlap
+      and the rails always land on both arcs.
+  [x] Build clean (v4.41.05). User verdict: "acceptable — not ideal",
+      taken as the price of the void/blinking fix. User then tuned
+      TREEV_MAX_SUBTREE_ARC to 220.0 to reduce wrapping.
+
+Step 41.6 — Checkpoint
+  Checkpoint: User confirms on small, medium, and large trees:
+    - Expand All ends with the whole tree visible and frameable;
+      'R' reset frames it; no void at any point during animation
+    - No flashing / discrete whole-scene jumps during expand-all
+    - Collapse All returns to a sane compact scene
+    - Double-click navigation, hover-pick, right-click menus work
+      on platforms in outer rows
+    - Labels render on all rows; no Z-fighting regressions
+    - Idle + camera-motion frame rates comparable to v4.39.10
+      (row logic adds only O(children) work to arranges that
+      already run per morph step — no new per-frame cost at idle)
+    - TREEV_MAX_SUBTREE_ARC tuning: does 112.5° look right, or
+      should wedges be wider/narrower before wrapping?
+
+  Out of scope for this phase (own phases later):
+    - DiscV large-directory usability (separate investigation)
+    - Mouse-wheel zoom past safe near-clip (carried from Phase 39)
+    - Log-scale leaf heights looking flat (carried from FixTreeV)
+
+
 NOTES
 =====
 - Each step should leave the code compilable and runnable

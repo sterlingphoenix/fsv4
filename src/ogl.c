@@ -188,12 +188,27 @@ static void
 setup_projection_matrix( boolean full_reset )
 {
 	double dx, dy;
+	double far_clip = camera->far_clip;
+
+	/* Never let the far plane cut into the scene. Several camera
+	 * paths (interrupted pans, the expand-all camera lock) can
+	 * leave a stale far_clip sized for a former, smaller view;
+	 * distant geometry then silently vanishes until the next dolly
+	 * recomputes the clip planes. Upper bound on the distance from
+	 * the camera to the farthest scene point: |target| + orbit
+	 * distance + scene radius */
+	if (globals.fsv_mode == FSV_TREEV) {
+		double needed = TREEV_CAMERA(camera)->target.r
+		                + camera->distance
+		                + geometry_treev_scene_radius( );
+		far_clip = MAX(far_clip, needed);
+	}
 
 	dx = camera->near_clip * tan( 0.5 * RAD(camera->fov) );
 	dy = dx / ogl_aspect_ratio( );
 	if (full_reset)
 		glmath_load_identity_projection( );
-	glmath_frustum( - dx, dx, - dy, dy, camera->near_clip, camera->far_clip );
+	glmath_frustum( - dx, dx, - dy, dy, camera->near_clip, far_clip );
 }
 
 

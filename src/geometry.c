@@ -1794,6 +1794,7 @@ mapv_draw( boolean high_detail )
 /* Geometry constants */
 #define TREEV_MIN_ARC_WIDTH		90.0
 #define TREEV_MAX_ARC_WIDTH		225.0
+#define TREEV_MAX_SUBTREE_ARC		220.00
 #define TREEV_BRANCH_WIDTH		256.0
 #define TREEV_MIN_CORE_RADIUS		8192.0
 #define TREEV_CORE_GROW_FACTOR		1.25
@@ -1817,6 +1818,16 @@ static boolean treev_scale_logarithmic = TRUE;
 
 /* Color of interconnecting branches */
 static RGBcolor branch_color = { 0.5, 0.0, 0.0 };
+
+/* Color of row-continuation scaffolding (arcs + side rails linking a
+ * directory's wrapped sibling rows). Deliberately distinct from
+ * branch_color: red center stem + arc means "children of", the
+ * scaffold means "same generation, continued in the next row" */
+static RGBcolor row_link_color = { 0.72, 0.48, 0.10 };
+
+/* Slight z-lift for row scaffolding so it never Z-fights the
+ * ground-level (z=0) parent-child branches it crosses */
+#define TREEV_ROW_LINK_Z	2.0
 
 /* Label colors for platform and leaf nodes */
 static RGBcolor treev_platform_label_color = { 1.0, 1.0, 1.0 };
@@ -1864,15 +1875,29 @@ geometry_treev_platform_r0( GNode *dnode )
 	if (NODE_IS_METANODE(dnode))
 		return treev_core_radius;
 
+	r0 += TREEV_GEOM_PARAMS(dnode)->platform.row_offset;
 	up_node = dnode->parent;
 	while (up_node != NULL) {
 		r0 += TREEV_PLATFORM_SPACING_DEPTH;
 		r0 += TREEV_GEOM_PARAMS(up_node)->platform.depth;
+		r0 += TREEV_GEOM_PARAMS(up_node)->platform.row_offset;
 		up_node = up_node->parent;
 	}
 	r0 += treev_core_radius;
 
 	return r0;
+}
+
+
+/* Returns the outer radius of the whole TreeV scene: the outermost
+ * edge of the expanded tree. subtree_depth is maintained by
+ * treev_arrange_recursive (platform depth + radial extent of all
+ * child rows), so this is O(tree depth) via platform_r0 */
+double
+geometry_treev_scene_radius( void )
+{
+	return geometry_treev_platform_r0( root_dnode )
+	       + TREEV_GEOM_PARAMS(root_dnode)->platform.subtree_depth;
 }
 
 
@@ -1930,7 +1955,7 @@ treev_get_extents_recursive( GNode *dnode, RTvec *c0, RTvec *c1, double r0, doub
 	node = dnode->children;
 	while (node != NULL) {
 		if (!geometry_treev_is_leaf( node ))
-			treev_get_extents_recursive( node, c0, c1, subtree_r0, theta + TREEV_GEOM_PARAMS(node)->platform.theta );
+			treev_get_extents_recursive( node, c0, c1, subtree_r0 + TREEV_GEOM_PARAMS(node)->platform.row_offset, theta + TREEV_GEOM_PARAMS(node)->platform.theta );
 /* TODO: try putting this check at top of loop */
 		if (!NODE_IS_DIR(node))
 			break;
@@ -2110,7 +2135,10 @@ treev_arrange_recursive( GNode *dnode, double r0, boolean reshape_tree )
 {
 	GNode *node;
 	double subtree_r0;
-	double arc_width, subtree_arc_width = 0.0;
+	double fill_arc_width, spread_arc_width;
+	double row_base, row_arc_width, row_reserved_depth;
+	double max_row_arc_width = 0.0;
+	double rows_extent;
 	double theta;
 
 	g_assert( NODE_IS_DIR(dnode) || NODE_IS_METANODE(dnode) );
@@ -2130,31 +2158,85 @@ treev_arrange_recursive( GNode *dnode, double r0, boolean reshape_tree )
 		}
 	}
 
-	/* Recurse into expanded subdirectories, and obtain the overall
-	 * arc width of the subtree */
+	/* Recurse into subdirectories, packing them into concentric
+	 * rows. A subtree reserves its full end-state arc width from the
+	 * moment it begins deploying, so row membership stays put during
+	 * animation; a row is closed once its reserved arc reaches
+	 * TREEV_MAX_SUBTREE_ARC, and the next row begins just beyond the
+	 * deepest reserved subtree of the current one. This bounds the
+	 * angular demand of every subtree, so breadth grows radially
+	 * instead of inflating treev_core_radius without bound */
 	subtree_r0 = r0 + TREEV_GEOM_PARAMS(dnode)->platform.depth + TREEV_PLATFORM_SPACING_DEPTH;
+	row_base = 0.0;
+	row_arc_width = 0.0;
+	row_reserved_depth = 0.0;
 	node = dnode->children;
 	while (node != NULL) {
+		boolean reserved;
+		boolean row_changed;
+
 		if (!NODE_IS_DIR(node))
 			break;
-		treev_arrange_recursive( node, subtree_r0, reshape_tree );
-		arc_width = DIR_NODE_DESC(node)->deployment * MAX(TREEV_GEOM_PARAMS(node)->platform.arc_width, TREEV_GEOM_PARAMS(node)->platform.subtree_arc_width);
-		TREEV_GEOM_PARAMS(node)->platform.theta = arc_width; /* temporary value */
-		subtree_arc_width += arc_width;
+
+		/* Subtree takes up space if it is deployed to any degree,
+		 * or is about to be (directory tree says expanded) */
+		reserved = (DIR_NODE_DESC(node)->deployment > EPSILON)
+		           || dirtree_entry_expanded( node );
+
+		/* A changed row base means this subtree shifted radially
+		 * and must be reshaped for its new radius */
+		row_changed = TREEV_GEOM_PARAMS(node)->platform.row_offset != row_base;
+		TREEV_GEOM_PARAMS(node)->platform.row_offset = row_base;
+		treev_arrange_recursive( node, subtree_r0 + row_base, reshape_tree || row_changed );
+
+		fill_arc_width = reserved ? MAX(TREEV_GEOM_PARAMS(node)->platform.arc_width, TREEV_GEOM_PARAMS(node)->platform.subtree_arc_width) : 0.0;
+
+		/* Wrap into a new row? (a row's first member never wraps) */
+		if ((row_arc_width > EPSILON) && (row_arc_width + fill_arc_width > TREEV_MAX_SUBTREE_ARC)) {
+			max_row_arc_width = MAX(max_row_arc_width, row_arc_width);
+			row_base += row_reserved_depth + TREEV_PLATFORM_SPACING_DEPTH;
+			row_arc_width = 0.0;
+			row_reserved_depth = 0.0;
+			TREEV_GEOM_PARAMS(node)->platform.row_offset = row_base;
+			treev_arrange_recursive( node, subtree_r0 + row_base, TRUE );
+			fill_arc_width = MAX(TREEV_GEOM_PARAMS(node)->platform.arc_width, TREEV_GEOM_PARAMS(node)->platform.subtree_arc_width);
+		}
+		row_arc_width += fill_arc_width;
+		if (reserved)
+			row_reserved_depth = MAX(row_reserved_depth, TREEV_GEOM_PARAMS(node)->platform.subtree_depth);
+
+		/* Arc actually occupied right now — grows toward the
+		 * reserved width as the subtree deploys */
+		spread_arc_width = DIR_NODE_DESC(node)->deployment * MAX(TREEV_GEOM_PARAMS(node)->platform.arc_width, TREEV_GEOM_PARAMS(node)->platform.subtree_arc_width);
+		TREEV_GEOM_PARAMS(node)->platform.theta = spread_arc_width; /* temporary value */
+
 		node = node->next;
 	}
-	TREEV_GEOM_PARAMS(dnode)->platform.subtree_arc_width = subtree_arc_width;
+	max_row_arc_width = MAX(max_row_arc_width, row_arc_width);
+	TREEV_GEOM_PARAMS(dnode)->platform.subtree_arc_width = max_row_arc_width;
 
-	/* Spread the subdirectories, sweeping counterclockwise */
-	theta = -0.5 * subtree_arc_width;
+	rows_extent = row_base + row_reserved_depth;
+	TREEV_GEOM_PARAMS(dnode)->platform.subtree_depth = TREEV_GEOM_PARAMS(dnode)->platform.depth
+		+ ((rows_extent > EPSILON) ? (TREEV_PLATFORM_SPACING_DEPTH + rows_extent) : 0.0);
+
+	/* Spread the subdirectories, sweeping counterclockwise,
+	 * centering each row on the parent's centerline. Rows are
+	 * consecutive runs of siblings sharing a row base */
 	node = dnode->children;
-	while (node != NULL) {
-                if (!NODE_IS_DIR(node))
-			break;
-		arc_width = TREEV_GEOM_PARAMS(node)->platform.theta;
-		TREEV_GEOM_PARAMS(node)->platform.theta = theta + 0.5 * arc_width;
-		theta += arc_width;
-		node = node->next;
+	while ((node != NULL) && NODE_IS_DIR(node)) {
+		GNode *n;
+		double cur_row_base = TREEV_GEOM_PARAMS(node)->platform.row_offset;
+
+		row_arc_width = 0.0;
+		for (n = node; (n != NULL) && NODE_IS_DIR(n) && (TREEV_GEOM_PARAMS(n)->platform.row_offset == cur_row_base); n = n->next)
+			row_arc_width += TREEV_GEOM_PARAMS(n)->platform.theta;
+
+		theta = -0.5 * row_arc_width;
+		for (; node != n; node = node->next) {
+			spread_arc_width = TREEV_GEOM_PARAMS(node)->platform.theta;
+			TREEV_GEOM_PARAMS(node)->platform.theta = theta + 0.5 * spread_arc_width;
+			theta += spread_arc_width;
+		}
 	}
 
 	/* Clear the "need rearrange" flag */
@@ -2230,6 +2312,10 @@ treev_init_recursive( GNode *dnode )
 			DIR_NODE_DESC(dnode)->deployment = 0.0;
 		geometry_queue_rebuild( dnode );
 	}
+
+	/* Row layout state starts clean; treev_arrange assigns it */
+	TREEV_GEOM_PARAMS(dnode)->platform.row_offset = 0.0;
+	TREEV_GEOM_PARAMS(dnode)->platform.subtree_depth = 0.0;
 
 	NODE_DESC(dnode)->flags = 0;
 
@@ -2745,42 +2831,52 @@ treev_batch_inbranch( VBOBatch *batch, double r0, double acc_theta,
 }
 
 
-/* Batch the outbranch (connector at outer edge, with arc) */
+/* Batch a radial branch segment running from r_from to r_to along the
+ * local angular direction theta, at height z, in the given color */
 static void
-treev_batch_outbranch( VBOBatch *batch, double r1,
-                       double theta0, double theta1,
-                       double acc_theta, unsigned int nid )
+treev_batch_branch_radial( VBOBatch *batch, double r_from, double r_to,
+                           double theta, double z, const RGBcolor *color,
+                           double acc_theta, unsigned int nid )
 {
-	double arc_r, arc_r0, arc_r1;
+	double lx0 = MIN(r_from, r_to), ly0 = -0.5 * TREEV_BRANCH_WIDTH;
+	double lx1 = MAX(r_from, r_to), ly1 = 0.5 * TREEV_BRANCH_WIDTH;
+	double w0x, w0y, w1x, w1y, w2x, w2y, w3x, w3y;
+	float br = color->r, bg = color->g, bb = color->b;
+	float fz = (float)z;
+
+	treev_rotate_point( lx0, ly0, acc_theta + theta, &w0x, &w0y );
+	treev_rotate_point( lx1, ly0, acc_theta + theta, &w1x, &w1y );
+	treev_rotate_point( lx1, ly1, acc_theta + theta, &w2x, &w2y );
+	treev_rotate_point( lx0, ly1, acc_theta + theta, &w3x, &w3y );
+
+	vbo_batch_add_vertex(batch, w0x,w0y,fz, 0,0,1, br,bg,bb, nid);
+	vbo_batch_add_vertex(batch, w1x,w1y,fz, 0,0,1, br,bg,bb, nid);
+	vbo_batch_add_vertex(batch, w2x,w2y,fz, 0,0,1, br,bg,bb, nid);
+
+	vbo_batch_add_vertex(batch, w0x,w0y,fz, 0,0,1, br,bg,bb, nid);
+	vbo_batch_add_vertex(batch, w2x,w2y,fz, 0,0,1, br,bg,bb, nid);
+	vbo_batch_add_vertex(batch, w3x,w3y,fz, 0,0,1, br,bg,bb, nid);
+}
+
+
+/* Batch a branch arc at radius arc_r spanning local angles
+ * [theta0, theta1], at height z, in the given color */
+static void
+treev_batch_branch_arc( VBOBatch *batch, double arc_r,
+                        double theta0, double theta1, double z,
+                        const RGBcolor *color,
+                        double acc_theta, unsigned int nid )
+{
+	double arc_r0, arc_r1;
 	double arc_width, seg_arc_width, supp_arc_width;
 	double w0x, w0y, w1x, w1y, w2x, w2y, w3x, w3y;
-	float br = branch_color.r, bg = branch_color.g, bb = branch_color.b;
+	float br = color->r, bg = color->g, bb = color->b;
+	float fz = (float)z;
 	int s, seg_count;
 
-	arc_r = r1 + (0.5 * TREEV_PLATFORM_SPACING_DEPTH);
 	arc_r0 = arc_r - (0.5 * TREEV_BRANCH_WIDTH);
 	arc_r1 = arc_r + (0.5 * TREEV_BRANCH_WIDTH);
 
-	/* Stem rectangle (local coords) */
-	{
-		double lx0 = r1, ly0 = -0.5 * TREEV_BRANCH_WIDTH;
-		double lx1 = arc_r, ly1 = 0.5 * TREEV_BRANCH_WIDTH;
-
-		treev_rotate_point( lx0, ly0, acc_theta, &w0x, &w0y );
-		treev_rotate_point( lx1, ly0, acc_theta, &w1x, &w1y );
-		treev_rotate_point( lx1, ly1, acc_theta, &w2x, &w2y );
-		treev_rotate_point( lx0, ly1, acc_theta, &w3x, &w3y );
-
-		vbo_batch_add_vertex(batch, w0x,w0y,0, 0,0,1, br,bg,bb, nid);
-		vbo_batch_add_vertex(batch, w1x,w1y,0, 0,0,1, br,bg,bb, nid);
-		vbo_batch_add_vertex(batch, w2x,w2y,0, 0,0,1, br,bg,bb, nid);
-
-		vbo_batch_add_vertex(batch, w0x,w0y,0, 0,0,1, br,bg,bb, nid);
-		vbo_batch_add_vertex(batch, w2x,w2y,0, 0,0,1, br,bg,bb, nid);
-		vbo_batch_add_vertex(batch, w3x,w3y,0, 0,0,1, br,bg,bb, nid);
-	}
-
-	/* Arc portion */
 	arc_width = theta1 - theta0;
 	if (arc_width < EPSILON)
 		return;
@@ -2809,17 +2905,32 @@ treev_batch_outbranch( VBOBatch *batch, double r1,
 			treev_rotate_point( ix1, iy1, acc_theta, &w2x, &w2y );
 			treev_rotate_point( ox1, oy1, acc_theta, &w3x, &w3y );
 
-			vbo_batch_add_vertex(batch, w0x,w0y,0, 0,0,1, br,bg,bb, nid);
-			vbo_batch_add_vertex(batch, w1x,w1y,0, 0,0,1, br,bg,bb, nid);
-			vbo_batch_add_vertex(batch, w3x,w3y,0, 0,0,1, br,bg,bb, nid);
+			vbo_batch_add_vertex(batch, w0x,w0y,fz, 0,0,1, br,bg,bb, nid);
+			vbo_batch_add_vertex(batch, w1x,w1y,fz, 0,0,1, br,bg,bb, nid);
+			vbo_batch_add_vertex(batch, w3x,w3y,fz, 0,0,1, br,bg,bb, nid);
 
-			vbo_batch_add_vertex(batch, w0x,w0y,0, 0,0,1, br,bg,bb, nid);
-			vbo_batch_add_vertex(batch, w3x,w3y,0, 0,0,1, br,bg,bb, nid);
-			vbo_batch_add_vertex(batch, w2x,w2y,0, 0,0,1, br,bg,bb, nid);
+			vbo_batch_add_vertex(batch, w0x,w0y,fz, 0,0,1, br,bg,bb, nid);
+			vbo_batch_add_vertex(batch, w3x,w3y,fz, 0,0,1, br,bg,bb, nid);
+			vbo_batch_add_vertex(batch, w2x,w2y,fz, 0,0,1, br,bg,bb, nid);
 
 			theta += seg_arc_width;
 		}
 	}
+}
+
+
+/* Batch the outbranch (radial stem plus connecting arc): the stem runs
+ * along the parent's local centerline from stem_r0 out to arc_r; the
+ * arc sits at radius arc_r spanning [theta0, theta1] */
+static void
+treev_batch_outbranch( VBOBatch *batch, double stem_r0, double arc_r,
+                       double theta0, double theta1,
+                       double acc_theta, unsigned int nid )
+{
+	treev_batch_branch_radial( batch, stem_r0, arc_r, 0.0, 0.0,
+	                           &branch_color, acc_theta, nid );
+	treev_batch_branch_arc( batch, arc_r, theta0, theta1, 0.0,
+	                        &branch_color, acc_theta, nid );
 }
 
 
@@ -3113,7 +3224,6 @@ treev_batch_recursive( VBOBatch *solid, VBOBatch *branches,
 {
 	TreeVGeomParams *dir_gparams;
 	GNode *node;
-	GNode *first_node = NULL, *last_node = NULL;
 	double subtree_r0;
 	double theta0, theta1;
 	double new_acc_theta;
@@ -3156,12 +3266,8 @@ treev_batch_recursive( VBOBatch *solid, VBOBatch *branches,
 			if (!NODE_IS_DIR(node))
 				break;
 			treev_batch_recursive( solid, branches, outline, node,
-			                       r0, subtree_r0, new_acc_theta );
-			if (DIR_EXPANDED(node)) {
-				if (first_node == NULL)
-					first_node = node;
-				last_node = node;
-			}
+			                       r0, subtree_r0 + TREEV_GEOM_PARAMS(node)->platform.row_offset,
+			                       new_acc_theta );
 			node = node->next;
 		}
 
@@ -3170,18 +3276,80 @@ treev_batch_recursive( VBOBatch *solid, VBOBatch *branches,
 			unsigned int nid = NODE_DESC(dnode)->id;
 			if (NODE_IS_METANODE(dnode)) {
 				treev_batch_loop( branches, r0, nid );
-				treev_batch_outbranch( branches, r0, 0.0, 0.0,
-				                       new_acc_theta, nid );
+				treev_batch_outbranch( branches, r0,
+				                       r0 + (0.5 * TREEV_PLATFORM_SPACING_DEPTH),
+				                       0.0, 0.0, new_acc_theta, nid );
 			}
 			else {
+				double stem_r0 = r0 + dir_gparams->platform.depth;
+				double prev_arc_r = -1.0;
+				double prev_rail_minus = 0.0, prev_rail_plus = 0.0;
+
 				treev_batch_inbranch( branches, r0, new_acc_theta, nid );
-				if (first_node != NULL) {
-					theta0 = MIN(0.0, TREEV_GEOM_PARAMS(first_node)->platform.theta);
-					theta1 = MAX(0.0, TREEV_GEOM_PARAMS(last_node)->platform.theta);
-					treev_batch_outbranch( branches,
-					                       r0 + dir_gparams->platform.depth,
-					                       theta0, theta1,
-					                       new_acc_theta, nid );
+
+				/* One connecting arc per row of expanded
+				 * children. The first such row hangs off the
+				 * classic red center stem + arc ("children of
+				 * this platform"); subsequent rows are wrapped
+				 * continuations of the same generation, framed
+				 * by distinct scaffolding: a lifted arc joined
+				 * to the previous row's arc by side rails at
+				 * the rows' angular edges. No center
+				 * through-line, so wrapped siblings don't read
+				 * as descendants */
+				node = dnode->children;
+				while ((node != NULL) && NODE_IS_DIR(node)) {
+					GNode *n;
+					GNode *first_exp = NULL, *last_exp = NULL;
+					double row_base = TREEV_GEOM_PARAMS(node)->platform.row_offset;
+
+					for (n = node; (n != NULL) && NODE_IS_DIR(n) && (TREEV_GEOM_PARAMS(n)->platform.row_offset == row_base); n = n->next) {
+						if (DIR_EXPANDED(n)) {
+							if (first_exp == NULL)
+								first_exp = n;
+							last_exp = n;
+						}
+					}
+					if (first_exp != NULL) {
+						double arc_r = subtree_r0 + row_base - (0.5 * TREEV_PLATFORM_SPACING_DEPTH);
+						/* Row's angular edges: just past its
+						 * outermost platforms */
+						double rail_minus = TREEV_GEOM_PARAMS(first_exp)->platform.theta - 0.5 * TREEV_GEOM_PARAMS(first_exp)->platform.arc_width;
+						double rail_plus = TREEV_GEOM_PARAMS(last_exp)->platform.theta + 0.5 * TREEV_GEOM_PARAMS(last_exp)->platform.arc_width;
+
+						if (prev_arc_r < 0.0) {
+							/* First row with expanded children */
+							theta0 = MIN(0.0, rail_minus);
+							theta1 = MAX(0.0, rail_plus);
+							treev_batch_outbranch( branches, stem_r0, arc_r,
+							                       theta0, theta1,
+							                       new_acc_theta, nid );
+						}
+						else {
+							/* Continuation row: scaffold arc plus
+							 * side rails back to the previous
+							 * row's arc, placed where both arcs
+							 * reach (every row straddles the
+							 * parent centerline, so the spans
+							 * always overlap) */
+							treev_batch_branch_arc( branches, arc_r,
+							                        rail_minus, rail_plus,
+							                        TREEV_ROW_LINK_Z, &row_link_color,
+							                        new_acc_theta, nid );
+							treev_batch_branch_radial( branches, prev_arc_r, arc_r,
+							                           MAX(prev_rail_minus, rail_minus),
+							                           TREEV_ROW_LINK_Z, &row_link_color,
+							                           new_acc_theta, nid );
+							treev_batch_branch_radial( branches, prev_arc_r, arc_r,
+							                           MIN(prev_rail_plus, rail_plus),
+							                           TREEV_ROW_LINK_Z, &row_link_color,
+							                           new_acc_theta, nid );
+						}
+						prev_arc_r = arc_r;
+						prev_rail_minus = rail_minus;
+						prev_rail_plus = rail_plus;
+					}
+					node = n;
 				}
 			}
 		}
@@ -3644,7 +3812,7 @@ treev_draw_recursive( GNode *dnode, double prev_r0, double r0, double acc_theta 
 		while (node != NULL) {
 			if (!NODE_IS_DIR(node))
 				break;
-			treev_draw_recursive( node, r0, subtree_r0, new_acc_theta );
+			treev_draw_recursive( node, r0, subtree_r0 + TREEV_GEOM_PARAMS(node)->platform.row_offset, new_acc_theta );
 			node = node->next;
 		}
 	}
