@@ -2176,19 +2176,21 @@ Step 42.3 progress (v4.42.08) — DiscV camera framing on bounds:
       root disc; target = root bound center.
 
 Step 42.3 — Camera, scrollbars, culling on bounds
-  [ ] discv camera look_at framing: frame a directory by its BOUND
-      (whole satellite system), not its disc radius. Verify
+  [x] discv camera look_at framing by bound — done v4.42.08 (see
+      progress notes above); user confirmed ("Excellent").
+  [x] discv_get_scrollbar_states: scroll range from the root's
+      bound circle at its offset center (v4.42.09 — this one missed
+      the #22 merge and was reapplied on main afterwards).
+  [x] discv_draw_recursive culls on world bound — done v4.42.05.
+  [x] DiscV near/far clips: the 0.9375/1.0625 * distance shell
+      scales with bound-derived distances; scene is flat z=0, so
+      the shell always straddles it. No change needed.
 
-      double-click navigation, R reset, Up.
-  [ ] discv_get_scrollbar_states: scroll range from root bound.
-  [ ] discv_draw_recursive size/frustum culls use world bound, not
-      disc radius (a tiny disc with a huge satellite system must not
-      cull its subtree's labels).
-  [ ] Check DiscV near/far clips (0.9375/1.0625 * distance shell) —
-      still correct for the flat z=0 scene at the new scales.
-  [ ] Build. User tests navigation end-to-end.
-
-Step 42.4 — Checkpoint
+Step 42.4 — Checkpoint  [PASSED at v4.42.08 — user confirmed all
+  modes fine (TreeV/MapV included); branch merged as PR #22. The
+  carried-over "TreeV log-scale flatness" item is retired ("might
+  be a dangling thought" — user). Force-directed tightening stays
+  an optional future idea.]
   Checkpoint: User confirms on small, medium, and large trees:
     - No disc ever overlaps another (expand everything and look)
     - Orbit/fractal visual preserved; satellites hug their parents

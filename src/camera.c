@@ -419,28 +419,31 @@ null_get_scrollbar_states( AdjValues *x_adj, AdjValues *y_adj )
 static void
 discv_get_scrollbar_states( AdjValues *x_adj, AdjValues *y_adj )
 {
-	double radius;
+	double radius, cx, cy;
 	double diameter;
 	double margin;
 	double cofs;
 	double lo, hi;
 
-	radius = DISCV_GEOM_PARAMS(root_dnode)->radius;
+	/* Scroll over the whole layout: the root's subtree bounding
+	 * circle (which floats off the root disc's center) */
+	radius = DISCV_GEOM_PARAMS(root_dnode)->bound;
+	cx = DISCV_GEOM_PARAMS(root_dnode)->bound_ofs.x;
+	cy = DISCV_GEOM_PARAMS(root_dnode)->bound_ofs.y;
 
 	/* Diameter of camera's field of view (centered at target) */
 	diameter = field_diameter( camera->fov, camera->distance );
 
-	/* Margin is half of the visible area or half the disc, whichever is smaller */
+	/* Margin is half of the visible area or half the layout,
+	 * whichever is smaller */
 	margin = 0.5 * MIN(diameter, 2.0 * radius);
-
-	/* Scrollable range */
-	lo = - radius + margin;
-	hi = radius - margin;
 
 	/* Corrective offset (adj->value is the top of the slider, not center) */
 	cofs = 0.5 * diameter;
 
 	/* x-scrollbar state */
+	lo = cx - radius + margin;
+	hi = cx + radius - margin;
 	x_adj->lower = MIN(lo, DISCV_CAMERA(camera)->target.x) - cofs;
 	x_adj->upper = MAX(hi, DISCV_CAMERA(camera)->target.x) + cofs;
 	x_adj->value = DISCV_CAMERA(camera)->target.x - cofs;
@@ -449,6 +452,8 @@ discv_get_scrollbar_states( AdjValues *x_adj, AdjValues *y_adj )
 	x_adj->page_size = diameter;
 
 	/* y-scrollbar state (signs reversed for canonical scrollbar direction) */
+	lo = cy - radius + margin;
+	hi = cy + radius - margin;
 	y_adj->lower = MIN(- hi, - DISCV_CAMERA(camera)->target.y) - cofs;
 	y_adj->upper = MAX(- lo, - DISCV_CAMERA(camera)->target.y) + cofs;
 	y_adj->value = - DISCV_CAMERA(camera)->target.y - cofs;
