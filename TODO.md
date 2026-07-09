@@ -2203,6 +2203,38 @@ Step 42.4 — Checkpoint  [PASSED at v4.42.08 — user confirmed all
   TreeV/MapV must be untouched by this phase.
 
 
+PHASE 43 — TREEV DISTANCE BRIGHTENING (inverse fog)
+====================================================
+
+User request: when scrolling away in TreeV, everything is dark and
+muted — "make objects brighter the farther away we get; in a game
+engine I'd increase the amount of light objects put out."
+Cause: the lit shader's maximum output is ambient(0.2) +
+diffuse(0.5) = 0.7 * base color, and the diffuse term (eye-origin
+positional light) collapses at grazing angles — exactly the
+geometry-vs-camera relationship of a zoomed-out TreeV.
+
+Step 43.1 — Emissive distance ramp in the lit shader (v4.43.01)
+  [x] lit_frag_src: new uniforms u_glow_near / u_glow_far. Fragments
+      blend from the lit result toward emissive base color by eye
+      distance: normal lighting inside NEAR, full base color beyond
+      FAR (brighter than any lit fragment can be), disabled when
+      far <= near. The outline pass (u_diffuse_scale = 0) glows
+      toward 0.6 * color so edges keep contrast against their faces.
+  [x] Thresholds tied to the scene: TREEV_GLOW_NEAR_FACTOR (0.25)
+      and TREEV_GLOW_FAR_FACTOR (1.25) * geometry_treev_scene_radius
+      — self-calibrates to any tree size (street-level views keep
+      local lighting; whole-tree framing renders ~everything
+      emissive). Set per draw in treev_setup_lit_shader_ex.
+  [x] MapV/DiscV lit setups zero both thresholds (uniforms persist
+      per shader program, so TreeV's values must not leak across a
+      mode switch). Effect is TreeV-only.
+  [ ] Build clean (v4.43.01). User judges: zoomed-out TreeV shows
+      clear, bright shapes; close-up keeps normal lighting/depth;
+      MapV/DiscV unchanged. Tuning knobs: the two factors and the
+      0.6 outline glow target.
+
+
 NOTES
 =====
 - Each step should leave the code compilable and runnable
