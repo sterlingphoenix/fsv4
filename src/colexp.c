@@ -120,8 +120,10 @@ colexp_progress_cb( Morph *morph )
 
 	/* Label-vertex cache (Phase 39.4 follow-up): a deployment morph
 	 * just stepped, so layout positions changed → cached labels are
-	 * stale. Force rebuild on the next *_draw. */
-	text_cache_invalidate( );
+	 * stale. Soft-stale only (Phase 46.C): the stale labels keep
+	 * drawing and the cache refreshes on its throttle, instead of a
+	 * full rebuild + re-upload every morph frame. */
+	text_cache_touch( );
 
 	/* Keep viewport refreshed */
 	globals.need_redraw = TRUE;

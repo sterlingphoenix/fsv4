@@ -24,10 +24,19 @@
 
 #include "common.h"
 #include "frameprof.h"
+#include "tmaptext.h" /* text_cache_stats( ) */
 
 
 /* How many frames per summary print. */
 #define FRAMEPROF_WINDOW 60
+
+/* Also flush the window when this much wall time has passed with at
+ * least one frame in it — otherwise very slow stretches (1-2 fps
+ * expand-all) never reach FRAMEPROF_WINDOW frames and print nothing */
+#define FRAMEPROF_MAX_WINDOW_US (2 * G_USEC_PER_SEC)
+
+/* Monotonic time of the current window's start */
+static gint64 window_start_us = 0;
 
 static boolean active = FALSE;
 
@@ -75,6 +84,7 @@ reset_window( void )
 	text_draw_calls = 0;
 	pick_count = 0;
 	vbo_rebuilds = 0;
+	window_start_us = g_get_monotonic_time( );
 }
 
 
@@ -161,6 +171,15 @@ print_summary( void )
 	other_us = frame_total_us - accounted_us;
 	g_printerr( "  other          : %6.2f ms/frame\n",
 	            (double)other_us / 1000.0 / (double)frames );
+
+	/* Label cache behavior this window (Phase 46.C) */
+	{
+		int hard, soft, rebuilds;
+		text_cache_stats( &hard, &soft, &rebuilds );
+		g_printerr( "  label cache    : %d rebuilds "
+		            "(%d hard invalidations, %d soft stalings)\n",
+		            rebuilds, hard, soft );
+	}
 }
 
 
@@ -170,10 +189,13 @@ frameprof_frame_end( void )
 	if (!active)
 		return;
 
-	frame_total_us += g_get_monotonic_time( ) - frame_start_us;
+	gint64 now = g_get_monotonic_time( );
+
+	frame_total_us += now - frame_start_us;
 	frames++;
 
-	if (frames >= FRAMEPROF_WINDOW) {
+	if (frames >= FRAMEPROF_WINDOW
+	    || (now - window_start_us) >= FRAMEPROF_MAX_WINDOW_US) {
 		print_summary( );
 		reset_window( );
 	}
@@ -202,7 +224,7 @@ frameprof_bucket_end( FrameProfBucket b )
 
 
 void
-frameprof_text_upload( int bytes )
+frameprof_text_upload( gint64 bytes )
 {
 	if (!active)
 		return;

@@ -132,8 +132,11 @@ filelist_populate( GNode *dnode )
 	}
 	G_LIST_SORT(node_list, compare_node);
 
-	/* Update file list */
+	/* Update file list. Batched: directories with tens of thousands
+	 * of entries (browser caches...) froze the UI for seconds when
+	 * every row emitted its own model-changed signal */
 	gui_clist_clear( file_tree_w );
+	gui_clist_append_begin( file_tree_w );
 	node_llink = node_list;
 	while (node_llink != NULL) {
 		node = (GNode *)node_llink->data;
@@ -147,6 +150,7 @@ filelist_populate( GNode *dnode )
 		++count;
 		node_llink = node_llink->next;
 	}
+	gui_clist_append_end( file_tree_w );
 
 	g_list_free( node_list );
 

@@ -4029,6 +4029,31 @@ treev_apply_label( GNode *node, double r0, boolean is_leaf )
 }
 
 
+/* Conservative frustum test for a subtree's annular sector:
+ * r in [r0, r0+sd], theta in [wt-h, wt+h] degrees. Bounds the sector
+ * with a sphere at the centerline midpoint; the radius covers the
+ * farthest sector corner plus slack for leaf/platform heights */
+static boolean
+treev_subtree_in_frustum( double r0, double sd, double wt, double h )
+{
+	double r1 = r0 + sd;
+	double rm = r0 + 0.5 * sd;
+	double ch, d2a, d2b, radius;
+
+	h = MIN(h, 180.0);
+	ch = cos( RAD(h) );
+	/* Farthest sector corner from the centerline midpoint */
+	d2a = rm * rm + r1 * r1 - 2.0 * rm * r1 * ch;
+	d2b = rm * rm + r0 * r0 - 2.0 * rm * r0 * ch;
+	radius = sqrt( MAX(d2a, d2b) );
+	radius = MAX(radius, 0.5 * sd);
+	radius = 1.05 * radius + 4.0 * TREEV_PLATFORM_SPACING_DEPTH;
+
+	return frustum_test_sphere( rm * cos( RAD(wt) ),
+	                            rm * sin( RAD(wt) ), 0.0, radius );
+}
+
+
 /* TreeV label drawing (recursive).
  * Walks tree with GL matrix transforms matching the geometry layout,
  * drawing text labels at each node. */
@@ -4061,6 +4086,17 @@ treev_draw_recursive( GNode *dnode, double prev_r0, double r0, double acc_theta 
 		if (screen_size_pixels( pcx, pcy, 0.0,
 		    dir_gparams->platform.depth * 0.5 ) < CULL_SIZE_THRESHOLD)
 			return;
+
+		/* Frustum culling (skip entire subtree): the screen-size
+		 * cull is direction-blind — at street level the labels
+		 * behind the camera are "big enough" too, and on a fully
+		 * expanded tree that put ~140K labels in the cache. Test
+		 * the subtree's bounding sphere against the view frustum */
+		if (!treev_subtree_in_frustum( r0,
+		        MAX(dir_gparams->platform.subtree_depth, dir_gparams->platform.depth),
+		        wt,
+		        0.5 * MAX(dir_gparams->platform.arc_width, dir_gparams->platform.subtree_arc_width) ))
+			return;
 	}
 
 	glmath_push_modelview( );
@@ -4068,9 +4104,20 @@ treev_draw_recursive( GNode *dnode, double prev_r0, double r0, double acc_theta 
 	if (!dir_collapsed) {
 		if (!dir_expanded) {
 			/* Directory is partially deployed —
-			 * label the shrinking/growing leaf */
-			text_set_color( treev_leaf_label_color.r, treev_leaf_label_color.g, treev_leaf_label_color.b );
-			treev_apply_label( dnode, prev_r0, TRUE );
+			 * label the shrinking/growing leaf (only if the
+			 * leaf is actually visible and non-tiny: this
+			 * emit used to be unconditional, which meant every
+			 * morphing directory in an Expand All labeled
+			 * itself regardless of visibility) */
+			double lr = prev_r0 + dir_gparams->leaf.distance;
+			double lt = acc_theta + dir_gparams->leaf.theta;
+			double lx = lr * cos( RAD(lt) );
+			double ly = lr * sin( RAD(lt) );
+			if (screen_size_pixels( lx, ly, 0.0, 0.5 * TREEV_LEAF_NODE_EDGE ) >= LABEL_SIZE_THRESHOLD
+			    && frustum_test_sphere( lx, ly, 0.0, 2.0 * TREEV_LEAF_NODE_EDGE )) {
+				text_set_color( treev_leaf_label_color.r, treev_leaf_label_color.g, treev_leaf_label_color.b );
+				treev_apply_label( dnode, prev_r0, TRUE );
+			}
 
 			/* Platform should shrink to / grow from
 			 * corresponding leaf position */
@@ -4105,15 +4152,25 @@ treev_draw_recursive( GNode *dnode, double prev_r0, double r0, double acc_theta 
 		if (NODE_IS_DIR(dnode) && !dir_collapsed && dir_gparams->platform.depth > 0.0) {
 			double pr = r0 + dir_gparams->platform.depth * 0.5;
 			double pt = acc_theta + dir_gparams->platform.theta;
-			if (screen_size_pixels( pr * cos( RAD(pt) ), pr * sin( RAD(pt) ),
+			double px = pr * cos( RAD(pt) );
+			double py = pr * sin( RAD(pt) );
+			if (screen_size_pixels( px, py,
 			    0.0, dir_gparams->platform.depth * 0.5 ) < LABEL_SIZE_THRESHOLD)
+				label_vis = FALSE;
+			else if (!frustum_test_sphere( px, py, 0.0,
+			         0.75 * dir_gparams->platform.depth + TREEV_PLATFORM_SPACING_DEPTH ))
 				label_vis = FALSE;
 		}
 		else if (dir_collapsed) {
 			double lr = prev_r0 + dir_gparams->leaf.distance;
 			double lt = acc_theta + dir_gparams->leaf.theta;
-			if (screen_size_pixels( lr * cos( RAD(lt) ), lr * sin( RAD(lt) ),
+			double lx = lr * cos( RAD(lt) );
+			double ly = lr * sin( RAD(lt) );
+			if (screen_size_pixels( lx, ly,
 			    0.0, TREEV_LEAF_NODE_EDGE * 0.5 ) < LABEL_SIZE_THRESHOLD)
+				label_vis = FALSE;
+			else if (!frustum_test_sphere( lx, ly, 0.0,
+			         2.0 * TREEV_LEAF_NODE_EDGE ))
 				label_vis = FALSE;
 		}
 		if (label_vis) {
@@ -4153,7 +4210,10 @@ treev_draw_recursive( GNode *dnode, double prev_r0, double r0, double acc_theta 
 						double wy = wr * sin( wt );
 						if (screen_size_pixels(
 						        wx, wy, leaf_wz, leaf_half )
-						    >= TREEV_LEAF_LABEL_THRESHOLD)
+						    >= TREEV_LEAF_LABEL_THRESHOLD
+						    && frustum_test_sphere( wx, wy,
+						        leaf_wz + cgp->leaf.height,
+						        2.0 * TREEV_LEAF_NODE_EDGE ))
 							treev_apply_label( node, r0, TRUE );
 					}
 					node = node->next;
@@ -4544,23 +4604,32 @@ geometry_init( FsvMode mode )
 	DIR_NODE_DESC(globals.fstree)->deployment = 1.0;
 	geometry_queue_rebuild( globals.fstree );
 
-	switch (mode) {
-		case FSV_DISCV:
-		discv_init( );
-		break;
+	{
+		gint64 t0 = g_get_monotonic_time( ), t1;
 
-		case FSV_MAPV:
-		mapv_init( );
-		break;
+		switch (mode) {
+			case FSV_DISCV:
+			discv_init( );
+			break;
 
-		case FSV_TREEV:
-		treev_init( );
-		break;
+			case FSV_MAPV:
+			mapv_init( );
+			break;
 
-		SWITCH_FAIL
+			case FSV_TREEV:
+			treev_init( );
+			break;
+
+			SWITCH_FAIL
+		}
+
+		t1 = g_get_monotonic_time( );
+		color_assign_recursive( globals.fstree );
+
+		g_message( "geometry_init: layout %.2f s, colors %.2f s",
+		           (t1 - t0) / 1.0e6,
+		           (g_get_monotonic_time( ) - t1) / 1.0e6 );
 	}
-
-	color_assign_recursive( globals.fstree );
 
 	geometry_prebuilt_mode = mode;
 }

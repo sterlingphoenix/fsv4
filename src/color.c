@@ -371,41 +371,86 @@ color_wpattern_group_name( GNode *node )
 }
 
 
-/* Inner recursive worker; the public color_assign_recursive checks
- * the colors_dirty flag and clears it after the walk. */
+/* Picks the color for one node under the current color mode */
+static const RGBcolor *
+node_color_for_mode( GNode *node )
+{
+	const RGBcolor *color = NULL;
+
+	switch (color_mode) {
+		case COLOR_BY_NODETYPE:
+		color = node_type_color( node );
+		break;
+
+		case COLOR_BY_TIMESTAMP:
+		color = time_color( node );
+		break;
+
+		case COLOR_BY_WPATTERN:
+		color = wpattern_color( node );
+		break;
+
+		SWITCH_FAIL
+	}
+
+	return color;
+}
+
+
+/* Inner recursive worker (serial fallback path). */
 static void
 color_assign_recursive_inner( GNode *dnode )
 {
 	GNode *node;
-	const RGBcolor *color;
 
 	g_assert( NODE_IS_DIR(dnode) || NODE_IS_METANODE(dnode) );
 
-	geometry_queue_rebuild( dnode );
-
 	node = dnode->children;
 	while (node != NULL) {
-		switch (color_mode) {
-			case COLOR_BY_NODETYPE:
-			color = node_type_color( node );
-			break;
-
-			case COLOR_BY_TIMESTAMP:
-			color = time_color( node );
-			break;
-
-			case COLOR_BY_WPATTERN:
-			color = wpattern_color( node );
-			break;
-
-			SWITCH_FAIL
-		}
-		NODE_DESC(node)->color = color;
+		NODE_DESC(node)->color = node_color_for_mode( node );
 
 		if (NODE_IS_DIR(node))
 			color_assign_recursive_inner( node );
 
 		node = node->next;
+	}
+}
+
+
+/* --- Parallel color assignment (Phase 46.A) ---------------------
+ * Coloring is pure per-node work: pattern/timestamp/type lookups
+ * against read-only config, one pointer write per node. The walk
+ * fans out across a thread pool exactly like the Phase 45 scanner:
+ * a task colors one directory's children and enqueues its
+ * subdirectories. On large trees this turns 12+ seconds of
+ * wildcard fnmatch into wall time divided by the core count. */
+
+#define COLOR_ASSIGN_MAX_THREADS 8
+
+static GThreadPool *color_pool = NULL;
+static gint color_pending = 0;
+static GMutex color_done_mutex;
+static GCond color_done_cond;
+
+
+static void
+color_assign_task( gpointer data, G_GNUC_UNUSED gpointer user_data )
+{
+	GNode *dnode = data;
+	GNode *node;
+
+	for (node = dnode->children; node != NULL; node = node->next) {
+		NODE_DESC(node)->color = node_color_for_mode( node );
+		if (NODE_IS_DIR(node)) {
+			g_atomic_int_inc( &color_pending );
+			g_thread_pool_push( color_pool, node, NULL );
+		}
+	}
+
+	if (g_atomic_int_dec_and_test( &color_pending )) {
+		g_mutex_lock( &color_done_mutex );
+		g_cond_broadcast( &color_done_cond );
+		g_mutex_unlock( &color_done_mutex );
 	}
 }
 
@@ -417,9 +462,37 @@ color_assign_recursive_inner( GNode *dnode )
 void
 color_assign_recursive( GNode *dnode )
 {
+	GError *err = NULL;
+	int nthreads;
+
 	if (!colors_dirty)
 		return;
-	color_assign_recursive_inner( dnode );
+
+	/* One invalidation covers the whole walk (geometry_queue_rebuild
+	 * invalidates the mode's batches regardless of its argument) */
+	geometry_queue_rebuild( dnode );
+
+	nthreads = CLAMP( (int)g_get_num_processors( ), 2, COLOR_ASSIGN_MAX_THREADS );
+	color_pool = g_thread_pool_new( color_assign_task, NULL, nthreads, TRUE, &err );
+	if (err != NULL) {
+		/* Serial fallback */
+		g_clear_error( &err );
+		color_pool = NULL;
+		color_assign_recursive_inner( dnode );
+	}
+	else {
+		g_atomic_int_set( &color_pending, 1 );
+		g_thread_pool_push( color_pool, dnode, NULL );
+
+		g_mutex_lock( &color_done_mutex );
+		while (g_atomic_int_get( &color_pending ) > 0)
+			g_cond_wait( &color_done_cond, &color_done_mutex );
+		g_mutex_unlock( &color_done_mutex );
+
+		g_thread_pool_free( color_pool, FALSE, TRUE );
+		color_pool = NULL;
+	}
+
 	colors_dirty = FALSE;
 }
 

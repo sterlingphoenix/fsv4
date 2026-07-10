@@ -2400,6 +2400,209 @@ Step 45.3 — Checkpoint  [PASSED at v4.45.02 — user verdict:
       a parallel scan (IDs/table integrity)
 
 
+PHASE 46 — RENDER SMOOTHNESS: GPU DEPLOYMENT (Hail Mary II)
+============================================================
+
+Rendering large trees is "long and choppy". Idle rendering is known
+fast (single draw per batch, Phase 39); the hypothesis is that the
+chop lives in animation: every morph step invalidates the whole VBO,
+and the next frame re-walks the tree, re-bakes every vertex on the
+CPU (deployment is baked into positions), and re-uploads everything.
+
+Proposed fix (pending measurement): move the deployment transform to
+the GPU. Vertices become static; each frame the CPU computes one
+small transform per DIRECTORY from its ancestor deployment chain
+(O(dirs), trivial) into a texture indexed by node ID (which every
+vertex already carries for picking); the vertex shader applies it
+via texelFetch. Rebuilds then happen only on structural change.
+Hardware requirements: NONE beyond the already-mandatory GL 3.3
+core (texelFetch is core since 3.0; integer vertex attributes since
+3.0) — identical behavior on Mesa (Intel/AMD), NVIDIA, and llvmpipe
+(software GL). Fallback: the current CPU-bake path is kept, used
+automatically if the transform texture can't be created, and
+forceable via environment variable for debugging.
+
+User clarifications (pre-measurement): Expand All runs at 1-2 fps
+for 10-12 s (total duration acceptable, the CHOP is the issue);
+panning/orbiting on a big expanded tree is ALSO choppy (jittery, low
+frame rate) — significant, because camera motion does NOT invalidate
+the VBO, so something other than rebuild is slow per frame ("idle is
+fine" may just mean idle draws no frames at all). And there is a
+separate 10-12 s "Preparing visualisation" phase after the scan.
+Three distinct problems; the F11 buckets tell them apart:
+  - VBO_REBUILD dominating expand ⇒ GPU deployment (as planned)
+  - VBO_SOLID dominating panning ⇒ triangle volume ⇒ instancing /
+    solid LOD culling (Phase 39's Option C territory)
+  - LABEL_WALK dominating panning ⇒ per-frame tree walk culling
+  - PICK_RENDER spiking during drags ⇒ pick cache policy
+
+Step 46.1 — Measure (v4.46.01: instrumentation only)
+  [x] Post-scan "Preparing" phase timers added (g_message): tree
+      setup (sort + subtree totals), symlink resolve, initial
+      layout + colors — separates the 10-12 s into its stages.
+  [x] User measurement round 1 (~1.5M nodes):
+        disk 0.38 s | tree setup 0.12 s | symlinks 0.51 s |
+        initial layout + colors 12.29 s  ← the whole Preparing cost
+      Panning (heavy windows): label_walk 9.8-26.0 ms/frame with
+      text_flush 6.6-17.3 ms and 18-50 MB(!) uploaded per frame;
+      vbo_solid 0.01 ms, vbo_rebuild 0 — solids are INNOCENT in
+      panning; it's the label pipeline (per-frame membership re-cull
+      + full cache re-upload). Idle draws no frames at all (loop
+      dormant), as suspected. Expand windows never printed: 1-2 fps
+      never reaches 60 frames — instrumentation gap.
+  [x] v4.46.02 instrumentation round 2: frameprof windows also flush
+      after 2 s wall time (slow stretches now report);
+      geometry_init logs layout vs colors split (Phase 39 history
+      says wildcard fnmatch color assignment is the likely 12 s).
+  [x] User measurement round 2 verdicts:
+      - Preparing: layout 0.10 s, COLORS 12.27 s ⇒ 46.A confirmed.
+      - Expand All: vbo_rebuild dominates and grows with deployment
+        (137 → 895 → 1624 → 2503 ms/frame) ⇒ 46.B (GPU deployment)
+        confirmed. ALSO: a steady ~280-306 ms/frame of "other" =
+        morph/arrange overhead across ~200K animating dirs — becomes
+        the next target after the rebuild dies (46.B-2).
+      - 46.C throttle works (rebuilds 0-4/window, trigger = zoom
+        ratio + morph steps per the new counters), BUT each rebuild
+        on the fully expanded tree costs ~300 ms and uploads up to
+        394 MB ≈ ~140K labels passing the "readable" cull — one to
+        two orders of magnitude more than a screen can show. Chop
+        became ~7 Hz stutter; the label SET must shrink (46.C-2).
+      - Instrumentation bug: negative KB/frame = int overflow in
+        upload byte counters.
+
+Step 46.A — Parallel color assignment (v4.46.04)
+  [x] color_assign_recursive fans out over a thread pool (same
+      pattern as the Phase 45 scanner: task = one directory's
+      children, subdirs enqueued; atomic pending + GCond join;
+      serial recursion kept as fallback). Coloring is pure per-node
+      work against read-only config. geometry_queue_rebuild hoisted
+      to one call (it ignores its argument). node_color_for_mode
+      factored out of the old inner walk.
+  [x] Upload byte counters widened to gint64 end-to-end (negative
+      KB/frame fixed).
+  [x] Build clean (v4.46.04). User: colors 12.27 s → 1.61 s (7.6x),
+      colors correct.
+
+Step 46.C-2 — Label frustum culling (v4.46.05)
+  Round-2 data: ~140K labels (up to 394 MB of vertices) passed the
+  "readable" cull on the fully expanded tree — the TreeV label walk
+  had NO frustum tests anywhere; screen-size culling is direction-
+  blind, so at street level everything behind/beside the camera
+  "looks big enough". Plus the mid-deployment directory label was
+  emitted completely uncculled (every morphing dir in an Expand All).
+  [x] treev_subtree_in_frustum(): conservative bounding sphere of a
+      subtree's annular sector (uses the Phase 41 subtree_depth /
+      subtree_arc_width reserved fields), tested at the top of
+      treev_draw_recursive — whole off-screen subtrees skipped.
+  [x] Per-platform and per-collapsed-leaf frustum tests added to the
+      label_vis gate; per-leaf frustum test added to the leaf-label
+      loop (at the label's actual z: leaf top).
+  [x] Mid-deployment directory label now gated by screen size AND
+      frustum (was unconditional).
+  [x] tmaptext: cache goes soft-stale on ANY camera motion (camera
+      modelview compared against build time; subsumes the zoom-ratio
+      heuristic) — required now that culling is view-dependent, so
+      orbiting refreshes labels for newly revealed territory on the
+      150 ms throttle. Idle camera compares equal: zero rebuilds.
+  [x] Build clean (v4.46.05). User: "significantly smoother
+      overall". Expand remains clunky (46.B, expected) and a
+      pre-existing freeze surfaced more clearly (see OPEN BUG
+      below).
+
+Step 46.C — Label-cache refresh throttle (v4.46.03)
+  Panning chop diagnosis (round 1): label pipeline rebuilt + fully
+  re-uploaded (18-50 MB) nearly every frame during camera motion.
+  Fix, honoring the hard 39.2 constraint (labels must never vanish
+  during animation):
+  [x] Invalidation split: text_cache_invalidate() = HARD (geometry
+      replaced / resize / labels toggled → immediate rebuild);
+      new text_cache_touch() = SOFT (zoom drift, deployment morph
+      steps → cache marked stale but KEEPS DRAWING; rebuild at most
+      once per TEXT_CACHE_REFRESH_US = 150 ms). The zoom-ratio
+      self-check now marks stale instead of invalid; colexp's
+      per-morph-step invalidate became touch.
+  [x] Cache VBO uploads use GL_STREAM_DRAW (rewritten per refresh;
+      STATIC_DRAW was the wrong hint).
+  [x] frameprof summary line "label cache: N rebuilds (X hard, Y
+      soft)" — names the invalidation trigger definitively in the
+      next measurement run.
+  [ ] Build clean (v4.46.03). User tests + measures in one session:
+      (1) startup: geometry_init layout-vs-colors split;
+      (2) F11 + pan/orbit/zoom: expect label_walk near zero in most
+          frames, rebuilds ~7/s max, upload MB/frame collapsed;
+          verify labels never disappear, only update their set a
+          few times a second;
+      (3) F11 + single Expand and Expand All (slow windows now
+          print): expect vbo_rebuild to dominate; labels may lag
+          their moving platforms by up to 150 ms during morphs —
+          judge whether that swim is acceptable;
+      (4) The label-cache diag line from any heavy window.
+
+Step 46.B — GPU deployment (design; implementation staged below)
+  Confirmed target: vbo_rebuild 137→2503 ms/frame during Expand All.
+  DESIGN WRINKLE, recorded before implementation: the expansion
+  animation is NOT just the per-subtree pivot scale
+  (treev_apply_deployment). Sibling platforms also RE-SPREAD as
+  deployment-weighted arcs grow — platform.theta changes every
+  frame and is currently baked into vertex positions. A GPU
+  transform must therefore be a full per-directory 2D affine
+  (rotation about the world Z axis composes cleanly in this
+  cylindrical layout: composite over ancestors of
+  [rotate(theta_now - theta_baked)] * [pivot-scale(deployment)]),
+  plus a z scale. Encoding: 2 RGBA32F texels per DIRECTORY
+  (2x2 matrix + translation + sz). Vertices keep their node id;
+  a STATIC indirection texture maps node id -> owning directory's
+  texel slot (leaves map to their parent dir). Per frame during
+  morphs: CPU recomputes per-dir affines top-down (O(dirs), ~ms)
+  and uploads only the dir table (~6 MB worst case, sub-ms PCIe).
+  Batches bake positions at reference (fully-deployed) layout;
+  rebuilds happen only when CONTENT changes (leaf<->platform swap
+  when a dir's deployment crosses 0/1) — per expand-all wave, not
+  per frame. Pick shader gets the same transform (pick must match
+  visuals). CPU-bake path kept as fallback (env var; auto if the
+  textures can't be created). GL 3.3 core only (texelFetch).
+  Sub-steps (each buildable + testable, Rule 1; this phase is
+  Rule 5's fulfillment):
+  [ ] 46.B.1: transform-table plumbing — textures created, identity
+      transforms, vertex/pick shaders apply them. Zero visual
+      change; verifies the lookup chain end to end.
+  [ ] 46.B.2: TreeV batch bakes at reference layout; CPU computes
+      real per-dir affines per frame during morphs; per-frame batch
+      invalidation in geometry_colexp_in_progress replaced by
+      content-only invalidation (deployment 0/1 crossings). The big
+      win lands here.
+  [ ] 46.B.3: re-measure Expand All; then attack whatever remains
+      (46.B-2: the ~300 ms/frame morph/arrange bookkeeping across
+      ~200K animating dirs — candidates: treev_arrange per-frame
+      re-spread cost, per-dir morph callback overhead).
+  [ ] MapV/DiscV can stay on the CPU path initially (their expand
+      animations are smaller); port later if measurements say so.
+
+Step 46.D — Selection freeze + 360-spin fixes (v4.46.06)
+  User repro nailed both: the freeze happens on DOUBLE-CLICK from
+  afar but NOT when manually flying to the same place — rendering
+  exonerated, selection machinery convicted. Also reported:
+  double-click sometimes spins the camera a full 360 before panning.
+  [x] Freeze: filelist_populate appended ~50K rows one at a time,
+      each g_list_store_append emitting its own items-changed signal
+      for the list view to digest. New gui_clist_append_begin/end:
+      rows collected in a GPtrArray and committed in ONE
+      g_list_store_splice (one signal). filelist_populate wrapped.
+      (Other gui_clist_append callers — search results etc. — can
+      adopt the same batching later if they ever hurt.)
+  [x] 360 spin: treev_look_at morphed angles naively; the camera's
+      angles are normalized to (-180, 180] (Phase 41 keyboard
+      panning) while geometry thetas live around 90 +/- half the
+      tree arc — straddling the wrap made the morph take the long
+      way. Both camera->theta and target.theta now take the short
+      way around (same correction camera_treev_frame_expansion
+      already had).
+  [ ] Build clean (v4.46.06). User verifies: double-click the Chrome
+      cache dir from far away — no freeze (file list may take a
+      beat to fill, but the UI must not lock); no more 360 spins on
+      any double-click navigation.
+
+
 NOTES
 =====
 - Each step should leave the code compilable and runnable

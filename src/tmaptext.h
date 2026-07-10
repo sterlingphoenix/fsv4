@@ -55,6 +55,8 @@ boolean text_cache_replay( void );
 void    text_cache_begin_emit( void );
 void    text_cache_end_emit( void );
 void    text_cache_invalidate( void );
+void    text_cache_touch( void );
+void    text_cache_stats( int *hard, int *soft, int *rebuilds );
 
 
 /* end tmaptext.h */

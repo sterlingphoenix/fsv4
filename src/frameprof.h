@@ -82,7 +82,7 @@ void frameprof_bucket_begin( FrameProfBucket b );
 void frameprof_bucket_end( FrameProfBucket b );
 
 /* Counters published from tmaptext. */
-void frameprof_text_upload( int bytes );
+void frameprof_text_upload( gint64 bytes );
 void frameprof_text_draw_call( void );
 
 /* Counters published from elsewhere. */
