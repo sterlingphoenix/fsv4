@@ -65,7 +65,9 @@ static const char *bucket_names[FRAMEPROF_NUM_BUCKETS] = {
 	"vbo_outline    ",
 	"label_walk     ",
 	"text_flush     ",
-	"pick_render    "
+	"pick_render    ",
+	"arrange        ",
+	"xform_update   "
 };
 
 

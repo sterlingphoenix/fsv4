@@ -213,6 +213,14 @@ screen_size_pixels( double cx, double cy, double cz, double radius )
  * cleared after treev_arrange() runs */
 static boolean treev_needs_arrange = FALSE;
 
+/* Lighter sibling of treev_needs_arrange (Phase 46.B.3): morph steps
+ * only move the deployment-weighted SPREAD of platforms within their
+ * already-decided rows (row membership, bases and subtree extents
+ * are fixed for the duration of an animation by Phase 41's
+ * reserved-arc design). Full structural arranges run on colexp
+ * events; spread-only passes run per morph frame */
+static boolean treev_needs_spread = FALSE;
+
 /* TRUE = logarithmic size scaling, FALSE = representative.
  * Controls TreeV leaf heights AND DiscV disc radii (named for the
  * mode that had it first) */
@@ -229,6 +237,7 @@ static void cursor_draw_visible( const float *positions, int vertex_count, GLenu
 static void cursor_post( void );
 static void queue_uncached_draw( void );
 static void discv_draw_cursor( double pos );
+static void deploy_setup_shader( ShaderProgram *prog, boolean enable );
 
 
 /**** DISC VISUALIZATION **************************************/
@@ -803,6 +812,7 @@ discv_setup_lit_shader( void )
 		shader_program_get_uniform( &lit_shader, "u_glow_near" ), 0.0f );
 	glUniform1f(
 		shader_program_get_uniform( &lit_shader, "u_glow_far" ), 0.0f );
+	deploy_setup_shader( &lit_shader, FALSE );
 }
 
 
@@ -818,6 +828,7 @@ discv_setup_pick_shader( void )
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &pick_shader, "u_mvp" ),
 		1, GL_FALSE, (const float *)mvp );
+	deploy_setup_shader( &pick_shader, FALSE );
 }
 
 
@@ -1943,6 +1954,7 @@ mapv_setup_lit_shader( float diffuse_scale )
 		shader_program_get_uniform( &lit_shader, "u_glow_near" ), 0.0f );
 	glUniform1f(
 		shader_program_get_uniform( &lit_shader, "u_glow_far" ), 0.0f );
+	deploy_setup_shader( &lit_shader, FALSE );
 }
 
 
@@ -1966,6 +1978,7 @@ mapv_setup_pick_shader( void )
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &pick_shader, "u_mvp" ),
 		1, GL_FALSE, (const float *)mvp );
+	deploy_setup_shader( &pick_shader, FALSE );
 }
 
 
@@ -2103,6 +2116,334 @@ static VBOBatch treev_solid_batch;
 static VBOBatch treev_branch_batch;
 static VBOBatch treev_outline_batch;
 static boolean treev_batch_initialized = FALSE;
+
+
+/* --- GPU deployment transform tables (Phase 46.B) ----------------
+ * Two textures let the vertex shader apply the expand/collapse
+ * transform, so VBO vertices can stay static while animation only
+ * updates a small per-directory table:
+ *   deploy_index_tex (R32UI):   node id -> directory slot (leaves
+ *                               map to their parent's slot). Static
+ *                               per scan.
+ *   deploy_xform_tex (RGBA32F): 2 texels per slot — [m00 m01 m10
+ *                               m11] and [tx ty sz -]. Identity in
+ *                               step 46.B.1; animated in 46.B.2.
+ * Fallbacks: FSV_CPU_DEPLOY env var, or table height exceeding
+ * GL_MAX_TEXTURE_SIZE, leave deploy_available FALSE — shaders then
+ * take the u_deploy_on == 0 path and the CPU bake carries on. */
+
+#define DEPLOY_TEX_W 1024
+
+static GLuint deploy_index_tex = 0;
+static GLuint deploy_xform_tex = 0;
+static int deploy_nslots = 0;
+static boolean deploy_tables_built = FALSE;	/* reset per scan */
+static boolean deploy_available = FALSE;
+
+/* RAM copy of the node id -> slot map (needed CPU-side every frame) */
+static guint32 *deploy_index_map = NULL;
+static int deploy_n_ids = 0;
+/* Per slot: absolute accumulated theta at batch-bake time. The GPU
+ * rotation is the delta between the current spread and this */
+static double *deploy_baked_acc = NULL;
+/* Staging buffer for per-frame transform texture updates */
+static float *deploy_xform_staging = NULL;
+static int deploy_xform_h = 0;
+/* TRUE when deployment/spread values moved since the last upload */
+static boolean deploy_xforms_dirty = FALSE;
+
+/* 2D affine (+ uniform z scale) in double precision for the CPU
+ * composition walk; converted to float texels at upload */
+typedef struct {
+	double m00, m01, m10, m11;
+	double tx, ty;
+	double sz;
+} DeployAffine;
+
+static const DeployAffine DEPLOY_IDENTITY = { 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0 };
+
+
+/* Writes an affine into a slot's two staging texels */
+static void
+deploy_stage_slot( int slot, const DeployAffine *x )
+{
+	float *t = &deploy_xform_staging[slot * 8];
+
+	t[0] = (float)x->m00; t[1] = (float)x->m01;
+	t[2] = (float)x->m10; t[3] = (float)x->m11;
+	t[4] = (float)x->tx;  t[5] = (float)x->ty;
+	t[6] = (float)x->sz;  t[7] = 0.0f;
+}
+
+
+/* out = chain applied AFTER a rotation by delta_deg about the origin
+ * (i.e. out = chain o R(delta)) */
+static void
+deploy_compose_rotation( const DeployAffine *chain, double delta_deg, DeployAffine *out )
+{
+	double c = cos( RAD(delta_deg) );
+	double s = sin( RAD(delta_deg) );
+
+	out->m00 = chain->m00 * c + chain->m01 * s;
+	out->m01 = chain->m01 * c - chain->m00 * s;
+	out->m10 = chain->m10 * c + chain->m11 * s;
+	out->m11 = chain->m11 * c - chain->m10 * s;
+	out->tx = chain->tx;
+	out->ty = chain->ty;
+	out->sz = chain->sz;
+}
+
+
+/* out = chain o (uniform scale s about world pivot (px, py), with
+ * z scaled by s about z = 0) — matching treev_apply_deployment */
+static void
+deploy_compose_pivot_scale( const DeployAffine *chain, double s,
+                            double px, double py, DeployAffine *out )
+{
+	double qx = (1.0 - s) * px;
+	double qy = (1.0 - s) * py;
+
+	out->m00 = chain->m00 * s;
+	out->m01 = chain->m01 * s;
+	out->m10 = chain->m10 * s;
+	out->m11 = chain->m11 * s;
+	out->tx = chain->m00 * qx + chain->m01 * qy + chain->tx;
+	out->ty = chain->m10 * qx + chain->m11 * qy + chain->ty;
+	out->sz = chain->sz * s;
+}
+
+
+/* Recomputes every directory's transform from the current morph
+ * state. Mirrors the coordinate conventions of treev_batch_recursive
+ * exactly: acc rotations about the world Z axis, pivot = the
+ * directory's leaf anchor on its parent's platform (at CURRENT
+ * spread angles), scale regions nesting outward. prev_r0/r0 as in
+ * the batch walk. O(directories) per frame */
+static void
+deploy_compute_recursive( GNode *dnode, const DeployAffine *parent_chain,
+                          double parent_acc, double prev_r0, double r0 )
+{
+	TreeVGeomParams *gparams = TREEV_GEOM_PARAMS(dnode);
+	DeployAffine chain, x;
+	GNode *node;
+	double acc_now, subtree_r0;
+	guint32 slot;
+
+	chain = *parent_chain;
+
+	/* Partially deployed: everything of this directory (platform,
+	 * leaves, subtree) scales about its leaf anchor, exactly like
+	 * the CPU bake's treev_apply_deployment */
+	if (NODE_IS_DIR(dnode)) {
+		double s = DIR_NODE_DESC(dnode)->deployment;
+		if (s < 1.0 - EPSILON) {
+			double lr = prev_r0 + gparams->leaf.distance;
+			double lt = parent_acc + gparams->leaf.theta;
+			deploy_compose_pivot_scale( &chain, s,
+			                            lr * cos( RAD(lt) ),
+			                            lr * sin( RAD(lt) ),
+			                            &chain );
+		}
+	}
+
+	acc_now = parent_acc + gparams->platform.theta;
+
+	slot = deploy_index_map[NODE_DESC(dnode)->id];
+	deploy_compose_rotation( &chain, acc_now - deploy_baked_acc[slot], &x );
+	deploy_stage_slot( (int)slot, &x );
+
+	subtree_r0 = r0 + gparams->platform.depth + TREEV_PLATFORM_SPACING_DEPTH;
+	node = dnode->children;
+	while (node != NULL) {
+		if (!NODE_IS_DIR(node))
+			break;
+		if (DIR_COLLAPSED(node)) {
+			/* Collapsed subdir = a leaf on this platform: it
+			 * transforms exactly like this directory's files */
+			deploy_stage_slot( (int)deploy_index_map[NODE_DESC(node)->id], &x );
+		}
+		else {
+			deploy_compute_recursive( node, &chain, acc_now,
+			                          r0,
+			                          subtree_r0 + TREEV_GEOM_PARAMS(node)->platform.row_offset );
+		}
+		node = node->next;
+	}
+}
+
+
+/* Recomputes and uploads the transform table (morph frames only) */
+static void
+deploy_update_xforms( void )
+{
+	deploy_compute_recursive( globals.fstree, &DEPLOY_IDENTITY,
+	                          0.0, 0.0, treev_core_radius );
+
+	glBindTexture( GL_TEXTURE_2D, deploy_xform_tex );
+	glTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, DEPLOY_TEX_W, deploy_xform_h,
+	                 GL_RGBA, GL_FLOAT, deploy_xform_staging );
+	glBindTexture( GL_TEXTURE_2D, 0 );
+
+	deploy_xforms_dirty = FALSE;
+}
+
+
+static boolean
+deploy_enabled_env( void )
+{
+	static int cached = -1;
+
+	if (cached < 0)
+		cached = (g_getenv( "FSV_CPU_DEPLOY" ) == NULL) ? 1 : 0;
+	return cached != 0;
+}
+
+
+static void
+deploy_max_id_recursive( GNode *node, unsigned int *max_id )
+{
+	GNode *child;
+
+	*max_id = MAX(*max_id, NODE_DESC(node)->id);
+	for (child = node->children; child != NULL; child = child->next)
+		deploy_max_id_recursive( child, max_id );
+}
+
+
+/* Assigns a slot to every directory (and the metanode) and points
+ * every node's index entry at its owning directory's slot */
+static void
+deploy_build_maps_recursive( GNode *dnode, guint32 *index_data, int *nslots )
+{
+	GNode *node;
+	guint32 slot = (guint32)(*nslots)++;
+
+	index_data[NODE_DESC(dnode)->id] = slot;
+
+	for (node = dnode->children; node != NULL; node = node->next) {
+		if (NODE_IS_DIR(node))
+			deploy_build_maps_recursive( node, index_data, nslots );
+		else
+			index_data[NODE_DESC(node)->id] = slot;
+	}
+}
+
+
+/* Builds/uploads both tables. Must run with a current GL context
+ * (called lazily from treev_rebuild_batch, never from the scan
+ * worker's geometry_init) */
+static void
+deploy_build_tables( void )
+{
+	unsigned int max_id = 0;
+	int n_ids, nslots = 0;
+	int index_h, xform_h;
+	guint32 *index_data;
+	float *xform_data;
+	GLint max_tex = 0;
+	int i;
+
+	deploy_tables_built = TRUE;
+	deploy_available = FALSE;
+
+	if (!deploy_enabled_env( )) {
+		g_message( "GPU deployment disabled (FSV_CPU_DEPLOY)" );
+		return;
+	}
+
+	/* Drop the previous scan's CPU-side maps */
+	if (deploy_index_map != NULL) {
+		xfree( deploy_index_map );
+		deploy_index_map = NULL;
+	}
+	if (deploy_baked_acc != NULL) {
+		xfree( deploy_baked_acc );
+		deploy_baked_acc = NULL;
+	}
+	if (deploy_xform_staging != NULL) {
+		xfree( deploy_xform_staging );
+		deploy_xform_staging = NULL;
+	}
+
+	deploy_max_id_recursive( globals.fstree, &max_id );
+	n_ids = (int)max_id + 1;
+	index_h = (n_ids + DEPLOY_TEX_W - 1) / DEPLOY_TEX_W;
+
+	index_data = NEW_ARRAY(guint32, index_h * DEPLOY_TEX_W);
+	memset( index_data, 0, (size_t)index_h * DEPLOY_TEX_W * sizeof(guint32) );
+	deploy_build_maps_recursive( globals.fstree, index_data, &nslots );
+
+	xform_h = (2 * nslots + DEPLOY_TEX_W - 1) / DEPLOY_TEX_W;
+
+	glGetIntegerv( GL_MAX_TEXTURE_SIZE, &max_tex );
+	if (index_h > max_tex || xform_h > max_tex) {
+		g_warning( "GPU deployment tables exceed GL_MAX_TEXTURE_SIZE (%d) — using CPU path", max_tex );
+		xfree( index_data );
+		return;
+	}
+
+	/* Identity transforms for every slot (46.B.1) */
+	xform_data = NEW_ARRAY(float, (size_t)xform_h * DEPLOY_TEX_W * 4);
+	memset( xform_data, 0, (size_t)xform_h * DEPLOY_TEX_W * 4 * sizeof(float) );
+	for (i = 0; i < nslots; i++) {
+		float *t = &xform_data[i * 8];
+		t[0] = 1.0f; t[1] = 0.0f; t[2] = 0.0f; t[3] = 1.0f;
+		t[4] = 0.0f; t[5] = 0.0f; t[6] = 1.0f; t[7] = 0.0f;
+	}
+
+	if (deploy_index_tex == 0)
+		glGenTextures( 1, &deploy_index_tex );
+	glBindTexture( GL_TEXTURE_2D, deploy_index_tex );
+	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+	glTexImage2D( GL_TEXTURE_2D, 0, GL_R32UI, DEPLOY_TEX_W, index_h, 0,
+	              GL_RED_INTEGER, GL_UNSIGNED_INT, index_data );
+
+	if (deploy_xform_tex == 0)
+		glGenTextures( 1, &deploy_xform_tex );
+	glBindTexture( GL_TEXTURE_2D, deploy_xform_tex );
+	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+	glTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA32F, DEPLOY_TEX_W, xform_h, 0,
+	              GL_RGBA, GL_FLOAT, xform_data );
+
+	glBindTexture( GL_TEXTURE_2D, 0 );
+
+	/* Keep the CPU-side pieces the per-frame update needs */
+	deploy_index_map = index_data;
+	deploy_n_ids = n_ids;
+	deploy_xform_staging = xform_data;
+	deploy_xform_h = xform_h;
+	deploy_baked_acc = NEW_ARRAY(double, nslots);
+	memset( deploy_baked_acc, 0, (size_t)nslots * sizeof(double) );
+
+	deploy_nslots = nslots;
+	deploy_available = TRUE;
+	deploy_xforms_dirty = FALSE;
+	g_message( "GPU deployment tables: %d dirs, index %dx%d, xform %dx%d",
+	           nslots, DEPLOY_TEX_W, index_h, DEPLOY_TEX_W, xform_h );
+}
+
+
+/* Sets the deployment-transform uniforms/bindings on a shader
+ * program (lit or pick). enable selects the GPU path; other modes
+ * pass FALSE so TreeV's bindings can't leak across a mode switch */
+static void
+deploy_setup_shader( ShaderProgram *prog, boolean enable )
+{
+	int on = (enable && deploy_available) ? 1 : 0;
+
+	glUniform1i( shader_program_get_uniform( prog, "u_deploy_on" ), on );
+	if (on) {
+		glActiveTexture( GL_TEXTURE1 );
+		glBindTexture( GL_TEXTURE_2D, deploy_index_tex );
+		glActiveTexture( GL_TEXTURE2 );
+		glBindTexture( GL_TEXTURE_2D, deploy_xform_tex );
+		glActiveTexture( GL_TEXTURE0 );
+		glUniform1i( shader_program_get_uniform( prog, "u_deploy_index" ), 1 );
+		glUniform1i( shader_program_get_uniform( prog, "u_deploy_xform" ), 2 );
+	}
+}
 
 
 /* Checks if a node is currently a leaf (i.e. a collapsed directory or some
@@ -2370,8 +2711,19 @@ treev_reshape_platform( GNode *dnode, double r0 )
 	/* Final arc width must be at least large enough to yield an
 	 * inner edge length that is two leaf node edges long */
 	min_arc_width = (180.0 * (2.0 * TREEV_LEAF_NODE_EDGE + TREEV_PLATFORM_SPACING_WIDTH) / PI) / r0;
+	arc_width = MAX(min_arc_width, arc_width);
 
-	TREEV_GEOM_PARAMS(dnode)->platform.arc_width = MAX(min_arc_width, arc_width);
+	/* Idempotence guard: the arc is a pure function of (r0, child
+	 * count), so an unchanged arc means unchanged inputs. In that
+	 * case keep the current depth — it may be the ACTUAL depth from
+	 * leaf laying (treev_batch_dir), which supersedes this estimate
+	 * — and invalidate nothing. Without this, the estimate<->actual
+	 * depth disagreement fed an arrange -> reshape -> rebuild loop
+	 * that forced a full batch rebuild EVERY morph frame */
+	if (ABS(arc_width - TREEV_GEOM_PARAMS(dnode)->platform.arc_width) < EPSILON)
+		return;
+
+	TREEV_GEOM_PARAMS(dnode)->platform.arc_width = arc_width;
 	TREEV_GEOM_PARAMS(dnode)->platform.depth = depth;
 
 	/* Directory will need rebuilding, obviously */
@@ -2548,6 +2900,44 @@ treev_arrange( boolean initial_arrange )
 }
 
 
+/* Spread-only arrange (Phase 46.B.3): recomputes the deployment-
+ * weighted angular positions of platforms within their EXISTING rows
+ * — no fill/wrap decisions, no reshaping, no subtree extents. That
+ * is all a deployment morph step actually moves (row membership and
+ * bases are fixed by the reserved-arc design for the duration of an
+ * animation), and it's pure multiply-adds over the flagged closure.
+ * Structural changes go through the full treev_arrange instead */
+static void
+treev_spread_recursive( GNode *dnode )
+{
+	GNode *node;
+
+	if (!(NODE_DESC(dnode)->flags & TREEV_NEED_REARRANGE))
+		return;
+
+	node = dnode->children;
+	while ((node != NULL) && NODE_IS_DIR(node)) {
+		GNode *n;
+		double cur_row_base = TREEV_GEOM_PARAMS(node)->platform.row_offset;
+		double row_arc = 0.0, theta, a;
+
+		/* Row = consecutive sibling run sharing a row base */
+		for (n = node; (n != NULL) && NODE_IS_DIR(n) && (TREEV_GEOM_PARAMS(n)->platform.row_offset == cur_row_base); n = n->next)
+			row_arc += DIR_NODE_DESC(n)->deployment * MAX(TREEV_GEOM_PARAMS(n)->platform.arc_width, TREEV_GEOM_PARAMS(n)->platform.subtree_arc_width);
+
+		theta = -0.5 * row_arc;
+		for (; node != n; node = node->next) {
+			a = DIR_NODE_DESC(node)->deployment * MAX(TREEV_GEOM_PARAMS(node)->platform.arc_width, TREEV_GEOM_PARAMS(node)->platform.subtree_arc_width);
+			TREEV_GEOM_PARAMS(node)->platform.theta = theta + 0.5 * a;
+			theta += a;
+			treev_spread_recursive( node );
+		}
+	}
+
+	NODE_DESC(dnode)->flags &= ~TREEV_NEED_REARRANGE;
+}
+
+
 
 /* Helper function for treev_init( ) */
 static void
@@ -2608,6 +2998,11 @@ treev_init( void )
 		outer_edge_buf = NEW_ARRAY(XYvec, num_points);
 
 	treev_core_radius = TREEV_MIN_CORE_RADIUS;
+
+	/* Tree may be new — GPU deployment tables must be rebuilt on
+	 * the next draw (flag write only: this can run on the scan
+	 * worker, where GL calls are forbidden) */
+	deploy_tables_built = FALSE;
 
 	gparams = TREEV_GEOM_PARAMS(globals.fstree);
 	gparams->platform.theta = 90.0;
@@ -3506,12 +3901,33 @@ treev_batch_recursive( VBOBatch *solid, VBOBatch *branches,
 
 	if (!dir_collapsed) {
 		if (!dir_expanded) {
-			/* Partially deployed: batch the shrinking/growing leaf */
+			/* Partially deployed: batch the shrinking/growing
+			 * leaf. Under GPU deployment the leaf's vertices are
+			 * re-owned by the PARENT directory so they follow the
+			 * parent platform instead of shrinking with this
+			 * directory's pivot scale (which runs the wrong way
+			 * for the leaf); the leaf then pops out at the
+			 * content rebuild when deployment reaches 1 */
+			int lf_solid = solid->build_count;
+			int lf_outline = outline->build_count;
 			treev_batch_leaf( solid, dnode, prev_r0, acc_theta, TRUE );
 			treev_batch_leaf_edges( outline, dnode, prev_r0, acc_theta, TRUE );
+			if (deploy_available && dnode->parent != NULL) {
+				unsigned int pid = NODE_DESC(dnode->parent)->id;
+				int i;
+				for (i = lf_solid; i < solid->build_count; i++)
+					solid->vertices[i].node_id = pid;
+				for (i = lf_outline; i < outline->build_count; i++)
+					outline->vertices[i].node_id = pid;
+			}
 		}
 
 		new_acc_theta = acc_theta + dir_gparams->platform.theta;
+
+		/* Snapshot the bake-time spread angle: the GPU transform
+		 * rotates by the delta between the current spread and this */
+		if (deploy_available)
+			deploy_baked_acc[deploy_index_map[NODE_DESC(dnode)->id]] = new_acc_theta;
 
 		/* Record start indices for deployment transform */
 		int solid_start = solid->build_count;
@@ -3521,11 +3937,6 @@ treev_batch_recursive( VBOBatch *solid, VBOBatch *branches,
 		if (NODE_IS_DIR(dnode)) {
 			/* Batch the directory (leaves + platform) */
 			treev_batch_dir( solid, outline, dnode, r0, new_acc_theta );
-		}
-
-		if (!dir_expanded) {
-			/* Recurse first, then apply deployment to all
-			 * subtree vertices produced so far */
 		}
 
 		/* Recurse into subdirectories */
@@ -3623,8 +4034,11 @@ treev_batch_recursive( VBOBatch *solid, VBOBatch *branches,
 			}
 		}
 
-		/* Apply deployment scaling if partially deployed */
-		if (!dir_expanded) {
+		/* Apply deployment scaling if partially deployed — CPU
+		 * fallback only. With GPU deployment the vertices stay at
+		 * the reference layout and the vertex shader applies the
+		 * per-directory transform */
+		if (!dir_expanded && !deploy_available) {
 			double deployment = DIR_NODE_DESC(dnode)->deployment;
 			treev_apply_deployment( solid, solid_start,
 			                        deployment,
@@ -3652,6 +4066,7 @@ treev_batch_recursive( VBOBatch *solid, VBOBatch *branches,
 
 	/* Update geometry status */
 	DIR_NODE_DESC(dnode)->geom_expanded = !dir_collapsed;
+	DIR_NODE_DESC(dnode)->geom_fully = dir_expanded;
 }
 
 
@@ -3665,6 +4080,12 @@ treev_rebuild_batch( void )
 		vbo_batch_init( &treev_outline_batch );
 		treev_batch_initialized = TRUE;
 	}
+
+	/* GPU deployment tables need a current GL context, so they are
+	 * built here (first draw after a scan), never on the scan
+	 * worker's geometry_init */
+	if (!deploy_tables_built)
+		deploy_build_tables( );
 
 	if (!treev_solid_batch.dirty)
 		return;
@@ -3718,6 +4139,8 @@ treev_setup_lit_shader_ex( float diffuse_scale )
 			shader_program_get_uniform( &lit_shader, "u_glow_far" ),
 			(float)(TREEV_GLOW_FAR_FACTOR * r) );
 	}
+
+	deploy_setup_shader( &lit_shader, TRUE );
 }
 
 static void
@@ -3739,6 +4162,7 @@ treev_setup_pick_shader( void )
 	glUniformMatrix4fv(
 		shader_program_get_uniform( &pick_shader, "u_mvp" ),
 		1, GL_FALSE, (const float *)mvp );
+	deploy_setup_shader( &pick_shader, TRUE );
 }
 
 
@@ -3754,11 +4178,21 @@ treev_queue_rearrange( GNode *dnode )
 
 	up_node = dnode;
 	while (up_node != NULL) {
+		/* Flags are cleared top-down as a closed set by
+		 * treev_arrange, so a flagged node implies flagged
+		 * ancestors — stop climbing at the first one. Turns the
+		 * per-dir-per-frame cost during mass morphs (200K dirs *
+		 * tree depth flag walks) into amortized O(1) */
+		if (NODE_DESC(up_node)->flags & TREEV_NEED_REARRANGE)
+			break;
 		NODE_DESC(up_node)->flags |= TREEV_NEED_REARRANGE;
 		up_node = up_node->parent;
 	}
 
-	queue_uncached_draw( );
+	/* Morph steps need only the cheap spread-only pass (structural
+	 * arranges are triggered separately on content crossings) */
+	treev_needs_spread = TRUE;
+	ogl_pick_invalidate( );
 }
 
 
@@ -4330,8 +4764,17 @@ static void
 treev_draw( boolean high_detail )
 {
 	if (treev_needs_arrange) {
+		frameprof_bucket_begin( FRAMEPROF_ARRANGE );
 		treev_arrange( FALSE );
 		treev_needs_arrange = FALSE;
+		treev_needs_spread = FALSE; /* full arrange consumed the flags */
+		frameprof_bucket_end( FRAMEPROF_ARRANGE );
+	}
+	else if (treev_needs_spread) {
+		frameprof_bucket_begin( FRAMEPROF_ARRANGE );
+		treev_spread_recursive( globals.fstree );
+		treev_needs_spread = FALSE;
+		frameprof_bucket_end( FRAMEPROF_ARRANGE );
 	}
 
 	frameprof_bucket_begin( FRAMEPROF_FRUSTUM_EXTRACT );
@@ -4342,6 +4785,15 @@ treev_draw( boolean high_detail )
 	frameprof_bucket_begin( FRAMEPROF_VBO_REBUILD );
 	treev_rebuild_batch( );
 	frameprof_bucket_end( FRAMEPROF_VBO_REBUILD );
+
+	/* GPU deployment: refresh the per-directory transform table if
+	 * deployment/spread moved this frame (O(dirs) + one small
+	 * upload — this is what replaces the per-frame vertex rebake) */
+	if (deploy_available && deploy_xforms_dirty) {
+		frameprof_bucket_begin( FRAMEPROF_XFORM_UPDATE );
+		deploy_update_xforms( );
+		frameprof_bucket_end( FRAMEPROF_XFORM_UPDATE );
+	}
 
 	/* Draw solid geometry from VBO batch.
 	 * Keep polygon offset enabled so filled geometry is pushed
@@ -4927,13 +5379,22 @@ geometry_colexp_initiated( GNode *dnode )
 void
 geometry_colexp_in_progress( GNode *dnode )
 {
+	boolean content_changed;
+
 	g_assert( NODE_IS_DIR(dnode) );
 
-	/* Check geometry status against deployment. If they don't concur
-	 * properly, then directory geometry has to be rebuilt */
-        if (DIR_NODE_DESC(dnode)->geom_expanded != (DIR_NODE_DESC(dnode)->deployment > EPSILON))
+	/* Batch CONTENT changes when deployment crosses 0 (leaf <->
+	 * platform+subtree) or, under GPU deployment, 1 (the morphing
+	 * leaf pops out). Between crossings only the transform moves */
+	content_changed =
+		DIR_NODE_DESC(dnode)->geom_expanded != (DIR_NODE_DESC(dnode)->deployment > EPSILON);
+	if (globals.fsv_mode == FSV_TREEV && deploy_available)
+		content_changed = content_changed ||
+			(DIR_NODE_DESC(dnode)->geom_fully != (DIR_NODE_DESC(dnode)->deployment > 1.0 - EPSILON));
+
+	if (content_changed)
 		geometry_queue_rebuild( dnode );
-        else
+	else
 		queue_uncached_draw( );
 
 	/* Deployment changed — VBO batches have stale values */
@@ -4944,13 +5405,26 @@ geometry_colexp_in_progress( GNode *dnode )
 	if (globals.fsv_mode == FSV_DISCV && discv_batch_initialized) {
 		vbo_batch_invalidate( &discv_solid_batch );
 	}
-	if (globals.fsv_mode == FSV_TREEV && treev_batch_initialized) {
-		vbo_batch_invalidate( &treev_solid_batch );
-		vbo_batch_invalidate( &treev_branch_batch );
-		vbo_batch_invalidate( &treev_outline_batch );
-	}
-
 	if (globals.fsv_mode == FSV_TREEV) {
+		if (deploy_available) {
+			/* GPU deployment: vertices stay put; only the
+			 * per-directory transform table needs refreshing
+			 * (content crossings were handled above) */
+			deploy_xforms_dirty = TRUE;
+		}
+		else if (treev_batch_initialized) {
+			/* CPU fallback: baked positions are stale */
+			vbo_batch_invalidate( &treev_solid_batch );
+			vbo_batch_invalidate( &treev_branch_batch );
+			vbo_batch_invalidate( &treev_outline_batch );
+		}
+
+		/* Content crossings change row structure (reserved flags
+		 * flip) — full structural arrange; mere deployment steps
+		 * only need the spread pass queued by queue_rearrange */
+		if (content_changed)
+			treev_needs_arrange = TRUE;
+
 		/* Take care of shifting angles */
 		treev_queue_rearrange( dnode );
 	}

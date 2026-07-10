@@ -17,6 +17,40 @@
  *          + light_diffuse * vertex_color * max(dot(N, L), 0)
  */
 
+/*
+ * GPU deployment transform (Phase 46.B).
+ *
+ * Per-directory 2D affine (+ z scale) applied in the vertex shader:
+ * vertices stay static in the VBO while expand/collapse animation
+ * only updates a small per-directory transform texture. Lookup:
+ * node id (bits 23-0 of the pick attribute) -> u_deploy_index
+ * (R32UI, node id -> directory slot) -> u_deploy_xform (RGBA32F,
+ * 2 texels per slot: [m00 m01 m10 m11] and [tx ty sz -]).
+ * u_deploy_on gates the whole path (0 = identity: other modes, CPU
+ * fallback). Textures are 1024 texels wide, row-major.
+ */
+#define DEPLOY_XFORM_GLSL \
+"uniform int u_deploy_on;\n" \
+"uniform usampler2D u_deploy_index;\n" \
+"uniform sampler2D u_deploy_xform;\n" \
+"\n" \
+"void deploy_fetch(uint node_id, out vec4 m, out vec4 tr) {\n" \
+"    uint id = node_id & 0xFFFFFFu;\n" \
+"    uint slot = texelFetch(u_deploy_index,\n" \
+"        ivec2(int(id % 1024u), int(id / 1024u)), 0).r;\n" \
+"    uint t = slot * 2u;\n" \
+"    m  = texelFetch(u_deploy_xform,\n" \
+"        ivec2(int(t % 1024u), int(t / 1024u)), 0);\n" \
+"    tr = texelFetch(u_deploy_xform,\n" \
+"        ivec2(int((t + 1u) % 1024u), int((t + 1u) / 1024u)), 0);\n" \
+"}\n" \
+"\n" \
+"vec3 deploy_position(vec3 p, vec4 m, vec4 tr) {\n" \
+"    return vec3(m.x * p.x + m.y * p.y + tr.x,\n" \
+"                m.z * p.x + m.w * p.y + tr.y,\n" \
+"                p.z * tr.z);\n" \
+"}\n"
+
 static const char lit_vert_src[] =
 "\n"
 "layout(location = 0) in vec3 a_position;\n"
@@ -28,14 +62,28 @@ static const char lit_vert_src[] =
 "uniform mat4 u_modelview;\n"
 "uniform mat3 u_normal_matrix;\n"
 "\n"
+DEPLOY_XFORM_GLSL
+"\n"
 "flat out vec3 v_color;\n"
 "flat out vec3 v_normal_eye;\n"
 "out vec3 v_pos_eye;\n"
 "\n"
 "void main() {\n"
-"    gl_Position = u_mvp * vec4(a_position, 1.0);\n"
-"    v_pos_eye = (u_modelview * vec4(a_position, 1.0)).xyz;\n"
-"    v_normal_eye = normalize(u_normal_matrix * a_normal);\n"
+"    vec3 pos = a_position;\n"
+"    vec3 nrm = a_normal;\n"
+"    if (u_deploy_on != 0) {\n"
+"        vec4 m, tr;\n"
+"        deploy_fetch(a_node_id, m, tr);\n"
+"        pos = deploy_position(pos, m, tr);\n"
+"        /* rotate the normal's xy by the same 2x2 (uniform scale\n"
+"         * washes out in the normalize) */\n"
+"        nrm = vec3(m.x * a_normal.x + m.y * a_normal.y,\n"
+"                   m.z * a_normal.x + m.w * a_normal.y,\n"
+"                   a_normal.z);\n"
+"    }\n"
+"    gl_Position = u_mvp * vec4(pos, 1.0);\n"
+"    v_pos_eye = (u_modelview * vec4(pos, 1.0)).xyz;\n"
+"    v_normal_eye = normalize(u_normal_matrix * nrm);\n"
 "    v_color = a_color;\n"
 "}\n";
 
@@ -100,10 +148,18 @@ static const char pick_vert_src[] =
 "\n"
 "uniform mat4 u_mvp;\n"
 "\n"
+DEPLOY_XFORM_GLSL
+"\n"
 "flat out vec4 v_pick_color;\n"
 "\n"
 "void main() {\n"
-"    gl_Position = u_mvp * vec4(a_position, 1.0);\n"
+"    vec3 pos = a_position;\n"
+"    if (u_deploy_on != 0) {\n"
+"        vec4 m, tr;\n"
+"        deploy_fetch(a_node_id, m, tr);\n"
+"        pos = deploy_position(pos, m, tr);\n"
+"    }\n"
+"    gl_Position = u_mvp * vec4(pos, 1.0);\n"
 "    /* Decode node_id: bits 23-0 = ID, bits 31-24 = face */\n"
 "    float r = float((a_node_id >> 16u) & 0xFFu) / 255.0;\n"
 "    float g = float((a_node_id >>  8u) & 0xFFu) / 255.0;\n"
