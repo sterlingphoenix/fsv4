@@ -2310,6 +2310,86 @@ Step 44.1 — Glide-to-frame during expansion (v4.44.01)
   Phase 44 complete.
 
 
+PHASE 45 — PARALLEL FILESYSTEM SCANNER
+=======================================
+
+Scanning large trees "takes ages". The scanner (scanfs.c) is a
+single thread doing scandir(alphasort) + lstat(full path) per entry,
+one directory at a time — the storage device and dentry cache can
+service many concurrent streams, but only ever see one.
+Facts that make this straightforward:
+  - setup_fstree_recursive already sorts every directory's children
+    post-scan (compare_node), so scan-time alphasort is pure waste
+    and sibling order during the scan is irrelevant — exactly what
+    parallelism needs.
+  - dirtree_entry_new only initializes a flag in the node's own
+    descriptor (model population happens post-scan in
+    dirtree_no_more_entries) — thread-safe as-is.
+  - The GNode tree needs no locking if each directory's children are
+    only ever created by the task that owns that directory, and
+    child-directory tasks are enqueued only after the child node is
+    fully constructed (queue transfer provides the memory barrier).
+Expected gains: 3-8x depending on storage (NVMe/warm-cache best;
+even spinning rust benefits from a full IO queue). Physics floor:
+cold-cache seeks on HDD.
+
+Step 45.1 — Single-threaded groundwork (v4.45.01)
+  [x] Replace scandir(alphasort) with a plain opendir/readdir loop
+      (no sort, no scandir's per-entry mallocs).
+  [x] fstatat(dirfd, name, AT_SYMLINK_NOFOLLOW) instead of
+      lstat(full path) — the kernel resolves one component instead
+      of re-walking the whole path per entry. Full paths are built
+      only for recursion into subdirectories and progress display.
+      stat_node kept for the root node; its body now shares
+      node_desc_fill_from_stat.
+  [x] Allocate the right-sized heap descriptor up front (stat first,
+      then allocate by type), dropping the stack-temp + memcpy dance.
+      Also a prerequisite for 45.2: nodes are fully constructed
+      before any future task could see them.
+  [x] Batch the progress stats: local counters flushed
+      (flush_scan_stats) every SCAN_STATS_BATCH (256) entries and at
+      directory end.
+  [x] Log the disk-phase duration (g_message, wall seconds + node
+      count) at scan end — the benchmark instrument for this phase.
+  [ ] Build clean (v4.45.01). User times a large scan against the
+      baseline (run from a terminal to see the g_message; run twice
+      and compare warm-cache numbers).
+
+Step 45.2 — Parallel traversal
+  [ ] DirTask { path, dnode } fed to an exclusive GThreadPool of
+      CLAMP(g_get_num_processors(), 2, 8) threads. Task: open dir,
+      readdir+fstatat loop building children, then enqueue one task
+      per subdirectory. Recursion becomes queue fan-out.
+  [ ] Completion: atomic pending-task counter (incremented before
+      each push, decremented at task end) + GCond; the scan worker
+      pushes the root task and waits for pending == 0. Post-scan
+      passes (setup_fstree, symlink resolve, prebuild) stay
+      single-threaded and unchanged.
+  [ ] node_id becomes an atomic fetch-add (IDs stay unique; DFS
+      ordering is lost, but nothing depends on it — node_table is
+      indexed by ID, and children are sorted post-scan).
+  [ ] name_strchunk is not thread-safe: per-thread GStringChunk via
+      GPrivate, each registered in a global list on creation; the
+      list is freed and reset at the start of the next scan (names
+      must outlive the scan). Exclusive pool = fresh threads per
+      scan = fresh privates.
+  [ ] Progress stats keep the 45.1 batching; scan_current_dir shows
+      whichever directory a worker last claimed (fine).
+  [ ] Build. User times the same tree; expect the big jump.
+
+Step 45.3 — Checkpoint
+  Checkpoint: User confirms on their largest tree:
+    - Scan completes; node/size totals in the file list panel match
+      a pre-phase scan of the same tree exactly (correctness)
+    - Repeat scans are stable (no crashes, no hangs, no variance in
+      totals across runs)
+    - Timing: report the g_message durations, baseline vs 45.1
+      vs 45.2
+    - UI stays responsive during the scan; stats/sec readout works
+    - Symlink sizes resolve; all three modes render correctly after
+      a parallel scan (IDs/table integrity)
+
+
 NOTES
 =====
 - Each step should leave the code compilable and runnable
