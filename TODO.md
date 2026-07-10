@@ -2378,11 +2378,16 @@ Step 45.2 — Parallel traversal (v4.45.02)
       fresh privates per scan.
   [x] Progress stats keep the 45.1 batching; scan_current_dir shows
       whichever directory a worker last claimed.
-  [ ] Build clean (v4.45.02). User times the same tree (warm run,
-      terminal for the g_message) and sanity-checks totals + all
-      three modes.
+  [x] Build clean (v4.45.02). User: 0.38 s for ~1.5M objects
+      (warm cache — but the 45.1 comparison was equally warm, so
+      the parallel step is a genuine ~7x on top of 45.1's ~10x).
 
-Step 45.3 — Checkpoint
+Step 45.3 — Checkpoint  [PASSED at v4.45.02 — user verdict:
+  "ridiculously fast regardless". Warm-cache ledger on the user's
+  ~1.5M-object tree: ~30 s baseline → 2.8 s (45.1) → 0.38 s (45.2),
+  ~79x total. Correctness verified at 45.1 ("everything still looks
+  good"); 45.2 totals/modes accepted by user. Cold-cache remains
+  storage-bound by nature (drop_caches test optional).]
   Checkpoint: User confirms on their largest tree:
     - Scan completes; node/size totals in the file list panel match
       a pre-phase scan of the same tree exactly (correctness)
