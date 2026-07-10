@@ -26,6 +26,7 @@
 #include "scanfs.h"
 
 #include <dirent.h>
+#include <fcntl.h> /* AT_SYMLINK_NOFOLLOW */
 #include <limits.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -51,11 +52,59 @@ int alphasort( const void *a, const void *b );
 #define SCAN_MONITOR_PERIOD 500
 
 
-/* Name strings are stored here */
+/* Name strings are stored here (main-thread inserts: root/metanode
+ * names; scan threads use per-thread chunks, see scan_strchunks) */
 static GStringChunk *name_strchunk = NULL;
 
-/* Node ID counter (worker-thread only during scan) */
-static unsigned int node_id;
+/* Node ID counter. Plain increments outside the scan; atomic
+ * fetch-add from the parallel scan tasks (IDs are unique but not
+ * DFS-ordered — nothing depends on the order: node_table is indexed
+ * by ID and children are sorted post-scan) */
+static gint node_id;
+
+
+/* --- Parallel scan machinery ------------------------------------ */
+
+/* Upper bound on scan threads (storage stops scaling before CPUs do) */
+#define SCANFS_MAX_SCAN_THREADS 8
+
+/* A unit of scan work: one directory */
+typedef struct {
+	char *path;	/* owned */
+	GNode *dnode;
+} DirTask;
+
+static GThreadPool *scan_pool = NULL;
+/* Tasks queued or running; incremented before every push */
+static gint scan_pending = 0;
+static GMutex scan_done_mutex;
+static GCond scan_done_cond;
+
+/* GStringChunk is not thread-safe: each scan thread lazily creates
+ * its own chunk. All chunks are kept in scan_strchunks (names must
+ * outlive the scan) and freed at the start of the next scan. The
+ * pool is exclusive, so every scan gets fresh threads and thus
+ * fresh per-thread chunk pointers. */
+static GPrivate scan_chunk_key = G_PRIVATE_INIT( NULL );
+static GSList *scan_strchunks = NULL;
+static GMutex scan_strchunks_mutex;
+
+
+static GStringChunk *
+scan_thread_strchunk( void )
+{
+	GStringChunk *chunk = g_private_get( &scan_chunk_key );
+
+	if (chunk == NULL) {
+		chunk = g_string_chunk_new( 8192 );
+		g_private_set( &scan_chunk_key, chunk );
+		g_mutex_lock( &scan_strchunks_mutex );
+		scan_strchunks = g_slist_prepend( scan_strchunks, chunk );
+		g_mutex_unlock( &scan_strchunks_mutex );
+	}
+
+	return chunk;
+}
 
 /* Scan progress — all of the fields below are written by the worker
  * thread during a scan and read by the main thread's scan_monitor
@@ -71,6 +120,42 @@ static char scan_current_dir[PATH_MAX];
 static boolean scan_preparing = FALSE;
 
 
+/* Fills a node descriptor from stat results */
+static void
+node_desc_fill_from_stat( NodeDesc *ndesc, const struct stat *st )
+{
+	/* Determine node type */
+	if (S_ISDIR(st->st_mode))
+		ndesc->type = NODE_DIRECTORY;
+	else if (S_ISREG(st->st_mode))
+		ndesc->type = NODE_REGFILE;
+	else if (S_ISLNK(st->st_mode))
+		ndesc->type = NODE_SYMLINK;
+	else if (S_ISFIFO(st->st_mode))
+		ndesc->type = NODE_FIFO;
+	else if (S_ISSOCK(st->st_mode))
+		ndesc->type = NODE_SOCKET;
+	else if (S_ISCHR(st->st_mode))
+		ndesc->type = NODE_CHARDEV;
+	else if (S_ISBLK(st->st_mode))
+		ndesc->type = NODE_BLOCKDEV;
+	else
+		ndesc->type = NODE_UNKNOWN;
+
+	/* A corrupted DOS filesystem once gave me st_size = -4GB */
+	g_assert( st->st_size >= 0 );
+
+	ndesc->size = st->st_size;
+	ndesc->size_alloc = 512 * st->st_blocks;
+	ndesc->user_id = st->st_uid;
+	ndesc->group_id = st->st_gid;
+	ndesc->perms = st->st_mode & 0777;
+	ndesc->atime = st->st_atime;
+	ndesc->mtime = st->st_mtime;
+	ndesc->ctime = st->st_ctime;
+}
+
+
 /* Official stat function. Returns 0 on success, -1 on error.
  * The path argument is the absolute path to stat. */
 static int
@@ -81,36 +166,7 @@ stat_node( GNode *node, const char *path )
 	if (lstat( path, &st ))
 		return -1;
 
-	/* Determine node type */
-	if (S_ISDIR(st.st_mode))
-		NODE_DESC(node)->type = NODE_DIRECTORY;
-	else if (S_ISREG(st.st_mode))
-		NODE_DESC(node)->type = NODE_REGFILE;
-	else if (S_ISLNK(st.st_mode))
-		NODE_DESC(node)->type = NODE_SYMLINK;
-	else if (S_ISFIFO(st.st_mode))
-		NODE_DESC(node)->type = NODE_FIFO;
-	else if (S_ISSOCK(st.st_mode))
-		NODE_DESC(node)->type = NODE_SOCKET;
-	else if (S_ISCHR(st.st_mode))
-		NODE_DESC(node)->type = NODE_CHARDEV;
-	else if (S_ISBLK(st.st_mode))
-		NODE_DESC(node)->type = NODE_BLOCKDEV;
-	else
-		NODE_DESC(node)->type = NODE_UNKNOWN;
-
-	/* A corrupted DOS filesystem once gave me st_size = -4GB */
-	g_assert( st.st_size >= 0 );
-
-	NODE_DESC(node)->size = st.st_size;
-	NODE_DESC(node)->size_alloc = 512 * st.st_blocks;
-	NODE_DESC(node)->user_id = st.st_uid;
-	NODE_DESC(node)->group_id = st.st_gid;
-	NODE_DESC(node)->perms = st.st_mode & 0777;
-	NODE_DESC(node)->atime = st.st_atime;
-	NODE_DESC(node)->mtime = st.st_mtime;
-	NODE_DESC(node)->ctime = st.st_ctime;
-
+	node_desc_fill_from_stat( NODE_DESC(node), &st );
 	return 0;
 }
 
@@ -134,26 +190,64 @@ de_select( const struct dirent *de )
 }
 
 
+/* Number of scanned entries to accumulate locally before flushing
+ * progress stats to the mutex-protected globals */
+#define SCAN_STATS_BATCH 256
+
+
+/* Flushes locally batched progress stats to the shared counters
+ * read by the main thread's scan_monitor */
+static void
+flush_scan_stats( int *counts, int64 *sizes, int n )
+{
+	int i;
+
+	if (n == 0)
+		return;
+
+	g_mutex_lock( &scan_stats_mutex );
+	stat_count += n;
+	for (i = 0; i < NUM_NODE_TYPES; i++) {
+		node_counts[i] += counts[i];
+		size_counts[i] += sizes[i];
+		counts[i] = 0;
+		sizes[i] = 0;
+	}
+	g_mutex_unlock( &scan_stats_mutex );
+}
+
+
 /* Recursive directory scanner.
  *
  * Runs on the scan worker thread (see scan_worker_thread). MUST NOT
  * touch GTK widgets, globals.fsv_mode, or any other main-thread-owned
  * state — only the tree being built, the name_strchunk, and the
- * progress statics under scan_stats_mutex. */
+ * progress statics under scan_stats_mutex.
+ *
+ * Entries are stat'ed relative to the open directory fd (fstatat),
+ * so the kernel resolves a single path component per entry instead
+ * of re-walking the full path. Sibling order is irrelevant here:
+ * setup_fstree_recursive sorts every directory's children after the
+ * scan. */
 static int
 process_dir( const char *dir, GNode *dnode )
 {
-	union AnyNodeDesc any_node_desc, *andesc;
-	struct dirent **dir_entries;
+	union AnyNodeDesc *andesc;
+	DIR *dirp;
+	struct dirent *de;
+	struct stat st;
 	GNode *node;
-	int num_entries, i;
+	int dfd;
 	int dir_len;
+	int batch_n = 0;
+	int batch_counts[NUM_NODE_TYPES] = { 0 };
+	int64 batch_sizes[NUM_NODE_TYPES] = { 0 };
 	char pathbuf[PATH_MAX];
 
-	/* Scan in directory entries */
-	num_entries = scandir( dir, &dir_entries, de_select, alphasort );
-	if (num_entries < 0)
+	dirp = opendir( dir );
+	if (dirp == NULL)
 		return -1;
+	dfd = dirfd( dirp );
 
 	/* Publish current directory for the main-thread scan_monitor
 	 * timeout to display. */
@@ -161,71 +255,137 @@ process_dir( const char *dir, GNode *dnode )
 	g_strlcpy( scan_current_dir, dir, sizeof(scan_current_dir) );
 	g_mutex_unlock( &scan_stats_mutex );
 
-	/* Prepare path buffer: "dir/" prefix, entry name appended per iteration */
+	/* Prepare path buffer: "dir/" prefix, entry name appended when
+	 * recursing into a subdirectory */
 	dir_len = strlen( dir );
 	memcpy( pathbuf, dir, dir_len );
 	if (dir_len > 0 && pathbuf[dir_len - 1] != '/')
 		pathbuf[dir_len++] = '/';
 
 	/* Process directory entries */
-	for (i = 0; i < num_entries; i++) {
-		/* Build full path for this entry */
-		strncpy( &pathbuf[dir_len], dir_entries[i]->d_name, PATH_MAX - dir_len - 1 );
-		pathbuf[PATH_MAX - 1] = '\0';
-
-		/* Create new node */
-		node = g_node_prepend_data( dnode, &any_node_desc );
-		NODE_DESC(node)->id = node_id;
-		NODE_DESC(node)->name = g_string_chunk_insert( name_strchunk, dir_entries[i]->d_name );
-		if (stat_node( node, pathbuf )) {
-			/* Stat failed */
-			g_node_unlink( node );
-			g_node_destroy( node );
+	while ((de = readdir( dirp )) != NULL) {
+		if (!de_select( de ))
 			continue;
+
+		if (fstatat( dfd, de->d_name, &st, AT_SYMLINK_NOFOLLOW ) != 0)
+			continue;
+
+		/* Allocate the right-sized descriptor up front */
+		if (S_ISDIR(st.st_mode))
+			andesc = (union AnyNodeDesc *)g_new0( DirNodeDesc, 1 );
+		else if (S_ISLNK(st.st_mode)) {
+			/* Symlinks get an extended descriptor so the
+			 * post-scan resolve_symlinks pass can record the
+			 * target's display size. target_size defaults to
+			 * 0 (unresolved). */
+			andesc = (union AnyNodeDesc *)g_new0( SymlinkNodeDesc, 1 );
 		}
-		++node_id;
+		else
+			andesc = (union AnyNodeDesc *)g_new0( NodeDesc, 1 );
+
+		node_desc_fill_from_stat( &andesc->node_desc, &st );
+		andesc->node_desc.id = (unsigned int)g_atomic_int_add( &node_id, 1 );
+		andesc->node_desc.name = g_string_chunk_insert( scan_thread_strchunk( ), de->d_name );
+
+		node = g_node_prepend_data( dnode, andesc );
 
 		if (NODE_IS_DIR(node)) {
 			/* Create corresponding directory tree entry */
 			dirtree_entry_new( node );
 
-			/* Recurse down using the already-built path */
-			process_dir( pathbuf, node );
+			/* Build the full child path */
+			strncpy( &pathbuf[dir_len], de->d_name, PATH_MAX - dir_len - 1 );
+			pathbuf[PATH_MAX - 1] = '\0';
 
-			/* Move new descriptor into working memory */
-			andesc = (union AnyNodeDesc *)g_new0( DirNodeDesc, 1 );
-			memcpy( andesc, DIR_NODE_DESC(node), sizeof(DirNodeDesc) );
-			node->data = andesc;
-		}
-		else if (NODE_DESC(node)->type == NODE_SYMLINK) {
-			/* Symlinks get an extended descriptor so the
-			 * post-scan resolve_symlinks pass can record the
-			 * target's display size. target_size defaults to 0
-			 * (unresolved). */
-			andesc = (union AnyNodeDesc *)g_new0( SymlinkNodeDesc, 1 );
-			memcpy( andesc, NODE_DESC(node), sizeof(NodeDesc) );
-			node->data = andesc;
-		}
-		else {
-			/* Move new descriptor into working memory */
-			andesc = (union AnyNodeDesc *)g_new0( NodeDesc, 1 );
-			memcpy( andesc, NODE_DESC(node), sizeof(NodeDesc) );
-			node->data = andesc;
+			if (scan_pool != NULL) {
+				/* Fan out: hand the subdirectory to the
+				 * pool. The child node is fully constructed
+				 * before the push; only its task will ever
+				 * touch its subtree */
+				DirTask *task = g_new( DirTask, 1 );
+				task->path = g_strdup( pathbuf );
+				task->dnode = node;
+				g_atomic_int_inc( &scan_pending );
+				g_thread_pool_push( scan_pool, task, NULL );
+			}
+			else {
+				/* Serial fallback (pool creation failed) */
+				process_dir( pathbuf, node );
+			}
+
+			pathbuf[dir_len] = '\0';
 		}
 
-		/* Publish progress for the main-thread monitor */
-		g_mutex_lock( &scan_stats_mutex );
-		++stat_count;
-		++node_counts[NODE_DESC(node)->type];
-		size_counts[NODE_DESC(node)->type] += NODE_DESC(node)->size;
-		g_mutex_unlock( &scan_stats_mutex );
-
-		free( dir_entries[i] ); /* !xfree */
+		/* Batched progress for the main-thread monitor */
+		++batch_counts[NODE_DESC(node)->type];
+		batch_sizes[NODE_DESC(node)->type] += NODE_DESC(node)->size;
+		if (++batch_n >= SCAN_STATS_BATCH) {
+			flush_scan_stats( batch_counts, batch_sizes, batch_n );
+			batch_n = 0;
+		}
 	}
 
-	free( dir_entries ); /* !xfree */
+	closedir( dirp );
+	flush_scan_stats( batch_counts, batch_sizes, batch_n );
 
 	return 0;
+}
+
+
+/* Thread-pool wrapper around process_dir. The last task to finish
+ * wakes the scan worker waiting in scan_disk_phase */
+static void
+scan_dir_task( gpointer data, G_GNUC_UNUSED gpointer user_data )
+{
+	DirTask *task = data;
+
+	process_dir( task->path, task->dnode );
+	g_free( task->path );
+	g_free( task );
+
+	if (g_atomic_int_dec_and_test( &scan_pending )) {
+		g_mutex_lock( &scan_done_mutex );
+		g_cond_broadcast( &scan_done_cond );
+		g_mutex_unlock( &scan_done_mutex );
+	}
+}
+
+
+/* Runs the disk phase: parallel fan-out over a thread pool, falling
+ * back to the serial recursive scan if the pool can't be created */
+static void
+scan_disk_phase( const char *root_dir )
+{
+	GError *err = NULL;
+	int nthreads;
+	DirTask *task;
+
+	nthreads = CLAMP( (int)g_get_num_processors( ), 2, SCANFS_MAX_SCAN_THREADS );
+	scan_pool = g_thread_pool_new( scan_dir_task, NULL, nthreads, TRUE, &err );
+	if (err != NULL) {
+		g_warning( "scanfs: thread pool unavailable (%s), scanning serially", err->message );
+		g_clear_error( &err );
+		scan_pool = NULL;
+		process_dir( root_dir, root_dnode );
+		return;
+	}
+
+	task = g_new( DirTask, 1 );
+	task->path = g_strdup( root_dir );
+	task->dnode = root_dnode;
+	g_atomic_int_set( &scan_pending, 1 );
+	g_thread_pool_push( scan_pool, task, NULL );
+
+	/* Wait for the whole traversal to drain. The predicate is
+	 * checked under the mutex, and finishing tasks take the mutex
+	 * to broadcast, so the wakeup cannot be lost */
+	g_mutex_lock( &scan_done_mutex );
+	while (g_atomic_int_get( &scan_pending ) > 0)
+		g_cond_wait( &scan_done_cond, &scan_done_mutex );
+	g_mutex_unlock( &scan_done_mutex );
+
+	g_thread_pool_free( scan_pool, FALSE, TRUE );
+	scan_pool = NULL;
 }
 
 
@@ -320,9 +480,14 @@ scan_worker_thread(
 	G_GNUC_UNUSED GCancellable *cancellable )
 {
 	ScanContext *ctx = task_data;
+	gint64 scan_t0;
 
 	/* Disk thrashing phase */
-	process_dir( ctx->root_dir, root_dnode );
+	scan_t0 = g_get_monotonic_time( );
+	scan_disk_phase( ctx->root_dir );
+	g_message( "scanfs: disk phase %.2f s (%u nodes)",
+	           (g_get_monotonic_time( ) - scan_t0) / 1.0e6,
+	           (unsigned int)g_atomic_int_get( &node_id ) );
 
 	/* Post-scan tree finalisation. No GTK calls — safe on worker. */
 	ctx->node_count = node_id;
@@ -735,10 +900,15 @@ scanfs( const char *dir, FsvMode initial_mode,
 		dirtree_clear( );
 	}
 
-	/* ...and string chunks to hold name strings */
+	/* ...and string chunks to hold name strings (both the main
+	 * thread's chunk and the previous scan's per-thread chunks) */
 	if (name_strchunk != NULL)
 		g_string_chunk_free( name_strchunk );
 	name_strchunk = g_string_chunk_new( 8192 );
+	g_mutex_lock( &scan_strchunks_mutex );
+	g_slist_free_full( scan_strchunks, (GDestroyNotify)g_string_chunk_free );
+	scan_strchunks = NULL;
+	g_mutex_unlock( &scan_strchunks_mutex );
 
 	/* Reset node numbering */
 	node_id = 0;
