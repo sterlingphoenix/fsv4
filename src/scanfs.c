@@ -52,11 +52,59 @@ int alphasort( const void *a, const void *b );
 #define SCAN_MONITOR_PERIOD 500
 
 
-/* Name strings are stored here */
+/* Name strings are stored here (main-thread inserts: root/metanode
+ * names; scan threads use per-thread chunks, see scan_strchunks) */
 static GStringChunk *name_strchunk = NULL;
 
-/* Node ID counter (worker-thread only during scan) */
-static unsigned int node_id;
+/* Node ID counter. Plain increments outside the scan; atomic
+ * fetch-add from the parallel scan tasks (IDs are unique but not
+ * DFS-ordered — nothing depends on the order: node_table is indexed
+ * by ID and children are sorted post-scan) */
+static gint node_id;
+
+
+/* --- Parallel scan machinery ------------------------------------ */
+
+/* Upper bound on scan threads (storage stops scaling before CPUs do) */
+#define SCANFS_MAX_SCAN_THREADS 8
+
+/* A unit of scan work: one directory */
+typedef struct {
+	char *path;	/* owned */
+	GNode *dnode;
+} DirTask;
+
+static GThreadPool *scan_pool = NULL;
+/* Tasks queued or running; incremented before every push */
+static gint scan_pending = 0;
+static GMutex scan_done_mutex;
+static GCond scan_done_cond;
+
+/* GStringChunk is not thread-safe: each scan thread lazily creates
+ * its own chunk. All chunks are kept in scan_strchunks (names must
+ * outlive the scan) and freed at the start of the next scan. The
+ * pool is exclusive, so every scan gets fresh threads and thus
+ * fresh per-thread chunk pointers. */
+static GPrivate scan_chunk_key = G_PRIVATE_INIT( NULL );
+static GSList *scan_strchunks = NULL;
+static GMutex scan_strchunks_mutex;
+
+
+static GStringChunk *
+scan_thread_strchunk( void )
+{
+	GStringChunk *chunk = g_private_get( &scan_chunk_key );
+
+	if (chunk == NULL) {
+		chunk = g_string_chunk_new( 8192 );
+		g_private_set( &scan_chunk_key, chunk );
+		g_mutex_lock( &scan_strchunks_mutex );
+		scan_strchunks = g_slist_prepend( scan_strchunks, chunk );
+		g_mutex_unlock( &scan_strchunks_mutex );
+	}
+
+	return chunk;
+}
 
 /* Scan progress — all of the fields below are written by the worker
  * thread during a scan and read by the main thread's scan_monitor
@@ -236,8 +284,8 @@ process_dir( const char *dir, GNode *dnode )
 			andesc = (union AnyNodeDesc *)g_new0( NodeDesc, 1 );
 
 		node_desc_fill_from_stat( &andesc->node_desc, &st );
-		andesc->node_desc.id = node_id++;
-		andesc->node_desc.name = g_string_chunk_insert( name_strchunk, de->d_name );
+		andesc->node_desc.id = (unsigned int)g_atomic_int_add( &node_id, 1 );
+		andesc->node_desc.name = g_string_chunk_insert( scan_thread_strchunk( ), de->d_name );
 
 		node = g_node_prepend_data( dnode, andesc );
 
@@ -245,10 +293,26 @@ process_dir( const char *dir, GNode *dnode )
 			/* Create corresponding directory tree entry */
 			dirtree_entry_new( node );
 
-			/* Recurse down using the full child path */
+			/* Build the full child path */
 			strncpy( &pathbuf[dir_len], de->d_name, PATH_MAX - dir_len - 1 );
 			pathbuf[PATH_MAX - 1] = '\0';
-			process_dir( pathbuf, node );
+
+			if (scan_pool != NULL) {
+				/* Fan out: hand the subdirectory to the
+				 * pool. The child node is fully constructed
+				 * before the push; only its task will ever
+				 * touch its subtree */
+				DirTask *task = g_new( DirTask, 1 );
+				task->path = g_strdup( pathbuf );
+				task->dnode = node;
+				g_atomic_int_inc( &scan_pending );
+				g_thread_pool_push( scan_pool, task, NULL );
+			}
+			else {
+				/* Serial fallback (pool creation failed) */
+				process_dir( pathbuf, node );
+			}
+
 			pathbuf[dir_len] = '\0';
 		}
 
@@ -265,6 +329,63 @@ process_dir( const char *dir, GNode *dnode )
 	flush_scan_stats( batch_counts, batch_sizes, batch_n );
 
 	return 0;
+}
+
+
+/* Thread-pool wrapper around process_dir. The last task to finish
+ * wakes the scan worker waiting in scan_disk_phase */
+static void
+scan_dir_task( gpointer data, G_GNUC_UNUSED gpointer user_data )
+{
+	DirTask *task = data;
+
+	process_dir( task->path, task->dnode );
+	g_free( task->path );
+	g_free( task );
+
+	if (g_atomic_int_dec_and_test( &scan_pending )) {
+		g_mutex_lock( &scan_done_mutex );
+		g_cond_broadcast( &scan_done_cond );
+		g_mutex_unlock( &scan_done_mutex );
+	}
+}
+
+
+/* Runs the disk phase: parallel fan-out over a thread pool, falling
+ * back to the serial recursive scan if the pool can't be created */
+static void
+scan_disk_phase( const char *root_dir )
+{
+	GError *err = NULL;
+	int nthreads;
+	DirTask *task;
+
+	nthreads = CLAMP( (int)g_get_num_processors( ), 2, SCANFS_MAX_SCAN_THREADS );
+	scan_pool = g_thread_pool_new( scan_dir_task, NULL, nthreads, TRUE, &err );
+	if (err != NULL) {
+		g_warning( "scanfs: thread pool unavailable (%s), scanning serially", err->message );
+		g_clear_error( &err );
+		scan_pool = NULL;
+		process_dir( root_dir, root_dnode );
+		return;
+	}
+
+	task = g_new( DirTask, 1 );
+	task->path = g_strdup( root_dir );
+	task->dnode = root_dnode;
+	g_atomic_int_set( &scan_pending, 1 );
+	g_thread_pool_push( scan_pool, task, NULL );
+
+	/* Wait for the whole traversal to drain. The predicate is
+	 * checked under the mutex, and finishing tasks take the mutex
+	 * to broadcast, so the wakeup cannot be lost */
+	g_mutex_lock( &scan_done_mutex );
+	while (g_atomic_int_get( &scan_pending ) > 0)
+		g_cond_wait( &scan_done_cond, &scan_done_mutex );
+	g_mutex_unlock( &scan_done_mutex );
+
+	g_thread_pool_free( scan_pool, FALSE, TRUE );
+	scan_pool = NULL;
 }
 
 
@@ -363,10 +484,10 @@ scan_worker_thread(
 
 	/* Disk thrashing phase */
 	scan_t0 = g_get_monotonic_time( );
-	process_dir( ctx->root_dir, root_dnode );
+	scan_disk_phase( ctx->root_dir );
 	g_message( "scanfs: disk phase %.2f s (%u nodes)",
 	           (g_get_monotonic_time( ) - scan_t0) / 1.0e6,
-	           node_id );
+	           (unsigned int)g_atomic_int_get( &node_id ) );
 
 	/* Post-scan tree finalisation. No GTK calls — safe on worker. */
 	ctx->node_count = node_id;
@@ -779,10 +900,15 @@ scanfs( const char *dir, FsvMode initial_mode,
 		dirtree_clear( );
 	}
 
-	/* ...and string chunks to hold name strings */
+	/* ...and string chunks to hold name strings (both the main
+	 * thread's chunk and the previous scan's per-thread chunks) */
 	if (name_strchunk != NULL)
 		g_string_chunk_free( name_strchunk );
 	name_strchunk = g_string_chunk_new( 8192 );
+	g_mutex_lock( &scan_strchunks_mutex );
+	g_slist_free_full( scan_strchunks, (GDestroyNotify)g_string_chunk_free );
+	scan_strchunks = NULL;
+	g_mutex_unlock( &scan_strchunks_mutex );
 
 	/* Reset node numbering */
 	node_id = 0;

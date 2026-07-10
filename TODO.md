@@ -2351,31 +2351,36 @@ Step 45.1 — Single-threaded groundwork (v4.45.01)
       directory end.
   [x] Log the disk-phase duration (g_message, wall seconds + node
       count) at scan end — the benchmark instrument for this phase.
-  [ ] Build clean (v4.45.01). User times a large scan against the
-      baseline (run from a terminal to see the g_message; run twice
-      and compare warm-cache numbers).
+  [x] Build clean (v4.45.01). User: 2.8 s vs ~30 s baseline on the
+      big tree (~10x from the single-threaded fixes alone) and
+      "everything still looks good".
 
-Step 45.2 — Parallel traversal
-  [ ] DirTask { path, dnode } fed to an exclusive GThreadPool of
-      CLAMP(g_get_num_processors(), 2, 8) threads. Task: open dir,
-      readdir+fstatat loop building children, then enqueue one task
-      per subdirectory. Recursion becomes queue fan-out.
-  [ ] Completion: atomic pending-task counter (incremented before
-      each push, decremented at task end) + GCond; the scan worker
-      pushes the root task and waits for pending == 0. Post-scan
-      passes (setup_fstree, symlink resolve, prebuild) stay
-      single-threaded and unchanged.
-  [ ] node_id becomes an atomic fetch-add (IDs stay unique; DFS
-      ordering is lost, but nothing depends on it — node_table is
-      indexed by ID, and children are sorted post-scan).
-  [ ] name_strchunk is not thread-safe: per-thread GStringChunk via
-      GPrivate, each registered in a global list on creation; the
-      list is freed and reset at the start of the next scan (names
-      must outlive the scan). Exclusive pool = fresh threads per
-      scan = fresh privates.
-  [ ] Progress stats keep the 45.1 batching; scan_current_dir shows
-      whichever directory a worker last claimed (fine).
-  [ ] Build. User times the same tree; expect the big jump.
+Step 45.2 — Parallel traversal (v4.45.02)
+  [x] DirTask { path, dnode } fed to an exclusive GThreadPool of
+      CLAMP(g_get_num_processors(), 2, 8) threads (scan_disk_phase /
+      scan_dir_task). process_dir keeps both modes: pool active →
+      subdirectories are enqueued; pool NULL → serial recursion
+      (fallback if pool creation fails). Child nodes are fully
+      constructed before their task is pushed; the queue transfer is
+      the memory barrier. Bonus: no recursion = no stack depth limit
+      on pathological trees in parallel mode.
+  [x] Completion: atomic scan_pending (incremented before each push,
+      dec-and-test at task end) + GCond broadcast under mutex; the
+      scan worker waits with the predicate checked under the same
+      mutex (no lost wakeup). Post-scan passes unchanged,
+      single-threaded; ctx->node_count read after the pool join.
+  [x] node_id: atomic fetch-add. IDs unique, not DFS-ordered
+      (node_table is ID-indexed; children sorted post-scan).
+  [x] Per-thread GStringChunks via GPrivate, registered in
+      scan_strchunks on creation; freed at the start of the next
+      scan (names outlive the scan). Main-thread name_strchunk kept
+      for root/metanode names. Exclusive pool = fresh threads and
+      fresh privates per scan.
+  [x] Progress stats keep the 45.1 batching; scan_current_dir shows
+      whichever directory a worker last claimed.
+  [ ] Build clean (v4.45.02). User times the same tree (warm run,
+      terminal for the g_message) and sanity-checks totals + all
+      three modes.
 
 Step 45.3 — Checkpoint
   Checkpoint: User confirms on their largest tree:
