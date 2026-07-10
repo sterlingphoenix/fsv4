@@ -64,6 +64,11 @@ typedef enum {
 	FRAMEPROF_LABEL_WALK,
 	FRAMEPROF_TEXT_FLUSH,
 	FRAMEPROF_PICK_RENDER,
+	/* Phase 46.B.3: the two per-frame blocks that used to hide in
+	 * "other" — the TreeV re-arrange walk and the GPU deployment
+	 * transform-table update */
+	FRAMEPROF_ARRANGE,
+	FRAMEPROF_XFORM_UPDATE,
 	FRAMEPROF_NUM_BUCKETS
 } FrameProfBucket;
 
@@ -82,7 +87,7 @@ void frameprof_bucket_begin( FrameProfBucket b );
 void frameprof_bucket_end( FrameProfBucket b );
 
 /* Counters published from tmaptext. */
-void frameprof_text_upload( int bytes );
+void frameprof_text_upload( gint64 bytes );
 void frameprof_text_draw_call( void );
 
 /* Counters published from elsewhere. */

@@ -1092,6 +1092,29 @@ treev_look_at( GNode *node, MorphType mtype, double pan_time_override )
 		pan_time = CLAMP(k, TREEV_CAMERA_MIN_PAN_TIME, TREEV_CAMERA_MAX_PAN_TIME);
 	}
 
+	/* Angles must take the short way around: the camera's angles
+	 * are kept normalized to (-180, 180] (keyboard panning), while
+	 * geometry thetas live around 90 +/- half the tree arc — when
+	 * the two straddle the wrap, a naive morph spins the camera a
+	 * full 360 degrees on its way to the target */
+	{
+		double *cur, *tgt;
+
+		cur = &TREEV_CAMERA(camera)->target.theta;
+		tgt = &TREEV_CAMERA(new_cam)->target.theta;
+		while (*tgt - *cur > 180.0)
+			*tgt -= 360.0;
+		while (*tgt - *cur < -180.0)
+			*tgt += 360.0;
+
+		cur = &camera->theta;
+		tgt = &new_cam->theta;
+		while (*tgt - *cur > 180.0)
+			*tgt -= 360.0;
+		while (*tgt - *cur < -180.0)
+			*tgt += 360.0;
+	}
+
 	/* Get the camera moving */
 	morph( &camera->theta, mtype, new_cam->theta, pan_time );
 	morph( &camera->phi, mtype, new_cam->phi, pan_time );

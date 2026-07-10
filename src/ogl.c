@@ -125,12 +125,18 @@ ogl_init( void )
 		shader_program_add_uniform( &lit_shader, "u_diffuse_scale" );
 		shader_program_add_uniform( &lit_shader, "u_glow_near" );
 		shader_program_add_uniform( &lit_shader, "u_glow_far" );
+		shader_program_add_uniform( &lit_shader, "u_deploy_on" );
+		shader_program_add_uniform( &lit_shader, "u_deploy_index" );
+		shader_program_add_uniform( &lit_shader, "u_deploy_xform" );
 	}
 
 	if (!shader_program_create( &pick_shader, pick_vert_src, pick_frag_src ))
 		g_warning( "Failed to compile pick shader" );
 	else {
 		shader_program_add_uniform( &pick_shader, "u_mvp" );
+		shader_program_add_uniform( &pick_shader, "u_deploy_on" );
+		shader_program_add_uniform( &pick_shader, "u_deploy_index" );
+		shader_program_add_uniform( &pick_shader, "u_deploy_xform" );
 	}
 
 	if (!shader_program_create( &text_shader, text_vert_src, text_frag_src ))

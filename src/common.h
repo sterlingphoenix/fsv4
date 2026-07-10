@@ -232,6 +232,11 @@ struct _DirNodeDesc {
 	boolean		tree_expanded;
 	/* Flag: TRUE if directory geometry is being drawn expanded */
 	bitfield	geom_expanded : 1;
+	/* Flag: TRUE if drawn fully deployed (no morphing leaf).
+	 * Together with geom_expanded this detects deployment 0/1
+	 * boundary crossings — the only moments batch CONTENT changes
+	 * under GPU deployment (Phase 46.B) */
+	bitfield	geom_fully : 1;
 };
 
 /* Symbolic links have their own extended descriptor so they can carry

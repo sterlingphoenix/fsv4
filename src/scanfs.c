@@ -490,19 +490,25 @@ scan_worker_thread(
 	           (unsigned int)g_atomic_int_get( &node_id ) );
 
 	/* Post-scan tree finalisation. No GTK calls — safe on worker. */
+	scan_t0 = g_get_monotonic_time( );
 	ctx->node_count = node_id;
 	ctx->node_table = NEW_ARRAY(GNode *, ctx->node_count);
 	setup_fstree_recursive( globals.fstree, ctx->node_table );
+	g_message( "scanfs: tree setup (sort + subtree totals) %.2f s",
+	           (g_get_monotonic_time( ) - scan_t0) / 1.0e6 );
 
 	/* Resolve symlink target sizes now that subtree totals exist.
 	 * Pure tree walk + stat() calls; no GTK access. Precompute the
 	 * root's absolute path so the recursive pass doesn't touch
 	 * node_absname's main-thread-owned static buffer. */
+	scan_t0 = g_get_monotonic_time( );
 	{
 		char root_abs[PATH_MAX];
 		if (node_abspath_worker( root_dnode, root_abs, sizeof(root_abs) ) == 0)
 			resolve_symlinks_recursive( globals.fstree, root_abs );
 	}
+	g_message( "scanfs: symlink resolve %.2f s",
+	           (g_get_monotonic_time( ) - scan_t0) / 1.0e6 );
 
 	/* Pre-lay out + color the initial visualization on the worker
 	 * thread so the main thread doesn't freeze for seconds after
@@ -517,7 +523,10 @@ scan_worker_thread(
 	scan_preparing = TRUE;
 	g_mutex_unlock( &scan_stats_mutex );
 
+	scan_t0 = g_get_monotonic_time( );
 	geometry_init( ctx->initial_mode );
+	g_message( "scanfs: initial layout + colors %.2f s",
+	           (g_get_monotonic_time( ) - scan_t0) / 1.0e6 );
 
 	g_task_return_boolean( task, TRUE );
 }

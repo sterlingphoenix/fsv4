@@ -611,6 +611,7 @@ void
 gui_clist_append( GtkWidget *clist_w, GdkTexture *icon, const char *text[], int num_text, gpointer data )
 {
 	GListStore *store = g_object_get_data( G_OBJECT(clist_w), "list_store" );
+	GPtrArray *batch = g_object_get_data( G_OBJECT(clist_w), "append_batch" );
 	FsvListRow *row = g_object_new( FSV_TYPE_LIST_ROW, NULL );
 	int i;
 
@@ -619,8 +620,48 @@ gui_clist_append( GtkWidget *clist_w, GdkTexture *icon, const char *text[], int 
 	for (i = 0; i < num_text && i < 4; i++)
 		row->col_text[i] = g_strdup( text[i] );
 	row->data = data;
-	g_list_store_append( store, row );
-	g_object_unref( row );
+
+	if (batch != NULL) {
+		/* Batched mode: collected, committed by append_end */
+		g_ptr_array_add( batch, row ); /* batch owns the ref */
+	}
+	else {
+		g_list_store_append( store, row );
+		g_object_unref( row );
+	}
+}
+
+
+/* Begins a batched append: subsequent gui_clist_append calls are
+ * collected and committed by gui_clist_append_end in ONE model
+ * splice. One items-changed signal instead of one per row —
+ * appending tens of thousands of rows one at a time freezes the
+ * UI for seconds while the list view digests each signal. */
+void
+gui_clist_append_begin( GtkWidget *clist_w )
+{
+	g_object_set_data( G_OBJECT(clist_w), "append_batch",
+	                   g_ptr_array_new_with_free_func( g_object_unref ) );
+}
+
+
+void
+gui_clist_append_end( GtkWidget *clist_w )
+{
+	GListStore *store = g_object_get_data( G_OBJECT(clist_w), "list_store" );
+	GPtrArray *batch = g_object_get_data( G_OBJECT(clist_w), "append_batch" );
+
+	if (batch == NULL)
+		return;
+
+	/* Detach first so the splice's signal emission can't re-enter
+	 * batched mode by accident */
+	g_object_set_data( G_OBJECT(clist_w), "append_batch", NULL );
+
+	g_list_store_splice( store,
+	                     g_list_model_get_n_items( G_LIST_MODEL(store) ),
+	                     0, batch->pdata, batch->len );
+	g_ptr_array_unref( batch ); /* unrefs the rows (splice ref'd them) */
 }
 
 

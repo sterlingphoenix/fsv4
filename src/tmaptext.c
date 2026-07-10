@@ -100,6 +100,26 @@ static mat4   cache_camera_mv_inv;
  * cache), so we force a rebuild. See text_cache_replay. */
 static double cache_built_distance = 0.0;
 
+/* Soft staleness: the cached labels are still perfectly drawable
+ * (world-space vertices, re-projected per frame), just based on
+ * slightly out-of-date cull/layout decisions. A stale cache keeps
+ * being replayed — labels must NEVER vanish during animation (hard
+ * Phase 39.2 constraint) — and is rebuilt at most once per
+ * TEXT_CACHE_REFRESH_US. Hard invalidation (text_cache_invalidate:
+ * geometry replaced, viewport resized, labels toggled) still forces
+ * an immediate rebuild. */
+static boolean cache_stale = FALSE;
+static gint64 cache_built_time = 0;
+/* Camera modelview at build time: any difference marks the cache
+ * stale (the frustum/screen-size cull decisions moved with it) */
+static float cache_built_cam[16];
+#define TEXT_CACHE_REFRESH_US (150 * 1000)
+
+/* Diagnostics for the frameprof summary */
+static int cache_diag_hard = 0;
+static int cache_diag_soft = 0;
+static int cache_diag_rebuilds = 0;
+
 
 /* Simple XBM parser - bits to bytes. Caller assumes responsibility for
  * freeing the returned pixel buffer */
@@ -319,7 +339,7 @@ static void
 text_flush( void )
 {
 	const float *proj;
-	int upload_bytes;
+	gint64 upload_bytes;
 
 	if (text_count == 0)
 		return;
@@ -639,17 +659,43 @@ void
 text_cache_invalidate( void )
 {
 	cache_is_valid = FALSE;
+	++cache_diag_hard;
 }
 
 
-/* If the cache is valid, replay it with the current camera matrix
+/* Marks the cache stale: the labels in it are still drawable, but
+ * their membership/positions are based on out-of-date decisions.
+ * Replay keeps drawing a stale cache and rebuilds it at most once
+ * per TEXT_CACHE_REFRESH_US — labels update at a few Hz during
+ * sustained animation instead of costing a rebuild every frame */
+void
+text_cache_touch( void )
+{
+	cache_stale = TRUE;
+	++cache_diag_soft;
+}
+
+
+/* Reports and resets the diagnostics counters (frameprof summary) */
+void
+text_cache_stats( int *hard, int *soft, int *rebuilds )
+{
+	*hard = cache_diag_hard;
+	*soft = cache_diag_soft;
+	*rebuilds = cache_diag_rebuilds;
+	cache_diag_hard = 0;
+	cache_diag_soft = 0;
+	cache_diag_rebuilds = 0;
+}
+
+
+/* If the cache is usable, replay it with the current camera matrix
  * and return TRUE. Caller skips its tree walk in that case.
  *
- * Self-invalidates if the camera distance has changed enough since
- * the cache was built that per-leaf cull decisions are likely stale.
- * The threshold lets the cache survive small zooms (pan/dolly while
- * staying at roughly the same scale) but rebuilds after the user
- * moves into or out of a meaningfully different scale. */
+ * Significant zoom since the last build only marks the cache stale
+ * (per-leaf cull decisions drift) — the stale set keeps drawing,
+ * and the rebuild happens on the throttle like any other soft
+ * staleness. Only hard invalidation forces an immediate rebuild. */
 boolean
 text_cache_replay( void )
 {
@@ -657,18 +703,23 @@ text_cache_replay( void )
 	const float *cam;
 	mat4 mvp;
 
-	if (cache_is_valid && cache_built_distance > 0.0) {
-		double ratio = camera->distance / cache_built_distance;
-		if (ratio < 0.7 || ratio > 1.5) {
-			/* Significant zoom — labels that would now
-			 * pass / fail the per-leaf screen-size cull
-			 * differ from what's in the cache. */
-			cache_is_valid = FALSE;
-		}
-	}
-
 	if (!cache_is_valid)
 		return FALSE;
+
+	/* Any camera motion (pan, orbit, zoom) changes which labels
+	 * pass the frustum/screen-size culls — mark stale so the set
+	 * refreshes on the throttle. An idle camera compares equal and
+	 * never triggers a rebuild. (Subsumes the old zoom-ratio
+	 * heuristic.) */
+	if (!cache_stale
+	    && memcmp( cache_built_cam, ogl_get_camera_modelview( ),
+	               sizeof(cache_built_cam) ) != 0)
+		cache_stale = TRUE;
+
+	if (cache_stale
+	    && (g_get_monotonic_time( ) - cache_built_time) >= TEXT_CACHE_REFRESH_US)
+		return FALSE; /* refresh window open — rebuild now */
+
 	if (cache_vertex_count == 0)
 		return TRUE; /* nothing to draw, but no walk needed */
 
@@ -740,7 +791,7 @@ text_cache_begin_emit( void )
 void
 text_cache_end_emit( void )
 {
-	int upload_bytes;
+	gint64 upload_bytes;
 
 	cache_filling = FALSE;
 
@@ -748,14 +799,20 @@ text_cache_end_emit( void )
 
 	frameprof_bucket_begin( FRAMEPROF_TEXT_FLUSH );
 
+	/* STREAM_DRAW: this buffer is rewritten on every refresh */
 	glBindBuffer( GL_ARRAY_BUFFER, cache_vbo );
 	glBufferData( GL_ARRAY_BUFFER, upload_bytes,
-	              text_vertices, GL_STATIC_DRAW );
+	              text_vertices, GL_STREAM_DRAW );
 	glBindBuffer( GL_ARRAY_BUFFER, 0 );
 
 	cache_vertex_count = text_count;
 	cache_is_valid = TRUE;
+	cache_stale = FALSE;
+	cache_built_time = g_get_monotonic_time( );
 	cache_built_distance = camera->distance;
+	memcpy( cache_built_cam, ogl_get_camera_modelview( ),
+	        sizeof(cache_built_cam) );
+	++cache_diag_rebuilds;
 
 	frameprof_text_upload( upload_bytes );
 
