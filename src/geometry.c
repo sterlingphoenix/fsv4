@@ -796,6 +796,13 @@ discv_setup_lit_shader( void )
 	glUniform1f(
 		shader_program_get_uniform( &lit_shader, "u_diffuse_scale" ),
 		1.0f );
+	/* Distance brightening is TreeV-only: zero both thresholds so
+	 * TreeV's values can't leak across a mode switch (uniforms
+	 * persist per program) */
+	glUniform1f(
+		shader_program_get_uniform( &lit_shader, "u_glow_near" ), 0.0f );
+	glUniform1f(
+		shader_program_get_uniform( &lit_shader, "u_glow_far" ), 0.0f );
 }
 
 
@@ -1929,6 +1936,13 @@ mapv_setup_lit_shader( float diffuse_scale )
 	glUniform1f(
 		shader_program_get_uniform( &lit_shader, "u_diffuse_scale" ),
 		diffuse_scale );
+	/* Distance brightening is TreeV-only: zero both thresholds so
+	 * TreeV's values can't leak across a mode switch (uniforms
+	 * persist per program) */
+	glUniform1f(
+		shader_program_get_uniform( &lit_shader, "u_glow_near" ), 0.0f );
+	glUniform1f(
+		shader_program_get_uniform( &lit_shader, "u_glow_far" ), 0.0f );
 }
 
 
@@ -2037,6 +2051,11 @@ mapv_draw( boolean high_detail )
 #define TREEV_PLATFORM_HEIGHT		158.2
 #define TREEV_PLATFORM_SPACING_WIDTH	512.0
 #define TREEV_LEAF_HEIGHT_MULTIPLIER	10
+/* Distance-brightening thresholds, as factors of the scene radius:
+ * fragments nearer than NEAR keep normal lighting, fragments beyond
+ * FAR render at full emissive base color */
+#define TREEV_GLOW_NEAR_FACTOR		0.25
+#define TREEV_GLOW_FAR_FACTOR		1.25
 #define TREEV_LEAF_PADDING		(0.125 * TREEV_LEAF_NODE_EDGE)
 #define TREEV_PLATFORM_PADDING		(0.5 * TREEV_PLATFORM_SPACING_WIDTH)
 
@@ -2625,6 +2644,21 @@ geometry_treev_reinit( void )
 	treev_init_recursive( globals.fstree );
 	treev_arrange( TRUE );
 	queue_uncached_draw( );
+}
+
+
+/* Forces the TreeV layout into its arranged state right now. Used
+ * before computing camera framing for an expansion: the reserved
+ * end-state fields (platform.subtree_arc_width / subtree_depth) are
+ * only current after an arrange has run against the freshly updated
+ * directory-tree state, which otherwise happens on the next draw */
+void
+geometry_treev_settle_layout( void )
+{
+	if (globals.fsv_mode != FSV_TREEV)
+		return;
+	treev_arrange( TRUE );
+	treev_needs_arrange = FALSE;
 }
 
 
@@ -3671,6 +3705,19 @@ treev_setup_lit_shader_ex( float diffuse_scale )
 	glUniform1f(
 		shader_program_get_uniform( &lit_shader, "u_diffuse_scale" ),
 		diffuse_scale );
+
+	/* Distance brightening: normal lighting up close, emissive base
+	 * color far away, thresholds tied to the scene's radius so the
+	 * effect self-calibrates to any tree size */
+	{
+		double r = geometry_treev_scene_radius( );
+		glUniform1f(
+			shader_program_get_uniform( &lit_shader, "u_glow_near" ),
+			(float)(TREEV_GLOW_NEAR_FACTOR * r) );
+		glUniform1f(
+			shader_program_get_uniform( &lit_shader, "u_glow_far" ),
+			(float)(TREEV_GLOW_FAR_FACTOR * r) );
+	}
 }
 
 static void

@@ -1,4 +1,3 @@
 
- * In DiscV, discs render underneath other discs. 
  * Very slow in scanning large direcotries, and INSANELY slow in renderring them.
 
