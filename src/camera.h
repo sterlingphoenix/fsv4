@@ -100,6 +100,7 @@ void camera_pan_break( void );
 void camera_look_at_full( GNode *node, MorphType mtype, double pan_time_override );
 #endif
 void camera_look_at( GNode *node );
+void camera_treev_frame_expansion( GNode *dnode, double pan_time );
 void camera_treev_lpan_look_at( GNode *node, double pan_time_override );
 void camera_look_at_previous( void );
 void camera_birdseye_view( boolean going_up );

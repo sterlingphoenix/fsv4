@@ -1106,6 +1106,73 @@ treev_look_at( GNode *node, MorphType mtype, double pan_time_override )
 }
 
 
+/* Final camera pose for TreeV expansion framing: anchored to the
+ * pose treev_look_at (and thus Reset) would produce for the
+ * platform, then zoomed out a bit more and pitched shallower */
+#define TREEV_EXPAND_PHI		18.5
+#define TREEV_EXPAND_ZOOM_MARGIN	5.5
+
+
+/* Glides the camera while the expanded subtree of dnode deploys;
+ * used by colexp during TreeV expansions so deployment happens
+ * on-camera. The target pose mirrors treev_look_at's platform
+ * framing (the Reset pose the user already knows), backed off by
+ * TREEV_EXPAND_ZOOM_MARGIN and pitched to TREEV_EXPAND_PHI. The
+ * user's orbit angle is deliberately preserved — only pitch,
+ * distance and target glide */
+void
+camera_treev_frame_expansion( GNode *dnode, double pan_time )
+{
+	TreeVGeomParams *gp;
+	double height, diameter, distance;
+	double target_theta, cur_theta;
+
+	g_assert( globals.fsv_mode == FSV_TREEV );
+	g_assert( NODE_IS_DIR(dnode) );
+
+	/* Platform geometry of freshly expanding directories is only
+	 * current once the layout has settled against the updated
+	 * directory-tree state */
+	geometry_treev_settle_layout( );
+
+	if (geometry_treev_is_leaf( dnode ))
+		return;
+
+	gp = TREEV_GEOM_PARAMS(dnode);
+
+	/* Same framing basis as treev_look_at's non-leaf branch */
+	height = geometry_treev_max_leaf_height( dnode );
+	diameter = MAX(gp->platform.depth + (0.5 * TREEV_PLATFORM_SPACING_DEPTH), 0.25 * height);
+	distance = TREEV_EXPAND_ZOOM_MARGIN * field_distance( camera->fov, diameter );
+
+	/* Take the short way around to the platform's centerline */
+	target_theta = geometry_treev_platform_theta( dnode );
+	cur_theta = TREEV_CAMERA(camera)->target.theta;
+	while (target_theta - cur_theta > 180.0)
+		target_theta -= 360.0;
+	while (target_theta - cur_theta < -180.0)
+		target_theta += 360.0;
+
+	/* Get to the vantage point quickly and watch the build from
+	 * there: cap the travel time regardless of how long a deep
+	 * tree's staggered deployment runs, and use the same
+	 * fast-start easing as the deployment morphs themselves so
+	 * the camera leads the action instead of trailing it */
+	pan_time = CLAMP(pan_time, TREEV_CAMERA_MIN_PAN_TIME, TREEV_CAMERA_MAX_PAN_TIME);
+
+	morph( &camera->phi, MORPH_INV_QUADRATIC, TREEV_EXPAND_PHI, pan_time );
+	morph( &camera->distance, MORPH_INV_QUADRATIC, distance, pan_time );
+	morph( &camera->near_clip, MORPH_INV_QUADRATIC, NEAR_TO_DISTANCE_RATIO * distance, pan_time );
+	morph( &camera->far_clip, MORPH_INV_QUADRATIC, FAR_TO_NEAR_RATIO * NEAR_TO_DISTANCE_RATIO * distance, pan_time );
+	morph( &TREEV_CAMERA(camera)->target.r, MORPH_INV_QUADRATIC,
+	       geometry_treev_platform_r0( dnode ) + 0.3 * gp->platform.depth - (0.2 * TREEV_PLATFORM_SPACING_DEPTH), pan_time );
+	morph( &TREEV_CAMERA(camera)->target.theta, MORPH_INV_QUADRATIC, target_theta, pan_time );
+	morph( &TREEV_CAMERA(camera)->target.z, MORPH_INV_QUADRATIC, gp->platform.height, pan_time );
+
+	redraw( );
+}
+
+
 /* Step callback for camera panning */
 static void
 pan_step_cb( G_GNUC_UNUSED Morph *unused )

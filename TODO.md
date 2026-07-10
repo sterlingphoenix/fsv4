@@ -2235,6 +2235,81 @@ Step 43.1 — Emissive distance ramp in the lit shader (v4.43.01)
       0.6 outline glow target.
 
 
+PHASE 44 — TREEV EXPANSION CAMERA
+==================================
+
+User request: TreeV expansion draws off-camera and the camera never
+adjusts afterwards (R proves it knows better). Wanted: (1) the
+camera should glide toward its final angle WHILE deployment
+happens; (2) the final pose should be more zoomed out and at a
+shallower angle than R currently gives. Explicit constraint: do not
+resurrect the Phase 40 camera-fighting ("I would rather do nothing
+than fight those again").
+
+Why this is safe now when Phase 40 wasn't: the row-wrapped layout's
+reserved-arc design means an expansion's end-state geometry
+(subtree_arc_width, subtree_depth, row bases) is fully known from
+frame one — no inflating radii to chase. One precomputed glide with
+the ordinary morph machinery suffices; no locks, no per-frame
+tracking, no settle ticks.
+
+Step 44.1 — Glide-to-frame during expansion (v4.44.01)
+  [x] geometry_treev_settle_layout(): forces treev_arrange(TRUE)
+      immediately so the reserved end-state fields are current right
+      after the dirtree update (normally arranged on the next draw).
+  [x] camera_treev_frame_expansion(dnode, pan_time) in camera.c:
+      frames the annular sector [r0 .. r0+subtree_depth] x
+      [±0.5 * MAX(platform arc, subtree arc)] via its bounding box;
+      distance = TREEV_EXPAND_ZOOM_MARGIN (1.25) * field_distance;
+      phi glides to TREEV_EXPAND_PHI (22.5 deg — shallower than
+      look_at's 30); target glides to the sector center (theta takes
+      the short way around). The user's orbit angle (camera->theta)
+      is deliberately never touched — Phase 40 lesson. All morphs
+      MORPH_SIGMOID over the full expansion duration, so the camera
+      eases out exactly while the tree deploys.
+  [x] colexp.c: the entire Phase-39-era TreeV camera lock is REMOVED
+      (treev_camera_locked + 6 saved statics, the per-step restore
+      in colexp_progress_cb, the save block, and the
+      treev_expand_all_finished unlock timer). EXPAND and
+      EXPAND_RECURSIVE now share one path: TreeV gets
+      camera_treev_frame_expansion (access re-enabled by the generic
+      timer), other modes keep camera_look_at_full. Camera still
+      only moves when the current node is the expanding node or its
+      ancestor, and never under manual control.
+  [x] Build clean (v4.44.01). User: glide works but "the camera
+      retracts waaaaay too far — definitely not going where Reset
+      ends up." The bounding-box framing of the full subtree sector
+      (width = 2*r1 for arcs >= 180) was mathematically complete and
+      practically stratospheric; re-reading the request, Reset's
+      pose was always the intended anchor.
+  [x] v4.44.02: framing re-anchored to treev_look_at's non-leaf pose
+      (identical target.r / target.z / diameter basis), then applied
+      the two requested deltas: TREEV_EXPAND_ZOOM_MARGIN (1.5) on
+      distance and TREEV_EXPAND_PHI (22.5 vs look_at's 30). Orbit
+      angle still untouched; theta still takes the short way around.
+  [x] Build clean (v4.44.02). User tuned constants to taste
+      (TREEV_EXPAND_ZOOM_MARGIN now 5.5, user's edit) — "I have
+      numbers I like." Remaining complaint: camera too slow, "most
+      of the build happens before the camera moves" (full-duration
+      sigmoid spends its first half barely moving).
+  [x] v4.44.03: travel time clamped to TREEV_CAMERA_MIN/MAX_PAN_TIME
+      (0.5–2.0 s) regardless of how long a deep tree's staggered
+      deployment runs, and easing switched from MORPH_SIGMOID to
+      MORPH_INV_QUADRATIC — the same fast-start curve as the
+      deployment morphs, so the camera leads the action and watches
+      most of the build from the final vantage point.
+  [x] Build clean (v4.44.03). User: "Looks great." Final user tuning:
+      TREEV_EXPAND_PHI 18.5 (from 22.5), TREEV_EXPAND_ZOOM_MARGIN
+      5.5 (from 1.5).
+
+  Checkpoint: PASSED at v4.44.03 — expansion camera glides to a
+  shallow overview (18.5 deg, 5.5x margin off the Reset-anchored
+  pose) within 0.5-2 s while the tree deploys; user confirmed on
+  their trees. The Phase-39-era TreeV expand-all camera lock is
+  fully removed from colexp.c; no Phase 40 regressions observed.
+  Phase 44 complete.
+
+
 NOTES
 =====
 - Each step should leave the code compilable and runnable

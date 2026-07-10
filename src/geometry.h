@@ -124,6 +124,7 @@ void geometry_queue_rebuild( GNode *dnode );
 void geometry_init( FsvMode mode );
 boolean geometry_consume_prebuilt( FsvMode mode );
 void geometry_treev_reinit( void );
+void geometry_treev_settle_layout( void );
 void geometry_gldraw_fsv( void );
 void geometry_draw( boolean high_detail );
 void geometry_draw_for_pick( void );

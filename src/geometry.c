@@ -2647,6 +2647,21 @@ geometry_treev_reinit( void )
 }
 
 
+/* Forces the TreeV layout into its arranged state right now. Used
+ * before computing camera framing for an expansion: the reserved
+ * end-state fields (platform.subtree_arc_width / subtree_depth) are
+ * only current after an arrange has run against the freshly updated
+ * directory-tree state, which otherwise happens on the next draw */
+void
+geometry_treev_settle_layout( void )
+{
+	if (globals.fsv_mode != FSV_TREEV)
+		return;
+	treev_arrange( TRUE );
+	treev_needs_arrange = FALSE;
+}
+
+
 /* Hook function for camera pan completion */
 static void
 treev_camera_pan_finished( void )
