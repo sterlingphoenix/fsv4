@@ -1,3 +1,4 @@
 
- * Very slow in scanning large direcotries, and INSANELY slow in renderring them.
+ * Some actions are still a BIT slow on massive (>1,000,000 object) directories.
+ * Navigation can be messy at long distances in TreeV.
 

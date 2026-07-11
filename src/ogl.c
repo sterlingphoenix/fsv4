@@ -283,6 +283,19 @@ ogl_get_camera_modelview( void )
 }
 
 
+/* Count of fully completed ogl_draw calls. Lets callers distinguish
+ * "a frame has actually rendered" from "a redraw has been queued" —
+ * needed by colexp's deferred no-stagger morphs, whose wall-time
+ * clocks must not start until the content-rebuild frame has drawn */
+static guint64 frame_serial = 0;
+
+guint64
+ogl_frame_serial( void )
+{
+	return frame_serial;
+}
+
+
 /* (Re)draws the viewport
  * NOTE: Don't call this directly! Use redraw( ) */
 void
@@ -310,6 +323,7 @@ ogl_draw( void )
 #endif
 
 	frameprof_frame_end( );
+	frame_serial++;
 
 	/* First frame after a mode switch is not drawn
 	 * (with the exception of splash screen mode) */

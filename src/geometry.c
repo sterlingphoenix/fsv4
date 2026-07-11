@@ -238,6 +238,11 @@ static void cursor_post( void );
 static void queue_uncached_draw( void );
 static void discv_draw_cursor( double pos );
 static void deploy_setup_shader( ShaderProgram *prog, boolean enable );
+static int tbuild_subtree_node_count( GNode *dnode );
+
+/* Worker-thread count cap shared by the parallel batch build and the
+ * parallel transform update (storage/memory stop scaling before CPUs) */
+#define TREEV_BUILD_MAX_THREADS 8
 
 
 /**** DISC VISUALIZATION **************************************/
@@ -2100,9 +2105,11 @@ static RGBcolor row_link_color = { 0.72, 0.48, 0.10 };
 static RGBcolor treev_platform_label_color = { 1.0, 1.0, 1.0 };
 static RGBcolor treev_leaf_label_color = { 0.0, 0.0, 0.0 };
 
-/* Point buffers used in drawing curved geometry */
-static XYvec *inner_edge_buf = NULL;
-static XYvec *outer_edge_buf = NULL;
+/* Size of the per-call scratch buffers for curved platform edges
+ * (arc <= 360 degrees at TREEV_CURVE_GRANULARITY). These used to be
+ * shared statics — per-call stack locals since the parallel batch
+ * build (Phase 47.2): multiple threads emit platforms concurrently */
+#define TREEV_EDGE_BUF_POINTS ((int)(360.0 / TREEV_CURVE_GRANULARITY) + 1)
 
 /* Radius of innermost loop */
 static double treev_core_radius;
@@ -2213,15 +2220,61 @@ deploy_compose_pivot_scale( const DeployAffine *chain, double s,
 }
 
 
+/* Parallel transform update (Phase 47.3): the compute walk fans out
+ * by subtree like the batch build — texel writes are disjoint per
+ * slot, all reads are morph values frozen for the frame. A budgeted
+ * fan keeps task sizes bounded regardless of tree shape */
+#define DEPLOY_XF_FANOUT_MIN_NODES 4096
+#define DEPLOY_XF_INLINE_BUDGET 16384
+
+typedef struct {
+	GNode *dnode;
+	DeployAffine chain;
+	double parent_acc;
+	double prev_r0;
+	double r0;
+} XformTask;
+
+static GThreadPool *xf_pool = NULL;
+static boolean xf_pool_failed = FALSE;
+static gint xf_pending = 0;
+static GMutex xf_done_mutex;
+static GCond xf_done_cond;
+
+static void deploy_compute_recursive( GNode *dnode, const DeployAffine *parent_chain,
+                                      double parent_acc, double prev_r0, double r0,
+                                      int *inline_budget );
+
+
+static void
+xf_task_func( gpointer data, G_GNUC_UNUSED gpointer user_data )
+{
+	XformTask *task = data;
+	int inline_budget = DEPLOY_XF_INLINE_BUDGET;
+
+	deploy_compute_recursive( task->dnode, &task->chain,
+	                          task->parent_acc, task->prev_r0, task->r0,
+	                          &inline_budget );
+	g_free( task );
+
+	if (g_atomic_int_dec_and_test( &xf_pending )) {
+		g_mutex_lock( &xf_done_mutex );
+		g_cond_broadcast( &xf_done_cond );
+		g_mutex_unlock( &xf_done_mutex );
+	}
+}
+
+
 /* Recomputes every directory's transform from the current morph
  * state. Mirrors the coordinate conventions of treev_batch_recursive
  * exactly: acc rotations about the world Z axis, pivot = the
  * directory's leaf anchor on its parent's platform (at CURRENT
  * spread angles), scale regions nesting outward. prev_r0/r0 as in
- * the batch walk. O(directories) per frame */
+ * the batch walk. O(directories) per frame, fanned across the pool */
 static void
 deploy_compute_recursive( GNode *dnode, const DeployAffine *parent_chain,
-                          double parent_acc, double prev_r0, double r0 )
+                          double parent_acc, double prev_r0, double r0,
+                          int *inline_budget )
 {
 	TreeVGeomParams *gparams = TREEV_GEOM_PARAMS(dnode);
 	DeployAffine chain, x;
@@ -2230,6 +2283,7 @@ deploy_compute_recursive( GNode *dnode, const DeployAffine *parent_chain,
 	guint32 slot;
 
 	chain = *parent_chain;
+	*inline_budget -= 1;
 
 	/* Partially deployed: everything of this directory (platform,
 	 * leaves, subtree) scales about its leaf anchor, exactly like
@@ -2262,10 +2316,23 @@ deploy_compute_recursive( GNode *dnode, const DeployAffine *parent_chain,
 			 * transforms exactly like this directory's files */
 			deploy_stage_slot( (int)deploy_index_map[NODE_DESC(node)->id], &x );
 		}
+		else if (xf_pool != NULL
+		         && (*inline_budget <= 0
+		             || tbuild_subtree_node_count( node ) >= DEPLOY_XF_FANOUT_MIN_NODES)) {
+			XformTask *task = g_new( XformTask, 1 );
+			task->dnode = node;
+			task->chain = chain;
+			task->parent_acc = acc_now;
+			task->prev_r0 = r0;
+			task->r0 = subtree_r0 + TREEV_GEOM_PARAMS(node)->platform.row_offset;
+			g_atomic_int_inc( &xf_pending );
+			g_thread_pool_push( xf_pool, task, NULL );
+		}
 		else {
 			deploy_compute_recursive( node, &chain, acc_now,
 			                          r0,
-			                          subtree_r0 + TREEV_GEOM_PARAMS(node)->platform.row_offset );
+			                          subtree_r0 + TREEV_GEOM_PARAMS(node)->platform.row_offset,
+			                          inline_budget );
 		}
 		node = node->next;
 	}
@@ -2276,8 +2343,39 @@ deploy_compute_recursive( GNode *dnode, const DeployAffine *parent_chain,
 static void
 deploy_update_xforms( void )
 {
-	deploy_compute_recursive( globals.fstree, &DEPLOY_IDENTITY,
-	                          0.0, 0.0, treev_core_radius );
+	int inline_budget = DEPLOY_XF_INLINE_BUDGET;
+
+	if (xf_pool == NULL && !xf_pool_failed) {
+		GError *err = NULL;
+		int nthreads = CLAMP( (int)g_get_num_processors( ), 2, TREEV_BUILD_MAX_THREADS );
+		xf_pool = g_thread_pool_new( xf_task_func, NULL, nthreads, TRUE, &err );
+		if (err != NULL) {
+			g_warning( "parallel transform update unavailable (%s)", err->message );
+			g_clear_error( &err );
+			xf_pool = NULL;
+			xf_pool_failed = TRUE;
+		}
+	}
+
+	if (xf_pool != NULL) {
+		/* The root invocation runs on this thread and fans out;
+		 * count it as a pending task so the join is race-free */
+		g_atomic_int_set( &xf_pending, 1 );
+		deploy_compute_recursive( globals.fstree, &DEPLOY_IDENTITY,
+		                          0.0, 0.0, treev_core_radius,
+		                          &inline_budget );
+		if (!g_atomic_int_dec_and_test( &xf_pending )) {
+			g_mutex_lock( &xf_done_mutex );
+			while (g_atomic_int_get( &xf_pending ) > 0)
+				g_cond_wait( &xf_done_cond, &xf_done_mutex );
+			g_mutex_unlock( &xf_done_mutex );
+		}
+	}
+	else {
+		deploy_compute_recursive( globals.fstree, &DEPLOY_IDENTITY,
+		                          0.0, 0.0, treev_core_radius,
+		                          &inline_budget );
+	}
 
 	glBindTexture( GL_TEXTURE_2D, deploy_xform_tex );
 	glTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, DEPLOY_TEX_W, deploy_xform_h,
@@ -2988,14 +3086,6 @@ static void
 treev_init( void )
 {
 	TreeVGeomParams *gparams;
-	int num_points;
-
-	/* Allocate point buffers */
-	num_points = (int)ceil( 360.0 / TREEV_CURVE_GRANULARITY ) + 1;
-	if (inner_edge_buf == NULL)
-		inner_edge_buf = NEW_ARRAY(XYvec, num_points);
-	if (outer_edge_buf == NULL)
-		outer_edge_buf = NEW_ARRAY(XYvec, num_points);
 
 	treev_core_radius = TREEV_MIN_CORE_RADIUS;
 
@@ -3087,6 +3177,10 @@ static void
 treev_batch_platform( VBOBatch *batch, GNode *dnode, double r0,
                       double acc_theta )
 {
+	/* Per-call scratch (thread-safe: parallel build emits many
+	 * platforms concurrently) */
+	XYvec inner_edge_buf[TREEV_EDGE_BUF_POINTS];
+	XYvec outer_edge_buf[TREEV_EDGE_BUF_POINTS];
 	XYvec p0, p1;
 	XYvec delta;
 	double r1, seg_arc_width;
@@ -3099,6 +3193,7 @@ treev_batch_platform( VBOBatch *batch, GNode *dnode, double r0,
 
 	r1 = r0 + TREEV_GEOM_PARAMS(dnode)->platform.depth;
 	seg_count = (int)ceil( TREEV_GEOM_PARAMS(dnode)->platform.arc_width / TREEV_CURVE_GRANULARITY );
+	seg_count = CLAMP(seg_count, 1, TREEV_EDGE_BUF_POINTS - 1);
 	seg_arc_width = TREEV_GEOM_PARAMS(dnode)->platform.arc_width / (double)seg_count;
 
 	/* Calculate inner/outer edge vertices (local coords) */
@@ -3713,6 +3808,10 @@ static void
 treev_batch_platform_edges( VBOBatch *batch, GNode *dnode, double r0,
                              double acc_theta )
 {
+	/* Per-call scratch (thread-safe: parallel build emits many
+	 * platforms concurrently) */
+	XYvec inner_edge_buf[TREEV_EDGE_BUF_POINTS];
+	XYvec outer_edge_buf[TREEV_EDGE_BUF_POINTS];
 	XYvec p0, p1, delta;
 	double r1, seg_arc_width, theta, sin_theta, cos_theta, z1;
 	float cr, cg, cb;
@@ -3721,6 +3820,7 @@ treev_batch_platform_edges( VBOBatch *batch, GNode *dnode, double r0,
 
 	r1 = r0 + TREEV_GEOM_PARAMS(dnode)->platform.depth;
 	seg_count = (int)ceil( TREEV_GEOM_PARAMS(dnode)->platform.arc_width / TREEV_CURVE_GRANULARITY );
+	seg_count = CLAMP(seg_count, 1, TREEV_EDGE_BUF_POINTS - 1);
 	seg_arc_width = TREEV_GEOM_PARAMS(dnode)->platform.arc_width / (double)seg_count;
 
 	theta = -0.5 * TREEV_GEOM_PARAMS(dnode)->platform.arc_width;
@@ -3876,6 +3976,390 @@ treev_batch_leaf_edges( VBOBatch *batch, GNode *node, double r0,
 }
 
 
+/* Emits a directory's connecting branches: the metanode's loop, or a
+ * platform's inbranch plus one arc per row of expanded children —
+ * first row on the classic red center stem, continuation rows on the
+ * amber scaffolding (Phase 41.5). Pure function of the node's
+ * current layout; shared by the serial batch walk and (Phase 47)
+ * the parallel build tasks */
+static void
+treev_batch_branches( VBOBatch *branches, GNode *dnode,
+                      double r0, double subtree_r0,
+                      double new_acc_theta )
+{
+	TreeVGeomParams *dir_gparams = TREEV_GEOM_PARAMS(dnode);
+	GNode *node;
+	unsigned int nid = NODE_DESC(dnode)->id;
+	double theta0, theta1;
+	double stem_r0;
+	double prev_arc_r = -1.0;
+	double prev_rail_minus = 0.0, prev_rail_plus = 0.0;
+
+	if (NODE_IS_METANODE(dnode)) {
+		treev_batch_loop( branches, r0, nid );
+		treev_batch_outbranch( branches, r0,
+		                       r0 + (0.5 * TREEV_PLATFORM_SPACING_DEPTH),
+		                       0.0, 0.0, new_acc_theta, nid );
+		return;
+	}
+
+	stem_r0 = r0 + dir_gparams->platform.depth;
+
+	treev_batch_inbranch( branches, r0, new_acc_theta, nid );
+
+	/* One connecting arc per row of expanded children. The first
+	 * such row hangs off the classic red center stem + arc
+	 * ("children of this platform"); subsequent rows are wrapped
+	 * continuations of the same generation, framed by distinct
+	 * scaffolding: a lifted arc joined to the previous row's arc by
+	 * side rails at the rows' angular edges. No center
+	 * through-line, so wrapped siblings don't read as descendants */
+	node = dnode->children;
+	while ((node != NULL) && NODE_IS_DIR(node)) {
+		GNode *n;
+		GNode *first_exp = NULL, *last_exp = NULL;
+		double row_base = TREEV_GEOM_PARAMS(node)->platform.row_offset;
+
+		for (n = node; (n != NULL) && NODE_IS_DIR(n) && (TREEV_GEOM_PARAMS(n)->platform.row_offset == row_base); n = n->next) {
+			if (DIR_EXPANDED(n)) {
+				if (first_exp == NULL)
+					first_exp = n;
+				last_exp = n;
+			}
+		}
+		if (first_exp != NULL) {
+			double arc_r = subtree_r0 + row_base - (0.5 * TREEV_PLATFORM_SPACING_DEPTH);
+			/* Row's angular edges: just past its outermost
+			 * platforms */
+			double rail_minus = TREEV_GEOM_PARAMS(first_exp)->platform.theta - 0.5 * TREEV_GEOM_PARAMS(first_exp)->platform.arc_width;
+			double rail_plus = TREEV_GEOM_PARAMS(last_exp)->platform.theta + 0.5 * TREEV_GEOM_PARAMS(last_exp)->platform.arc_width;
+
+			if (prev_arc_r < 0.0) {
+				/* First row with expanded children */
+				theta0 = MIN(0.0, rail_minus);
+				theta1 = MAX(0.0, rail_plus);
+				treev_batch_outbranch( branches, stem_r0, arc_r,
+				                       theta0, theta1,
+				                       new_acc_theta, nid );
+			}
+			else {
+				/* Continuation row: scaffold arc plus side
+				 * rails back to the previous row's arc, placed
+				 * where both arcs reach (every row straddles
+				 * the parent centerline, so the spans always
+				 * overlap) */
+				treev_batch_branch_arc( branches, arc_r,
+				                        rail_minus, rail_plus,
+				                        TREEV_ROW_LINK_Z, &row_link_color,
+				                        new_acc_theta, nid );
+				treev_batch_branch_radial( branches, prev_arc_r, arc_r,
+				                           MAX(prev_rail_minus, rail_minus),
+				                           TREEV_ROW_LINK_Z, &row_link_color,
+				                           new_acc_theta, nid );
+				treev_batch_branch_radial( branches, prev_arc_r, arc_r,
+				                           MIN(prev_rail_plus, rail_plus),
+				                           TREEV_ROW_LINK_Z, &row_link_color,
+				                           new_acc_theta, nid );
+			}
+			prev_arc_r = arc_r;
+			prev_rail_minus = rail_minus;
+			prev_rail_plus = rail_plus;
+		}
+		node = n;
+	}
+}
+
+
+/* --- Parallel batch build (Phase 47.2) ---------------------------
+ * The emission walk is CPU-pure until upload and partitions cleanly
+ * by subtree: a task emits ONE directory's own geometry into its
+ * thread's staging buffers and enqueues its subdirectories, with the
+ * same ownership rules as the Phase 45 scanner (a directory's
+ * children's leaf positions are laid out by treev_batch_dir BEFORE
+ * the child tasks are pushed; the queue is the memory barrier).
+ * Thread staging trios persist across rebuilds — in aggregate
+ * they're GB-scale on huge trees and reallocating them per rebuild
+ * would dwarf the emission cost. GPU-deployment path only: the CPU
+ * fallback's nested treev_apply_deployment spans subtree (and thus
+ * task/buffer) boundaries, so !deploy_available keeps the serial
+ * walk. */
+
+typedef struct {
+	VBOBatch solid;
+	VBOBatch branches;
+	VBOBatch outline;
+} BuildTrio;
+
+typedef struct {
+	GNode *dnode;
+	double prev_r0;
+	double r0;
+	double acc_theta;
+} BuildTask;
+
+static GThreadPool *tbuild_pool = NULL;
+static boolean tbuild_pool_failed = FALSE;
+static gint tbuild_pending = 0;
+static GMutex tbuild_done_mutex;
+static GCond tbuild_done_cond;
+static GPrivate tbuild_trio_key = G_PRIVATE_INIT( NULL );
+static GSList *tbuild_trios = NULL;
+static GMutex tbuild_trios_mutex;
+
+
+static BuildTrio *
+tbuild_thread_trio( void )
+{
+	BuildTrio *trio = g_private_get( &tbuild_trio_key );
+
+	if (trio == NULL) {
+		trio = NEW(BuildTrio);
+		vbo_batch_init( &trio->solid );
+		vbo_batch_init( &trio->branches );
+		vbo_batch_init( &trio->outline );
+		g_private_set( &tbuild_trio_key, trio );
+		g_mutex_lock( &tbuild_trios_mutex );
+		tbuild_trios = g_slist_prepend( tbuild_trios, trio );
+		g_mutex_unlock( &tbuild_trios_mutex );
+	}
+
+	return trio;
+}
+
+
+/* Subtrees below this node count are emitted inline by the task that
+ * reaches them instead of being fanned out — one task per directory
+ * (125K tasks on big trees) drowned the win in queue-lock and
+ * per-task overhead */
+#define TBUILD_FANOUT_MIN_NODES 4096
+/* ...but a task also stops inlining once it has swallowed this many
+ * nodes and fans out everything instead — otherwise a directory
+ * with hundreds of just-under-threshold children serializes their
+ * whole aggregate in one task. Max work per task is bounded by
+ * budget + one sub-threshold subtree regardless of tree shape */
+#define TBUILD_INLINE_BUDGET 8192
+
+/* Diagnostics (printed per rebuild while frameprof is active) */
+static gint tbuild_diag_tasks = 0;
+
+
+static int
+tbuild_subtree_node_count( GNode *dnode )
+{
+	int i, n = 0;
+
+	for (i = 0; i < NUM_NODE_TYPES; i++)
+		n += (int)DIR_NODE_DESC(dnode)->subtree.counts[i];
+	return n;
+}
+
+
+/* Emits one node's own geometry — the non-recursive core of
+ * treev_batch_recursive — then descends: small child subtrees are
+ * emitted inline (same thread, plain recursion), large ones are
+ * fanned out as tasks. Must mirror the serial walk's per-node
+ * behavior exactly (GPU-deployment variant: no CPU
+ * apply_deployment) */
+static void
+tbuild_emit_node( BuildTrio *t, GNode *dnode, double prev_r0, double r0,
+                  double acc_theta, int *inline_budget )
+{
+	TreeVGeomParams *dir_gparams = TREEV_GEOM_PARAMS(dnode);
+	GNode *node;
+	double subtree_r0, new_acc_theta;
+	boolean dir_collapsed = DIR_COLLAPSED(dnode);
+	boolean dir_expanded = DIR_EXPANDED(dnode);
+
+	*inline_budget -= (int)g_node_n_children( dnode ) + 1;
+
+	if (dir_collapsed) {
+		/* Collapsed: a leaf on the parent's platform */
+		treev_batch_leaf( &t->solid, dnode, prev_r0, acc_theta, TRUE );
+		treev_batch_leaf_edges( &t->outline, dnode, prev_r0, acc_theta, TRUE );
+		DIR_NODE_DESC(dnode)->geom_expanded = FALSE;
+		DIR_NODE_DESC(dnode)->geom_fully = FALSE;
+		return;
+	}
+
+	if (!dir_expanded) {
+		/* Morphing: the shrinking/growing placeholder leaf,
+		 * re-owned by the parent (see the serial walk) */
+		int lf_solid = t->solid.build_count;
+		int lf_outline = t->outline.build_count;
+		treev_batch_leaf( &t->solid, dnode, prev_r0, acc_theta, TRUE );
+		treev_batch_leaf_edges( &t->outline, dnode, prev_r0, acc_theta, TRUE );
+		if (dnode->parent != NULL) {
+			unsigned int pid = NODE_DESC(dnode->parent)->id;
+			int i;
+			for (i = lf_solid; i < t->solid.build_count; i++)
+				t->solid.vertices[i].node_id = pid;
+			for (i = lf_outline; i < t->outline.build_count; i++)
+				t->outline.vertices[i].node_id = pid;
+		}
+	}
+
+	new_acc_theta = acc_theta + dir_gparams->platform.theta;
+
+	/* Snapshot the bake-time spread angle (own slot — disjoint) */
+	deploy_baked_acc[deploy_index_map[NODE_DESC(dnode)->id]] = new_acc_theta;
+
+	if (NODE_IS_DIR(dnode)) {
+		/* Lays out children's leaf positions — must precede the
+		 * child task pushes below */
+		treev_batch_dir( &t->solid, &t->outline, dnode, r0, new_acc_theta );
+	}
+
+	if (dir_expanded)
+		treev_batch_branches( &t->branches, dnode, r0,
+		                      r0 + dir_gparams->platform.depth + TREEV_PLATFORM_SPACING_DEPTH,
+		                      new_acc_theta );
+
+	/* Descend into subdirectories: fan out big subtrees, emit small
+	 * ones inline until this task's budget runs out */
+	subtree_r0 = r0 + dir_gparams->platform.depth + TREEV_PLATFORM_SPACING_DEPTH;
+	node = dnode->children;
+	while (node != NULL) {
+		if (!NODE_IS_DIR(node))
+			break;
+		if (*inline_budget <= 0
+		    || tbuild_subtree_node_count( node ) >= TBUILD_FANOUT_MIN_NODES) {
+			BuildTask *task = g_new( BuildTask, 1 );
+			task->dnode = node;
+			task->prev_r0 = r0;
+			task->r0 = subtree_r0 + TREEV_GEOM_PARAMS(node)->platform.row_offset;
+			task->acc_theta = new_acc_theta;
+			g_atomic_int_inc( &tbuild_pending );
+			g_atomic_int_inc( &tbuild_diag_tasks );
+			g_thread_pool_push( tbuild_pool, task, NULL );
+		}
+		else {
+			tbuild_emit_node( t, node, r0,
+			                  subtree_r0 + TREEV_GEOM_PARAMS(node)->platform.row_offset,
+			                  new_acc_theta, inline_budget );
+		}
+		node = node->next;
+	}
+
+	DIR_NODE_DESC(dnode)->geom_expanded = TRUE;
+	DIR_NODE_DESC(dnode)->geom_fully = dir_expanded;
+}
+
+
+static void
+tbuild_task_func( gpointer data, G_GNUC_UNUSED gpointer user_data )
+{
+	BuildTask *task = data;
+	int inline_budget = TBUILD_INLINE_BUDGET;
+
+	tbuild_emit_node( tbuild_thread_trio( ), task->dnode,
+	                  task->prev_r0, task->r0, task->acc_theta,
+	                  &inline_budget );
+	g_free( task );
+
+	if (g_atomic_int_dec_and_test( &tbuild_pending )) {
+		g_mutex_lock( &tbuild_done_mutex );
+		g_cond_broadcast( &tbuild_done_cond );
+		g_mutex_unlock( &tbuild_done_mutex );
+	}
+}
+
+
+/* Runs the whole batch build across the pool and gathers the
+ * per-thread buffers into the three GPU batches. Returns FALSE if
+ * the pool is unavailable (caller falls back to the serial walk) */
+static boolean
+tbuild_run( void )
+{
+	BuildTask *task;
+	GSList *l;
+
+	if (tbuild_pool == NULL && !tbuild_pool_failed) {
+		GError *err = NULL;
+		int nthreads = CLAMP( (int)g_get_num_processors( ), 2, TREEV_BUILD_MAX_THREADS );
+		tbuild_pool = g_thread_pool_new( tbuild_task_func, NULL, nthreads, TRUE, &err );
+		if (err != NULL) {
+			g_warning( "parallel batch build unavailable (%s)", err->message );
+			g_clear_error( &err );
+			tbuild_pool = NULL;
+			tbuild_pool_failed = TRUE;
+		}
+	}
+	if (tbuild_pool == NULL)
+		return FALSE;
+
+	/* Reset the (persistent) thread staging buffers — the pool is
+	 * idle between builds, so walking the registry is safe */
+	g_mutex_lock( &tbuild_trios_mutex );
+	for (l = tbuild_trios; l != NULL; l = l->next) {
+		BuildTrio *trio = l->data;
+		vbo_batch_begin( &trio->solid );
+		vbo_batch_begin( &trio->branches );
+		vbo_batch_begin( &trio->outline );
+	}
+	g_mutex_unlock( &tbuild_trios_mutex );
+
+	{
+		gint64 diag_t0 = g_get_monotonic_time( ), diag_t1;
+
+		g_atomic_int_set( &tbuild_diag_tasks, 1 );
+		task = g_new( BuildTask, 1 );
+		task->dnode = globals.fstree;
+		task->prev_r0 = 0.0;
+		task->r0 = treev_core_radius;
+		task->acc_theta = 0.0;
+		g_atomic_int_set( &tbuild_pending, 1 );
+		g_thread_pool_push( tbuild_pool, task, NULL );
+
+		g_mutex_lock( &tbuild_done_mutex );
+		while (g_atomic_int_get( &tbuild_pending ) > 0)
+			g_cond_wait( &tbuild_done_cond, &tbuild_done_mutex );
+		g_mutex_unlock( &tbuild_done_mutex );
+
+		diag_t1 = g_get_monotonic_time( );
+
+		/* Gather-upload each batch from the thread buffers */
+		{
+			VBOBatch **parts;
+			int n = 0, i;
+
+			g_mutex_lock( &tbuild_trios_mutex );
+			n = (int)g_slist_length( tbuild_trios );
+			parts = NEW_ARRAY(VBOBatch *, MAX(n, 1));
+
+			i = 0;
+			for (l = tbuild_trios; l != NULL; l = l->next)
+				parts[i++] = &((BuildTrio *)l->data)->solid;
+			vbo_batch_upload_gather( &treev_solid_batch, parts, n );
+
+			i = 0;
+			for (l = tbuild_trios; l != NULL; l = l->next)
+				parts[i++] = &((BuildTrio *)l->data)->branches;
+			vbo_batch_upload_gather( &treev_branch_batch, parts, n );
+
+			i = 0;
+			for (l = tbuild_trios; l != NULL; l = l->next)
+				parts[i++] = &((BuildTrio *)l->data)->outline;
+			vbo_batch_upload_gather( &treev_outline_batch, parts, n );
+			g_mutex_unlock( &tbuild_trios_mutex );
+
+			xfree( parts );
+		}
+
+		if (frameprof_enabled( ))
+			g_printerr( "[tbuild] emit %.0f ms, upload %.0f ms, "
+			            "%d tasks, %d+%d+%d verts\n",
+			            (diag_t1 - diag_t0) / 1000.0,
+			            (g_get_monotonic_time( ) - diag_t1) / 1000.0,
+			            g_atomic_int_get( &tbuild_diag_tasks ),
+			            treev_solid_batch.vertex_count,
+			            treev_branch_batch.vertex_count,
+			            treev_outline_batch.vertex_count );
+	}
+
+	return TRUE;
+}
+
+
 /* Recursively walks TreeV tree and batches all geometry.
  * acc_theta: accumulated rotation from all ancestors (degrees).
  * Handles deployment animation by applying the deployment transform
@@ -3889,7 +4373,6 @@ treev_batch_recursive( VBOBatch *solid, VBOBatch *branches,
 	TreeVGeomParams *dir_gparams;
 	GNode *node;
 	double subtree_r0;
-	double theta0, theta1;
 	double new_acc_theta;
 	boolean dir_collapsed;
 	boolean dir_expanded;
@@ -3951,88 +4434,10 @@ treev_batch_recursive( VBOBatch *solid, VBOBatch *branches,
 			node = node->next;
 		}
 
-		/* Batch branches */
-		if (dir_expanded) {
-			unsigned int nid = NODE_DESC(dnode)->id;
-			if (NODE_IS_METANODE(dnode)) {
-				treev_batch_loop( branches, r0, nid );
-				treev_batch_outbranch( branches, r0,
-				                       r0 + (0.5 * TREEV_PLATFORM_SPACING_DEPTH),
-				                       0.0, 0.0, new_acc_theta, nid );
-			}
-			else {
-				double stem_r0 = r0 + dir_gparams->platform.depth;
-				double prev_arc_r = -1.0;
-				double prev_rail_minus = 0.0, prev_rail_plus = 0.0;
-
-				treev_batch_inbranch( branches, r0, new_acc_theta, nid );
-
-				/* One connecting arc per row of expanded
-				 * children. The first such row hangs off the
-				 * classic red center stem + arc ("children of
-				 * this platform"); subsequent rows are wrapped
-				 * continuations of the same generation, framed
-				 * by distinct scaffolding: a lifted arc joined
-				 * to the previous row's arc by side rails at
-				 * the rows' angular edges. No center
-				 * through-line, so wrapped siblings don't read
-				 * as descendants */
-				node = dnode->children;
-				while ((node != NULL) && NODE_IS_DIR(node)) {
-					GNode *n;
-					GNode *first_exp = NULL, *last_exp = NULL;
-					double row_base = TREEV_GEOM_PARAMS(node)->platform.row_offset;
-
-					for (n = node; (n != NULL) && NODE_IS_DIR(n) && (TREEV_GEOM_PARAMS(n)->platform.row_offset == row_base); n = n->next) {
-						if (DIR_EXPANDED(n)) {
-							if (first_exp == NULL)
-								first_exp = n;
-							last_exp = n;
-						}
-					}
-					if (first_exp != NULL) {
-						double arc_r = subtree_r0 + row_base - (0.5 * TREEV_PLATFORM_SPACING_DEPTH);
-						/* Row's angular edges: just past its
-						 * outermost platforms */
-						double rail_minus = TREEV_GEOM_PARAMS(first_exp)->platform.theta - 0.5 * TREEV_GEOM_PARAMS(first_exp)->platform.arc_width;
-						double rail_plus = TREEV_GEOM_PARAMS(last_exp)->platform.theta + 0.5 * TREEV_GEOM_PARAMS(last_exp)->platform.arc_width;
-
-						if (prev_arc_r < 0.0) {
-							/* First row with expanded children */
-							theta0 = MIN(0.0, rail_minus);
-							theta1 = MAX(0.0, rail_plus);
-							treev_batch_outbranch( branches, stem_r0, arc_r,
-							                       theta0, theta1,
-							                       new_acc_theta, nid );
-						}
-						else {
-							/* Continuation row: scaffold arc plus
-							 * side rails back to the previous
-							 * row's arc, placed where both arcs
-							 * reach (every row straddles the
-							 * parent centerline, so the spans
-							 * always overlap) */
-							treev_batch_branch_arc( branches, arc_r,
-							                        rail_minus, rail_plus,
-							                        TREEV_ROW_LINK_Z, &row_link_color,
-							                        new_acc_theta, nid );
-							treev_batch_branch_radial( branches, prev_arc_r, arc_r,
-							                           MAX(prev_rail_minus, rail_minus),
-							                           TREEV_ROW_LINK_Z, &row_link_color,
-							                           new_acc_theta, nid );
-							treev_batch_branch_radial( branches, prev_arc_r, arc_r,
-							                           MIN(prev_rail_plus, rail_plus),
-							                           TREEV_ROW_LINK_Z, &row_link_color,
-							                           new_acc_theta, nid );
-						}
-						prev_arc_r = arc_r;
-						prev_rail_minus = rail_minus;
-						prev_rail_plus = rail_plus;
-					}
-					node = n;
-				}
-			}
-		}
+		/* Batch branches (shared helper — see treev_batch_branches) */
+		if (dir_expanded)
+			treev_batch_branches( branches, dnode, r0, subtree_r0,
+			                      new_acc_theta );
 
 		/* Apply deployment scaling if partially deployed — CPU
 		 * fallback only. With GPU deployment the vertices stay at
@@ -4089,6 +4494,14 @@ treev_rebuild_batch( void )
 
 	if (!treev_solid_batch.dirty)
 		return;
+
+	/* Parallel build (GPU-deployment path only — the CPU fallback's
+	 * nested apply_deployment can't span task buffers); serial walk
+	 * if the pool is unavailable or the CPU path is active */
+	if (deploy_available && tbuild_run( )) {
+		frameprof_vbo_rebuild_done( );
+		return;
+	}
 
 	vbo_batch_begin( &treev_solid_batch );
 	vbo_batch_begin( &treev_branch_batch );
@@ -4201,6 +4614,9 @@ static void
 treev_gldraw_platform_colored( GNode *dnode, double r0,
                                 float r, float g, float b )
 {
+	/* Per-call scratch (matches the batch functions) */
+	XYvec inner_edge_buf[TREEV_EDGE_BUF_POINTS];
+	XYvec outer_edge_buf[TREEV_EDGE_BUF_POINTS];
 	XYvec p0, p1;
 	XYvec delta;
 	double r1, seg_arc_width;
@@ -4215,6 +4631,7 @@ treev_gldraw_platform_colored( GNode *dnode, double r0,
 
 	r1 = r0 + TREEV_GEOM_PARAMS(dnode)->platform.depth;
 	seg_count = (int)ceil( TREEV_GEOM_PARAMS(dnode)->platform.arc_width / TREEV_CURVE_GRANULARITY );
+	seg_count = CLAMP(seg_count, 1, TREEV_EDGE_BUF_POINTS - 1);
 	seg_arc_width = TREEV_GEOM_PARAMS(dnode)->platform.arc_width / (double)seg_count;
 
 	/* Calculate and cache inner/outer edge vertices */
@@ -5394,8 +5811,17 @@ geometry_colexp_in_progress( GNode *dnode )
 
 	if (content_changed)
 		geometry_queue_rebuild( dnode );
-	else
-		queue_uncached_draw( );
+	else {
+		/* No content change: just invalidate the pick cache. This
+		 * used to call queue_uncached_draw(), whose needs_arrange
+		 * side effect forced a FULL TreeV arrange on every morph
+		 * step — re-echoing platform-depth estimates through the
+		 * row bases and rebuilding the whole batch mid-animation
+		 * (the no-stagger bloom rendered ~4 one-second frames).
+		 * Spread updates are queued separately by
+		 * treev_queue_rearrange below */
+		ogl_pick_invalidate( );
+	}
 
 	/* Deployment changed — VBO batches have stale values */
 	if (globals.fsv_mode == FSV_MAPV && mapv_batch_initialized) {

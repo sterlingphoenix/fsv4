@@ -44,6 +44,12 @@ void vbo_batch_add_vertex(VBOBatch *batch,
  * Creates VAO/VBO on first call. Clears the dirty flag. */
 void vbo_batch_upload(VBOBatch *batch);
 
+/* Upload the concatenation of several staging batches into dst's GPU
+ * buffer: one allocation, one glBufferSubData per part. dst's own
+ * staging buffer is not touched. Used by the parallel batch build
+ * (Phase 47) to gather per-thread buffers without a CPU-side merge. */
+void vbo_batch_upload_gather(VBOBatch *dst, VBOBatch *const *parts, int n_parts);
+
 /* Draw the batch (glDrawArrays GL_TRIANGLES) */
 void vbo_batch_draw(const VBOBatch *batch);
 

@@ -31,6 +31,7 @@
 #include "filelist.h"
 #include "geometry.h"
 #include "gui.h" /* gui_update( ) */
+#include "ogl.h" /* ogl_frame_serial( ) */
 #include "tmaptext.h" /* text_cache_invalidate( ) */
 #include "window.h"
 
@@ -54,6 +55,36 @@ static boolean colexp_in_progress = FALSE;
  * since the row-wrapped layout, expansion geometry is stable and its
  * end-state extents are known up front, so the camera simply glides
  * to the final framing via camera_treev_frame_expansion) */
+
+/* Recursive expand/collapse on subtrees at or above this node count
+ * drops the per-depth stagger and deploys everything simultaneously
+ * (Phase 47.3). Rationale: each deployment wave forces a full-scene
+ * content rebuild whose GPU upload is PCIe-bound (~1 s at 1.5M
+ * nodes / 2.6 GB of vertices), and on trees this size frames outlast
+ * the waves anyway — the cascade has never been visible. Without the
+ * stagger there are exactly TWO content crossings (start and end)
+ * bracketing a pure-transform animation that plays at full frame
+ * rate. Smaller trees keep their cascade. */
+#define COLEXP_NO_STAGGER_NODES 50000
+
+/* Bloom duration for no-stagger operations. The morphs are deferred
+ * until after the (multi-second) content-rebuild frame has rendered
+ * — morph clocks are wall-time, so starting them before that frame
+ * would consume the whole animation inside it — and then play at
+ * full frame rate over static content, so give the bloom a duration
+ * worth watching */
+#define COLEXP_NO_STAGGER_TIME 2.5
+
+/* TRUE for the duration of one no-stagger recursive operation */
+static boolean colexp_no_stagger = FALSE;
+
+/* Pending deferred-morph request (no-stagger operations) */
+static GNode *colexp_deferred_dnode = NULL;
+static boolean colexp_deferred_expanding = FALSE;
+/* Frame serial at nudge time: the morphs may only start once a LATER
+ * frame has fully rendered (the content-rebuild frame) */
+static guint64 colexp_deferred_serial = 0;
+
 
 
 /* This returns the number of collapsed directory levels above the
@@ -142,6 +173,58 @@ colexp_reenable_access( G_GNUC_UNUSED gpointer data )
 }
 
 
+/* Starts the deferred deployment morphs for a no-stagger operation
+ * (every directory in the subtree that isn't already at its target) */
+static void
+colexp_deferred_recursive( GNode *dnode, boolean expanding )
+{
+	GNode *node;
+	double d = DIR_NODE_DESC(dnode)->deployment;
+
+	/* Sigmoid: slow start (the camera glide is still settling in
+	 * the bloom's first beats), visible growth through the middle */
+	if (expanding ? (d < 1.0 - EPSILON) : (d > EPSILON))
+		morph_full( &DIR_NODE_DESC(dnode)->deployment,
+		            MORPH_SIGMOID,
+		            expanding ? 1.0 : 0.0,
+		            COLEXP_NO_STAGGER_TIME,
+		            colexp_progress_cb, colexp_progress_cb, dnode );
+
+	node = dnode->children;
+	while (node != NULL) {
+		if (!NODE_IS_DIR(node))
+			break;
+		colexp_deferred_recursive( node, expanding );
+		node = node->next;
+	}
+}
+
+
+/* Timeout gating the deferred morph start on an actually COMPLETED
+ * frame (ogl_frame_serial advances at the end of ogl_draw). A mere
+ * queued redraw is not enough: the animation loop queues the render
+ * and returns, so anything keyed to loop ticks starts the wall-time
+ * morph clocks BEFORE the multi-second rebuild frame draws — and
+ * they expire inside it (the v4.47.06 "instant change" bug). The
+ * main thread is busy during the rebuild render, so this timeout
+ * fires right after it completes — exactly the intended moment */
+static gboolean
+colexp_deferred_check( G_GNUC_UNUSED gpointer data )
+{
+	if (colexp_deferred_dnode == NULL)
+		return G_SOURCE_REMOVE;
+
+	if (ogl_frame_serial( ) <= colexp_deferred_serial)
+		return G_SOURCE_CONTINUE; /* rebuild frame not drawn yet */
+
+	colexp_deferred_recursive( colexp_deferred_dnode,
+	                           colexp_deferred_expanding );
+	colexp_deferred_dnode = NULL;
+	redraw( );
+	return G_SOURCE_REMOVE;
+}
+
+
 
 
 /* This keeps the directory tree and the map geometry in sync
@@ -189,6 +272,18 @@ colexp( GNode *dnode, ColExpMesg mesg )
 		}
 #endif
 
+		/* Stagger policy: huge recursive operations deploy all at
+		 * once (see COLEXP_NO_STAGGER_NODES above). Decided BEFORE
+		 * the dirtree update, which also branches on it */
+		colexp_no_stagger = FALSE;
+		if (mesg == COLEXP_EXPAND_RECURSIVE
+		    || mesg == COLEXP_COLLAPSE_RECURSIVE) {
+			int i, n = 0;
+			for (i = 0; i < NUM_NODE_TYPES; i++)
+				n += (int)DIR_NODE_DESC(dnode)->subtree.counts[i];
+			colexp_no_stagger = (n >= COLEXP_NO_STAGGER_NODES);
+		}
+
 		/* Update ctree and determine maximum recursion depth */
 		switch (mesg) {
 			case COLEXP_COLLAPSE_RECURSIVE:
@@ -207,7 +302,15 @@ colexp( GNode *dnode, ColExpMesg mesg )
 			break;
 
 			case COLEXP_EXPAND_RECURSIVE:
-			dirtree_entry_expand_recursive( dnode );
+			/* Huge trees: flags only — expanding ~100K sidebar
+			 * rows costs seconds of GTK model splices (and worse;
+			 * see Phase 47 notes), and a 100K-row sidebar isn't
+			 * navigable anyway. Rows expand normally on user
+			 * interaction against the already-set flags */
+			if (colexp_no_stagger)
+				dirtree_entry_expand_flags_only( dnode );
+			else
+				dirtree_entry_expand_recursive( dnode );
 			/* max_depth will be used as a high-water mark */
 			max_depth = 0;
 			break;
@@ -258,13 +361,30 @@ colexp( GNode *dnode, ColExpMesg mesg )
 
 		SWITCH_FAIL
 	}
+	if (colexp_no_stagger)
+		wait_count = 0;
 	if (wait_count > 0) {
 		wait_time = (double)wait_count * colexp_time;
 		morph( &DIR_NODE_DESC(dnode)->deployment, MORPH_LINEAR, DIR_NODE_DESC(dnode)->deployment, wait_time );
 	}
 
 	/* Initiate collapse/expand */
-	switch (mesg) {
+	if (colexp_no_stagger) {
+		/* Nudge across the content boundary now — the single big
+		 * rebuild happens on the next frame — but leave the actual
+		 * morph to colexp_deferred_event (see its comment). Only
+		 * directories actually changing state get nudged */
+		if (mesg == COLEXP_COLLAPSE_RECURSIVE) {
+			if (DIR_NODE_DESC(dnode)->deployment > 1.0 - EPSILON)
+				DIR_NODE_DESC(dnode)->deployment = 1.0 - 1.0e-4;
+		}
+		else {
+			if (DIR_NODE_DESC(dnode)->deployment < EPSILON)
+				DIR_NODE_DESC(dnode)->deployment = 1.0e-4;
+		}
+		geometry_colexp_in_progress( dnode );
+	}
+	else switch (mesg) {
 		case COLEXP_COLLAPSE_RECURSIVE:
 		morph_full( &DIR_NODE_DESC(dnode)->deployment, MORPH_QUADRATIC, 0.0, colexp_time, colexp_progress_cb, colexp_progress_cb, dnode );
 		break;
@@ -326,6 +446,10 @@ colexp( GNode *dnode, ColExpMesg mesg )
 	}
 
 	if (depth == 0) {
+		/* Effective animation depth: a no-stagger operation runs
+		 * everything in one colexp_time regardless of tree depth */
+		int eff_depth = colexp_no_stagger ? 0 : max_depth;
+
 		/* Determine position of current node w.r.t. the
 		 * collapsing/expanding directory node */
 		curnode_is_ancestor = g_node_is_ancestor( globals.current_node, dnode );
@@ -342,7 +466,7 @@ colexp( GNode *dnode, ColExpMesg mesg )
 		if (!camera->manual_control) {
 			switch (mesg) {
 				case COLEXP_COLLAPSE_RECURSIVE:
-				pan_time = (double)(max_depth + 1) * colexp_time;
+				pan_time = (double)(eff_depth + 1) * colexp_time;
 				if (curnode_is_ancestor || curnode_is_equal) {
 					camera_look_at_full( globals.current_node, MORPH_LINEAR, pan_time );
 					camera_panning = TRUE;
@@ -356,7 +480,7 @@ colexp( GNode *dnode, ColExpMesg mesg )
 				case COLEXP_EXPAND:
 				case COLEXP_EXPAND_RECURSIVE:
 				if (curnode_is_ancestor || curnode_is_equal) {
-					pan_time = (double)(max_depth + 1) * colexp_time;
+					pan_time = (double)(eff_depth + 1) * colexp_time;
 					if (globals.fsv_mode == FSV_TREEV) {
 						/* Glide to frame the expanding
 						 * subtree while it deploys; access
@@ -381,10 +505,23 @@ colexp( GNode *dnode, ColExpMesg mesg )
 			}
 		}
 
+		/* No-stagger: kick off the single content rebuild and
+		 * start the deferred morphs once it has actually drawn */
+		if (colexp_no_stagger) {
+			colexp_deferred_dnode = dnode;
+			colexp_deferred_expanding =
+				(mesg != COLEXP_COLLAPSE_RECURSIVE);
+			colexp_deferred_serial = ogl_frame_serial( );
+			g_timeout_add( 30, colexp_deferred_check, NULL );
+			redraw( );
+		}
+
 		/* If no camera pan was started, re-enable access after
 		 * the collapse/expand animation completes */
 		if (!camera_panning) {
-			double anim_time = (double)(max_depth + 1) * colexp_time;
+			double anim_time = colexp_no_stagger
+				? (COLEXP_NO_STAGGER_TIME + 2.0)
+				: (double)(eff_depth + 1) * colexp_time;
 			g_timeout_add( (guint)(anim_time * 1000.0),
 				colexp_reenable_access, NULL );
 		}
