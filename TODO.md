@@ -2699,12 +2699,12 @@ PHASE 46 SUMMARY (Hail Mary II) — measured end state on the user's
       invalidation in geometry_colexp_in_progress replaced by
       content-only invalidation (deployment 0/1 crossings). The big
       win lands here.
-  [ ] 46.B.3: re-measure Expand All; then attack whatever remains
-      (46.B-2: the ~300 ms/frame morph/arrange bookkeeping across
-      ~200K animating dirs — candidates: treev_arrange per-frame
-      re-spread cost, per-dir morph callback overhead).
-  [ ] MapV/DiscV can stay on the CPU path initially (their expand
-      animations are smaller); port later if measurements say so.
+  [x] 46.B.3: measured and attacked — the ~300 ms was the full
+      structural arrange every morph frame; fixed by the 46.B.3a
+      spread-only split (see below). Remaining wave-boundary rebuild
+      cost deferred as 46.B.3b.
+  [x] MapV/DiscV stay on the CPU path (their expand animations are
+      small); port only if it ever measures as needed.
 
 Step 46.D — Selection freeze + 360-spin fixes (v4.46.06)
   User repro nailed both: the freeze happens on DOUBLE-CLICK from
@@ -2725,10 +2725,275 @@ Step 46.D — Selection freeze + 360-spin fixes (v4.46.06)
       way. Both camera->theta and target.theta now take the short
       way around (same correction camera_treev_frame_expansion
       already had).
-  [ ] Build clean (v4.46.06). User verifies: double-click the Chrome
-      cache dir from far away — no freeze (file list may take a
-      beat to fill, but the UI must not lock); no more 360 spins on
-      any double-click navigation.
+  [x] Build clean (v4.46.06). User verified: freeze and spin both
+      gone ("everything else is fixed").
+
+
+KNOWN-ITEMS BOARD (as of Phase 46 close)
+=========================================
+- 46.B.3b incremental batch updates: DEFERRED by choice — the only
+  known remaining improvement (Expand/Collapse All hitches on 1M+
+  trees). Full design recorded under Phase 46.
+- Too-close mouse-wheel zoom blackout (carried since Phase 39):
+  RETIRED — user can no longer reproduce it after the Phase 41-46
+  clip-plane reworks (far-plane scene clamp, look_at clip morphs,
+  expansion-camera clips). If it ever resurfaces: suspect
+  near_clip = 0.5 * distance vs. very close geometry.
+- DiscV force-directed tightening (Phase 42 option): DECLINED —
+  user is happy with the packed layout as-is.
+The board is otherwise empty.
+
+
+PHASE 47 — THE DEFERRED FINALE: FAST CONTENT REBUILDS
+======================================================
+
+Goal: kill (or shrink below annoyance) the wave-boundary hitches in
+Expand/Collapse All on massive trees — the only known remaining
+issue. Each content crossing currently re-emits the whole tree
+(~40M vertices, ~1.6 s at 1.5M nodes) even though only the wave's
+geometry changed. Two attacks, cheapest first:
+
+  A. PARALLEL BATCH BUILD (47.1-47.3): the emission walk is
+     CPU-pure until upload and partitions by subtree exactly like
+     the Phase 45 scanner. Per-THREAD staging buffer trios
+     (persistent across rebuilds — they're huge), per-directory
+     tasks that emit their own geometry then enqueue children
+     (parent lays out children's leaf positions BEFORE enqueueing —
+     the queue is the memory barrier, same ownership rules as the
+     scanner), and a gather-upload (glBufferSubData per thread
+     buffer at computed offsets — no final memcpy). GPU-deployment
+     path only: the CPU fallback's nested apply_deployment spans
+     subtree boundaries, so !deploy_available keeps the serial walk.
+     Expected: hitches ~1.6 s -> ~0.3-0.5 s (emission /8, upload
+     unchanged).
+  B. INCREMENTAL CONTENT UPDATES (47.4+, only if A isn't enough):
+     per-directory vertex ranges indexed by the deploy slot table;
+     expanding waves append their geometry; finishing leaves /
+     collapsing subtrees zero their ranges (degenerate triangles
+     don't rasterize or pick); parents' branch ranges re-emitted on
+     child crossings; ONE compacting full rebuild when the
+     animation settles. Wave cost becomes proportional to the wave.
+
+Step 47.1 — Extract shared emission helpers (v4.47.01)
+  [x] Pulled the branch-emission block (metanode loop / inbranch +
+      per-row arcs/rails) out of treev_batch_recursive verbatim into
+      treev_batch_branches(); the serial walk calls it. Bit-identical
+      output expected.
+  [ ] Build clean (v4.47.01). User sanity-checks TreeV renders
+      identically (branches especially: row arcs, rails, loop).
+
+Step 47.2 — Parallel gather build (v4.47.02)
+  [x] Per-thread VBOBatch staging trios (GPrivate + registry) on a
+      PERSISTENT exclusive pool (created lazily, app lifetime —
+      aggregate staging is GB-scale on huge trees and must stay warm
+      across rebuilds; main thread resets the registry's buffers
+      between builds while the pool is idle). tbuild_emit_node =
+      the non-recursive core of the serial walk (morphing leaf with
+      parent-id patch, baked_acc snapshot, batch_dir BEFORE child
+      pushes — it lays out their leaf positions; the queue is the
+      barrier — branches via the 47.1 helper, geom flags); children
+      fan out as tasks; pending counter + cond join.
+  [x] vbo_batch_upload_gather: one glBufferData allocation sized to
+      the sum, one glBufferSubData per thread buffer — no CPU-side
+      merge. VAO setup factored into vbo_batch_ensure_vao. Draw
+      order across threads is arbitrary — irrelevant for
+      depth-tested opaque triangles and ID-based picking.
+  [x] RACE FOUND AND FIXED during self-review: treev_batch_platform,
+      treev_batch_platform_edges and treev_gldraw_platform_colored
+      shared static inner/outer_edge_buf scratch — corrupted
+      platforms under concurrent emission. Now per-call stack locals
+      (TREEV_EDGE_BUF_POINTS = 73 points, ~2.3 KB/frame) with a
+      seg_count clamp for safety; the statics and their init-time
+      allocation are gone.
+  [x] Serial path retained verbatim; used when FSV_CPU_DEPLOY / no
+      deploy tables / pool creation fails.
+  [x] Build clean (v4.47.02). User F11: rebuilds only dropped ~1.5x
+      (1.6 s -> ~950 ms) — task granularity too fine: 125K one-dir
+      tasks drowned the parallelism in queue-lock + per-task
+      overhead (Amdahl). Also seen: arrange split working as
+      designed (285 ms only on crossing frames, ~0 between); a
+      negative "other" from a hover-pick nesting a rebuild inside
+      the pick bucket (instrumentation artifact only).
+  [x] v4.47.03: task coarsening — subtrees under
+      TBUILD_FANOUT_MIN_NODES (4096) are emitted inline by the task
+      that reaches them (plain recursion, same thread buffers);
+      only big subtrees fan out. Uses the scan's per-dir
+      subtree.counts. Task count: 125K -> a few hundred.
+  [x] User F11 re-run (v4.47.03): rebuilds still ~850-1900 ms —
+      coarsening OVER-coarsened: a dir with hundreds of just-under-
+      threshold children inlines their whole aggregate in ONE task
+      (tree shape defeats the fan-out).
+  [x] v4.47.04: per-task INLINE BUDGET (TBUILD_INLINE_BUDGET 8192):
+      a task counts nodes it swallows inline and fans out everything
+      once over budget — max task work bounded by budget + one
+      sub-threshold subtree regardless of tree shape. Plus per-
+      rebuild diagnostics while frameprof is active ("[tbuild] emit
+      X ms, upload Y ms, N tasks, verts") — no more blind tuning.
+  [x] User F11 re-run (v4.47.04): VERDICT IN. Emission now truly
+      parallel: ~210-230 ms at full tree (was ~1.4 s serial).
+      Remainder is UPLOAD: ~700-880 ms for 82M vertices = 2.6 GB
+      per full-tree content rebuild — PCIe-bound, unfixable by
+      threading. Each crossing therefore costs ~1 s no matter what;
+      the winning play is fewer crossings.
+  [x] v4.47.05 — NO-STAGGER for huge recursive ops
+      (COLEXP_NO_STAGGER_NODES = 50000): Expand/Collapse All on
+      subtrees at/above the threshold drops the per-depth cascade
+      (which frames have outlasted for years — it was invisible)
+      and deploys everything simultaneously. Exactly TWO content
+      crossings — one ~1 s hitch as everything materializes, one as
+      the placeholder leaves pop — bracketing a pure-transform
+      deployment animation the GPU path plays at full frame rate
+      (xform_update ~17 ms/frame). Camera pan times and access
+      timers use the effective (unstaggered) duration. Smaller
+      trees keep their cascade untouched.
+  [x] User test (v4.47.05): fast ("I'll take this over the
+      choppiness"), but the bloom showed only 2-3 frames — morph
+      clocks are WALL-TIME, and the first frame after the crossing
+      contained the ~2 s rebuild+upload, so the whole 0.5 s morph
+      expired inside it. The animation played; nothing rendered it.
+  [x] v4.47.06 — deferred bloom: the no-stagger path now only NUDGES
+      deployments across the content boundary (1e-4 / 1-1e-4, only
+      dirs actually changing state) and notifies geometry — that
+      triggers the single big rebuild. The real morphs start from a
+      schedule_event callback ONE RENDERED FRAME LATER (scheduled
+      events run after the render inside animation_loop), so their
+      clocks tick over fast transform-only frames. Bloom duration
+      COLEXP_NO_STAGGER_TIME = 1.5 s — for the first time it's
+      actually watchable, so it gets a watchable length. Access
+      timer covers rebuild + bloom.
+  [x] User test (v4.47.06): INSTANT change, no animation at all —
+      schedule_event's "frames" are animation-loop TICKS, not
+      completed renders: the loop queues the render with GTK and
+      immediately runs scheduled events, so the morphs started
+      before the 2 s rebuild frame drew and expired inside it
+      again. Same bug, one layer deeper.
+  [x] v4.47.07: ogl_draw now increments a frame serial
+      (ogl_frame_serial) at frame END; the deferred morphs start
+      from a 30 ms g_timeout that waits until the serial has
+      ADVANCED past its value at nudge time — i.e., a frame has
+      genuinely completed. The main thread is busy during the
+      rebuild render, so the timeout fires immediately after it —
+      exactly the intended moment.
+  [x] User test (v4.47.07): still ~4 frames, direct-to-expanded (NOT
+      intentional). Trace showed the saboteur: two mid-bloom full
+      rebuilds with IDENTICAL vertex counts — geometry_colexp_in_
+      progress's no-crossing path still called queue_uncached_draw,
+      whose needs_arrange side effect ran a FULL structural arrange
+      every bloom frame; that re-echoed the platform-depth
+      estimate/actual disagreement through row bases -> moved radii
+      -> legitimate reshape -> batch invalidation. Bloom frames were
+      one-second rebuild frames; morph clocks expired across them.
+      (The 1-2 s pre-movement delay is the intended nudge-rebuild
+      hitch.)
+  [x] v4.47.08: no-crossing morph steps now invalidate only the pick
+      cache (spread + transform updates are queued separately by
+      treev_queue_rearrange; anything structural comes with
+      content_changed). Mid-bloom arranges and their echo rebuilds
+      are gone.
+  [x] User test (v4.47.08): the expand bloom RAN (18 frames, proven
+      by 2.26M soft stalings ≈ 18 steps x 125K dirs) but was
+      invisible: INV_QUADRATIC easing front-loads the growth into
+      the first ~0.3 s, which the still-gliding camera hides.
+      Collapse (QUADRATIC + stationary camera) showed its animation
+      at ~30 fps ("not as smooth"). Bloom frame cost ~35-60 ms:
+      xform_update ~21 ms + spread ~10-26 ms + labels.
+  [x] v4.47.09: (1) bloom easing -> MORPH_SIGMOID (slow start while
+      the camera settles, growth mid-curve) and duration -> 2.5 s;
+      (2) deploy_update_xforms parallelized like the batch build
+      (subtree fan-out with inline budget, own persistent pool,
+      disjoint texel writes; root invocation counted as a pending
+      task for a race-free join); serial fallback if pool fails.
+  [x] User test (v4.47.09): parallel xform works (4 ms/frame) and by
+      frame arithmetic the bloom spanned ~2.5 s of wall time at
+      ~12-15 fps — yet the user still sees NO expand growth (3-4 s
+      delay -> camera pivot -> fully expanded "springs up").
+      Collapse animates but choppy. Code and observation disagree;
+      time to measure the disagreement itself.
+  [x] v4.47.10: bloom telemetry (temporary) — timestamped
+      "[bloom] morphs starting" message plus a 4 Hz sampler printing
+      a real directory's live deployment during the bloom. One run
+      decides: if deployment animates 0->1 over ~2.5 s in the log
+      while the screen shows no growth, the bug is in transform
+      APPLICATION; if it jumps, it's still scheduling.
+  [x] User run (v4.47.10): CASE CLOSED on the bloom — the "fan-out"
+      the user sees IS the deployment animation (spread rotations
+      dominating visually), user LIKES it ("actually kind of cool —
+      don't try and fix it"). Remaining complaint: ~5 s frozen
+      viewport BEFORE anything happens ([bloom] lines appear after
+      the delay; file lists update during it). Rebuild accounts for
+      ~2.1 s; the other ~3 s = dirtree_entry_expand_recursive doing
+      gtk_tree_list_row_set_expanded on 125K rows (model splices on
+      the main thread — exactly why the sidebar visibly updated
+      during the freeze).
+  [x] v4.47.11 — lazy sidebar expansion: tree_expanded FLAGS set
+      instantly (a plain tree walk — they're all the 3D pipeline
+      reads); GtkTreeListRow expansion proceeds in background idle
+      chunks (512 rows/chunk) at G_PRIORITY_LOW, so the animation
+      loop outranks it and the sidebar fills itself in after the
+      bloom. Pending work dropped on dirtree_clear. Phase 38's
+      synchronous expand_recursive_via_row + pump machinery
+      retired. (Collapse All's row work is one splice — untouched.)
+  [x] User test (v4.47.11): HANG — Not Responding, >1 min, no
+      recovery. Cause: every lazy row splice shifts the
+      GtkSingleSelection position -> notify::selected fires ->
+      dirtree_selection_changed_cb -> dnode_at_position and, when
+      the shifted position lands on a different dir,
+      filelist_populate — potentially hundreds of full file-list
+      populations inside ONE idle chunk.
+  [x] v4.47.12: (1) dirtree_selection_changed_cb bails when
+      colexp_blocked (programmatic model churn is not a user
+      selection); (2) re-entrancy guard in lazy_expand_idle (if
+      anything downstream of a splice pumps the main loop, the idle
+      must not nest inside itself).
+  [x] User test (v4.47.12): STILL hanging (panels populating during
+      the freeze). The selection guard wasn't the whole story — the
+      splice storm itself is pathological at this scale. Two rounds
+      of patching the lazy design is enough evidence against it.
+  [x] v4.47.13 — DESIGN RETREAT: lazy sidebar machinery removed
+      entirely; the Phase 38 synchronous expand_recursive_via_row is
+      RESTORED verbatim for normal trees. For no-stagger-scale trees
+      (50K+ nodes), Expand All calls new
+      dirtree_entry_expand_flags_only(): flags set instantly (all
+      the 3D pipeline reads), sidebar rows NOT expanded at all —
+      a 100K-row sidebar is unnavigable anyway, and rows expand
+      normally on user clicks against the already-set flags.
+      BEHAVIOR TRADE (user to judge): after a huge Expand All the
+      sidebar stays collapsed and does not highlight deep nodes
+      until branches are opened manually. The selection-churn guard
+      in dirtree_selection_changed_cb is kept (correct regardless).
+      No-stagger decision moved before the dirtree update in colexp.
+  [x] User test (v4.47.13): no hang; delay measured 4-5 s. User
+      calls it: acceptable, stop iterating ("let's not go in
+      circles").
+
+Step 47.4 — Checkpoint  [PASSED at v4.47.14, by user decision]
+  Final state of Expand/Collapse All on massive (50K+ node) trees:
+    ~4-5 s pre-motion delay (budget: ~2 s PCIe upload of 2.6 GB of
+    vertices — physics; ~1.8 s first-time GPU buffer allocation
+    penalty on the very first expand; ~0.3 s layout settle; ~0.5 s
+    per-directory morph setup), then camera glide + the "fan-out"
+    deployment bloom (user: "actually kind of cool"), then a brief
+    end-crossing hitch. Collapse mirrored. Medium/small trees:
+    unchanged classic cascade. Sidebar on huge Expand All stays
+    collapsed by design (flags-only; rows expand on interaction).
+  Phase 47 deliverables: shared branch-emission helper (47.1),
+  parallel gather batch build with inline-budgeted tasks and
+  gather-upload (1.4 s emission -> ~220 ms) (47.2), no-stagger
+  deployment for huge trees with render-gated deferred morphs
+  (exactly two content crossings), parallel transform updates
+  (21 ms -> ~4 ms/frame), lazy-vs-synchronous sidebar resolution
+  (flags-only for huge trees), selection-churn guard, frame-serial
+  API, [tbuild] diagnostics (kept; frameprof-gated).
+  Remaining theoretical levers, deliberately unexplored: finer
+  instrumentation of the synchronous click phase; first-upload
+  buffer pre-allocation; 46.B.3b incremental content updates
+  (design under Phase 46) which would shrink the 2 s upload to
+  per-wave deltas. All parked — the user has called time.
+
+Step 47.3 — Re-measure and decide
+  [ ] If wave hitches are now below annoyance: phase checkpoint,
+      done. If not: proceed to 47.4 (incremental updates, design
+      above and under Phase 46).
 
 
 NOTES

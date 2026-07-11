@@ -350,6 +350,14 @@ dirtree_selection_changed_cb( GtkSingleSelection *sel,
 	guint position;
 	GNode *dnode;
 
+	/* Programmatic model churn (lazy sidebar expansion, recursive
+	 * collapse) shifts the selected POSITION on every row splice —
+	 * hundreds of spurious "selection changes" per chunk, each one
+	 * potentially repopulating the file list. Only real user
+	 * selections matter */
+	if (colexp_blocked)
+		return;
+
 	/* If About presentation is up, end it */
 	about( ABOUT_END );
 
@@ -673,6 +681,29 @@ expand_recursive_via_row( GtkTreeListRow *row, GNode *dnode )
 		}
 		else
 			break;
+		child = child->next;
+	}
+}
+
+
+/* Sets the tree_expanded flags of an entire subtree without touching
+ * the sidebar's GtkTreeListRows. The flags are all the 3D pipeline
+ * reads; on no-stagger-scale trees (50K+ nodes) expanding ~100K
+ * sidebar rows costs seconds of model splices (and a 125K-row
+ * sidebar is useless to scroll anyway), so huge Expand Alls leave
+ * the sidebar collapsed — rows expand normally on user interaction,
+ * against already-set flags. */
+void
+dirtree_entry_expand_flags_only( GNode *dnode )
+{
+	GNode *child;
+
+	g_assert( NODE_IS_DIR(dnode) );
+
+	DIR_NODE_DESC(dnode)->tree_expanded = TRUE;
+	child = dnode->children;
+	while (child != NULL && NODE_IS_DIR(child)) {
+		dirtree_entry_expand_flags_only( child );
 		child = child->next;
 	}
 }

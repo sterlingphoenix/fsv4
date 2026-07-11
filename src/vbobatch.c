@@ -47,44 +47,52 @@ vbo_batch_add_vertex(VBOBatch *batch,
 }
 
 
+/* Creates the VAO/VBO with the standard vertex layout on first use */
+static void
+vbo_batch_ensure_vao(VBOBatch *batch)
+{
+	if (batch->vao != 0)
+		return;
+
+	glGenVertexArrays(1, &batch->vao);
+	glGenBuffers(1, &batch->vbo);
+
+	glBindVertexArray(batch->vao);
+	glBindBuffer(GL_ARRAY_BUFFER, batch->vbo);
+
+	/* position: location 0 */
+	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+	                      sizeof(VBOVertex),
+	                      (void *)offsetof(VBOVertex, position));
+	glEnableVertexAttribArray(0);
+
+	/* normal: location 1 */
+	glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE,
+	                      sizeof(VBOVertex),
+	                      (void *)offsetof(VBOVertex, normal));
+	glEnableVertexAttribArray(1);
+
+	/* color: location 2 */
+	glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE,
+	                      sizeof(VBOVertex),
+	                      (void *)offsetof(VBOVertex, color));
+	glEnableVertexAttribArray(2);
+
+	/* node_id: location 3 (integer attribute) */
+	glVertexAttribIPointer(3, 1, GL_UNSIGNED_INT,
+	                       sizeof(VBOVertex),
+	                       (void *)offsetof(VBOVertex, node_id));
+	glEnableVertexAttribArray(3);
+
+	glBindVertexArray(0);
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+
 void
 vbo_batch_upload(VBOBatch *batch)
 {
-	/* Create VAO and VBO on first upload */
-	if (batch->vao == 0) {
-		glGenVertexArrays(1, &batch->vao);
-		glGenBuffers(1, &batch->vbo);
-
-		glBindVertexArray(batch->vao);
-		glBindBuffer(GL_ARRAY_BUFFER, batch->vbo);
-
-		/* position: location 0 */
-		glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
-		                      sizeof(VBOVertex),
-		                      (void *)offsetof(VBOVertex, position));
-		glEnableVertexAttribArray(0);
-
-		/* normal: location 1 */
-		glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE,
-		                      sizeof(VBOVertex),
-		                      (void *)offsetof(VBOVertex, normal));
-		glEnableVertexAttribArray(1);
-
-		/* color: location 2 */
-		glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE,
-		                      sizeof(VBOVertex),
-		                      (void *)offsetof(VBOVertex, color));
-		glEnableVertexAttribArray(2);
-
-		/* node_id: location 3 (integer attribute) */
-		glVertexAttribIPointer(3, 1, GL_UNSIGNED_INT,
-		                       sizeof(VBOVertex),
-		                       (void *)offsetof(VBOVertex, node_id));
-		glEnableVertexAttribArray(3);
-
-		glBindVertexArray(0);
-		glBindBuffer(GL_ARRAY_BUFFER, 0);
-	}
+	vbo_batch_ensure_vao(batch);
 
 	/* Upload vertex data */
 	glBindBuffer(GL_ARRAY_BUFFER, batch->vbo);
@@ -96,6 +104,37 @@ vbo_batch_upload(VBOBatch *batch)
 
 	batch->vertex_count = batch->build_count;
 	batch->dirty = FALSE;
+}
+
+
+void
+vbo_batch_upload_gather(VBOBatch *dst, VBOBatch *const *parts, int n_parts)
+{
+	GLsizeiptr total = 0;
+	GLintptr offset = 0;
+	int i;
+
+	for (i = 0; i < n_parts; i++)
+		total += parts[i]->build_count;
+
+	vbo_batch_ensure_vao(dst);
+
+	glBindBuffer(GL_ARRAY_BUFFER, dst->vbo);
+	glBufferData(GL_ARRAY_BUFFER, total * (GLsizeiptr)sizeof(VBOVertex),
+	             NULL, GL_STATIC_DRAW);
+	for (i = 0; i < n_parts; i++) {
+		if (parts[i]->build_count == 0)
+			continue;
+		glBufferSubData(GL_ARRAY_BUFFER,
+		                offset * (GLintptr)sizeof(VBOVertex),
+		                (GLsizeiptr)parts[i]->build_count * sizeof(VBOVertex),
+		                parts[i]->vertices);
+		offset += parts[i]->build_count;
+	}
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+	dst->vertex_count = (int)total;
+	dst->dirty = FALSE;
 }
 
 

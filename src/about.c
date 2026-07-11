@@ -311,7 +311,7 @@ draw_shortcuts( void )
 		"2: DiscV",
 		"3: TreeV",
 		"C: Toggle colour mode",
-		"L: Toggle logarithmic mode (TreeV only)"
+		"L: Toggle logarithmic mode (TreeV/DiscV)"
 	};
 	static const char * const right_col[] = {
 		"Navigation",
